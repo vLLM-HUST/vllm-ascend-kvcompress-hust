@@ -1,0 +1,88 @@
+# SPDX-License-Identifier: Apache-2.0
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from vllm_ascend_kvcompress.config import (
+    LEGACY_PROVIDER_NAME,
+    PROVIDER_NAME,
+    ProviderSelection,
+)
+from vllm_ascend_kvcompress.methods.triattention import TriAttentionConfig
+
+
+def _core_config(provider: str, **options: object) -> SimpleNamespace:
+    return SimpleNamespace(
+        schema_version=1,
+        provider=provider,
+        provider_config=options,
+    )
+
+
+def test_provider_selection_routes_canonical_method() -> None:
+    selection = ProviderSelection.from_core_config(
+        _core_config(
+            PROVIDER_NAME,
+            method="triattention",
+            stats_path="/tmp/stats.pt",
+        )
+    )
+    assert selection.provider_name == PROVIDER_NAME
+    assert selection.method == "triattention"
+    assert selection.method_config == {"stats_path": "/tmp/stats.pt"}
+
+
+def test_provider_selection_preserves_legacy_triattention_config() -> None:
+    selection = ProviderSelection.from_core_config(
+        _core_config(LEGACY_PROVIDER_NAME, stats_path="/tmp/stats.pt")
+    )
+    assert selection.provider_name == LEGACY_PROVIDER_NAME
+    assert selection.method == "triattention"
+
+
+def test_legacy_provider_rejects_other_methods() -> None:
+    with pytest.raises(ValueError, match="legacy provider"):
+        ProviderSelection.from_core_config(
+            _core_config(LEGACY_PROVIDER_NAME, method="future_method")
+        )
+
+
+def test_triattention_config_accepts_documented_values() -> None:
+    config = TriAttentionConfig.from_method_config(
+        {
+            "stats_path": "/tmp/stats.pt",
+            "kv_budget": 2048,
+            "recompute_window": 128,
+            "protected_recent_window": 64,
+            "score_aggregation": "max",
+            "layer_aggregation": "mean",
+            "score_chunk_size": 512,
+        }
+    )
+    assert config.stats_path == Path("/tmp/stats.pt")
+    assert config.compression_threshold_tokens == 2176
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("kv_budget", 2000),
+        ("recompute_window", 0),
+        ("score_chunk_size", 129),
+        ("protected_recent_window", -1),
+        ("score_aggregation", "median"),
+    ],
+)
+def test_triattention_config_rejects_invalid_values(option: str, value: object) -> None:
+    method_config = {"stats_path": "/tmp/stats.pt", option: value}
+    with pytest.raises(ValueError):
+        TriAttentionConfig.from_method_config(method_config)  # type: ignore[arg-type]
+
+
+def test_triattention_config_rejects_unknown_option() -> None:
+    with pytest.raises(ValueError, match="unknown"):
+        TriAttentionConfig.from_method_config(
+            {"stats_path": "/tmp/stats.pt", "typo": 1}
+        )
