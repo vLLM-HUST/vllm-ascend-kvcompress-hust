@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0",
+  "canonical_registry": "https://github.com/vLLM-HUST/vllm-hust-docs/tree/codex/ecosystem-architecture-reorganization/registry",
+  "repository": "https://github.com/vLLM-HUST/vllm-ascend-kvcompress-hust",
+  "repository_role": "runtime_component",
+  "relation_to_runtime": "extends_runtime_behavior",
+  "lifecycle": "incubating",
+  "artifacts": [
+    {
+      "id": "kvcompress-ascend",
+      "artifact_type": "runtime_component",
+      "system_role": "kv_state_manager",
+      "delivery_model": "plugin_bundle",
+      "execution_planes": ["scheduler", "worker", "device"],
+      "integration_contracts": [],
+      "integration_surfaces": [
+        "vllm.general_plugins",
+        "vllm.kv_compression.provider",
+        "vllm.kv_lifecycle"
+      ]
+    }
+  ],
+  "system_boundaries": {
+    "is": [
+      "an Ascend runtime component that implements transactional KV compression",
+      "a method-neutral compression provider with a separate algorithm registry",
+      "a plugin-bundle delivery of scheduler, worker, and device behavior"
+    ],
+    "is_not": [
+      "a KV store, transfer connector, or external state system",
+      "a scheduler victim-selection policy",
+      "a platform profile or external control plane",
+      "a stable typed Bundle v1 materializer"
+    ]
+  },
+  "validation": [
+    "python -m pytest -q",
+    "ruff check .",
+    "ruff format --check .",
+    "python -m compileall -q src tests",
+    "run matched compression-disabled/enabled long-context workloads on an assigned Ascend NPU"
+  ],
+  "compatibility_document": "README.md#compatibility"
+}

@@ -9,6 +9,22 @@ lifecycle without modifying the vLLM-HUST or vLLM-Ascend-HUST source trees.
 The current release includes a correctness-first TriAttention method and a
 public method interface for adding other compression algorithms.
 
+## Ecosystem classification
+
+This repository delivers an Ascend runtime compression component. Its
+`vllm.general_plugins` entry point installs compatibility hooks, while the
+provider and transactional KV-lifecycle interfaces are existing integration
+surfaces rather than versioned Extension Bundle domain contracts. “Plugin”
+therefore describes delivery and activation; the component's system role is KV
+state transformation across scheduler, worker, and device planes.
+
+It is not a KV store, KV connector, external state system, scheduler policy,
+platform profile, or control plane. Compression algorithms are a second-level
+extension surface owned by the common provider and must not be promoted to
+top-level vLLM plugins. See
+[`.vllm-hust/repository-profile.json`](./.vllm-hust/repository-profile.json) for
+the machine-readable boundary.
+
 ## Highlights
 
 - Method-neutral Ascend provider with configuration-based algorithm selection.

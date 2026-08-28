@@ -9,6 +9,18 @@ vLLM-Ascend-HUST 源码树。
 当前版本内置以正确性为优先的 TriAttention 方法，并提供用于接入其他压缩算法
 的公开方法接口。
 
+## 生态分类
+
+本仓库交付的是 Ascend 运行时 KV 压缩组件。`vllm.general_plugins` entry point
+用于安装兼容 hook；provider 与事务化 KV lifecycle 目前属于已有接入面，而不是
+版本化的 Extension Bundle 领域契约。因此，“plugin”描述的是交付与激活方式，
+组件本身的系统职责是在 scheduler、worker 与 device 执行面进行 KV 状态转换。
+
+它不是 KV store、KV connector、外部状态系统、scheduler policy、platform
+profile 或 control plane。压缩算法是由公共 provider 管理的第二层扩展面，不能
+被提升为顶层 vLLM plugin。机器可读边界见
+[`.vllm-hust/repository-profile.json`](./.vllm-hust/repository-profile.json)。
+
 ## 主要特性
 
 - 与具体算法无关的昇腾 provider，通过配置选择压缩方法。
