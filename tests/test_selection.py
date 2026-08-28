@@ -33,7 +33,9 @@ def test_selection_reuses_first_pass_score_chunks(monkeypatch) -> None:
         protected_recent_window=0,
         score_chunk_size=128,
     )
-    stats = SimpleNamespace(q_mean_real=torch.zeros((1, 1, 1)))
+    stats = SimpleNamespace(
+        q_mean_real=torch.zeros((1, 1, 1)), omega=torch.ones(1)
+    )
     method.layer_caches = (
         TriAttentionLayerCache(
             name="layer.0",
@@ -58,7 +60,93 @@ def test_selection_reuses_first_pass_score_chunks(monkeypatch) -> None:
     monkeypatch.setattr(triattention_method, "gather_paged_range", fake_gather)
     monkeypatch.setattr(triattention_method, "score_post_rope_keys", fake_score)
 
-    keep = method._select_keep_indices(torch.tensor([0, 1]), 256)
+    keep = method._select_keep_indices(torch.tensor([0, 1]), 256, 256)
 
     assert score_calls == 2
     assert keep.shape == (128,)
+
+
+def test_selection_scores_uniform_layer_sample(monkeypatch) -> None:
+    method = object.__new__(TriAttentionMethod)
+    method.config = TriAttentionConfig(
+        stats_path=Path("unused.pt"),
+        kv_budget=128,
+        recompute_window=128,
+        protected_recent_window=0,
+        score_chunk_size=128,
+        score_layer_stride=2,
+    )
+    stats = SimpleNamespace(
+        q_mean_real=torch.zeros((1, 1, 1)), omega=torch.ones(1)
+    )
+    method.layer_caches = tuple(
+        TriAttentionLayerCache(
+            name=f"layer.{index}",
+            k_cache=torch.empty(0),
+            v_cache=torch.empty(0),
+            stats=stats,
+        )
+        for index in range(5)
+    )
+    method.offsets = torch.tensor([1.0])
+    scored_layers = 0
+
+    def fake_gather(*args, count: int, **kwargs) -> torch.Tensor:
+        del args, kwargs
+        return torch.zeros((count, 1, 2))
+
+    def fake_score(keys: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+        nonlocal scored_layers
+        del args, kwargs
+        scored_layers += 1
+        return torch.zeros((1, 1, keys.shape[0]))
+
+    monkeypatch.setattr(triattention_method, "gather_paged_range", fake_gather)
+    monkeypatch.setattr(triattention_method, "score_post_rope_keys", fake_score)
+
+    method._select_keep_indices(torch.tensor([0, 1]), 256, 256)
+
+    assert scored_layers == 6
+
+
+def test_selection_does_not_add_unsampled_layers(monkeypatch) -> None:
+    method = object.__new__(TriAttentionMethod)
+    method.config = TriAttentionConfig(
+        stats_path=Path("unused.pt"),
+        kv_budget=128,
+        recompute_window=128,
+        protected_recent_window=0,
+        score_chunk_size=128,
+        score_layer_stride=2,
+    )
+    stats = SimpleNamespace(
+        q_mean_real=torch.zeros((1, 1, 1)), omega=torch.ones(1)
+    )
+    method.layer_caches = tuple(
+        TriAttentionLayerCache(
+            name=f"layer.{index}",
+            k_cache=torch.empty(0),
+            v_cache=torch.empty(0),
+            stats=stats,
+        )
+        for index in range(6)
+    )
+    method.offsets = torch.tensor([1.0])
+    scored_layers = 0
+
+    def fake_gather(*args, count: int, **kwargs) -> torch.Tensor:
+        del args, kwargs
+        return torch.zeros((count, 1, 2))
+
+    def fake_score(keys: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+        nonlocal scored_layers
+        del args, kwargs
+        scored_layers += 1
+        return torch.zeros((1, 1, keys.shape[0]))
+
+    monkeypatch.setattr(triattention_method, "gather_paged_range", fake_gather)
+    monkeypatch.setattr(triattention_method, "score_post_rope_keys", fake_score)
+
+    method._select_keep_indices(torch.tensor([0, 1]), 256, 256)
+
+    assert scored_layers == 6

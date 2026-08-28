@@ -26,6 +26,9 @@ provider 的依赖面。
 | `methods/triattention/stats.py` | 校准产物加载和校验 |
 | `methods/triattention/cache.py` | 分页缓存 gather 和物化 |
 
+产物生成器、可接受的 payload schema、字段语义、校验和生命周期见
+[TriAttention 校准产物](calibration-artifacts.zh.md)。
+
 外层 vLLM provider 固定为 `ascend_kvcompress`。扁平的
 `provider_config.method` 标量选择已注册的方法，其余标量选项原样传递给该
 方法的 factory。
@@ -40,7 +43,7 @@ provider 的依赖面。
 - `compatibility_reasons(worker)`：无副作用的方法专用检查。
 - `bind_model_runner(runner, layer_caches)`：公共缓存布局检查和分配完成后
   初始化状态。
-- `compress(request)`：物化一次最终 prefill 事务，返回物理长度以及可选的
+- `compress(request)`：物化一次初始或重复压缩事务，返回物理长度以及可选的
   逐层长度。
 
 公共 provider 会在创建 scheduler plan 前验证方法结果。方法不得修改

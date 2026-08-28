@@ -17,6 +17,7 @@ from vllm.v1.kv_cache_compression import (
 from .config import ASCEND_BLOCK_SIZE, PROVIDER_NAME, SCHEMA_VERSION, ProviderSelection
 from .methods import create_method
 from .methods.base import CompressionRequest, LayerCache, MethodRuntimeSpec, ModelShape
+from .methods.triattention.kernels import shift_positions
 from .model import model_shape_from_config
 
 PROVIDER_FACTORY_QUALNAME = "vllm_ascend_kvcompress.provider:create_provider"
@@ -66,6 +67,8 @@ class AscendKVCompressionProvider:
         self._request_offsets_cpu: torch.Tensor | None = None
         self._request_offsets_device: torch.Tensor | None = None
         self._physical_positions: torch.Tensor | None = None
+        self._offset_row_snapshot: tuple[int, ...] = ()
+        self._has_active_rows = False
 
     def compatibility_report(self, worker: Any) -> KVCacheCompressionCompatibility:
         """Return a serializable fail-closed report before KV allocation."""
@@ -170,16 +173,6 @@ class AscendKVCompressionProvider:
                 reasons.append(f"{name} size must be one, got {size}")
 
         model_config = self.vllm_config.model_config
-        if not bool(getattr(model_config, "enforce_eager", False)):
-            reasons.append("--enforce-eager is required; ACL graph is unsupported")
-        cudagraph_mode = getattr(
-            self.vllm_config.compilation_config, "cudagraph_mode", None
-        )
-        if cudagraph_mode is not None and str(cudagraph_mode).lower() not in {
-            "none",
-            "cudagraphmode.none",
-        }:
-            reasons.append(f"graph execution is unsupported: {cudagraph_mode}")
         scheduler_config = self.vllm_config.scheduler_config
         if bool(getattr(scheduler_config, "async_scheduling", False)):
             reasons.append("asynchronous scheduling is not enabled in schema v1")
@@ -277,11 +270,13 @@ class AscendKVCompressionProvider:
         self._physical_positions = torch.empty(
             runner.max_num_tokens, dtype=torch.int64, device=runner.device
         )
+        for block_table in runner.input_batch.block_table.block_tables:
+            setattr(block_table, RUNNER_PROVIDER_ATTRIBUTE, self)
 
     def compress_transactions(
         self, scheduler_output: Any
     ) -> list[KVCacheCompressionPlan]:
-        """Delegate final-prefill transactions to the selected method."""
+        """Delegate initial and repeated stateful transactions to the method."""
         transaction_ids = scheduler_output.kv_cache_compression_transaction_ids or {}
         if not transaction_ids:
             return []
@@ -292,9 +287,9 @@ class AscendKVCompressionProvider:
 
         plans: list[KVCacheCompressionPlan] = []
         for request_id in transaction_ids:
-            if request_id in self.pending or request_id in self.active:
+            if request_id in self.pending:
                 raise RuntimeError(
-                    f"request {request_id!r} already has compression state"
+                    f"request {request_id!r} already has pending compression state"
                 )
             request = self.runner.requests.get(request_id)
             if request is None:
@@ -307,18 +302,28 @@ class AscendKVCompressionProvider:
                     f"compression request {request_id!r} was not scheduled"
                 )
             semantic_num_tokens = request.num_computed_tokens + int(scheduled_tokens)
-            if semantic_num_tokens != request.num_prompt_tokens:
-                raise RuntimeError(
-                    f"request {request_id!r} is not at final prefill: "
-                    f"semantic={semantic_num_tokens}, "
-                    f"prompt={request.num_prompt_tokens}"
+            active = self.active.get(request_id)
+            if active is None:
+                physical_num_tokens = semantic_num_tokens
+                if semantic_num_tokens != request.num_prompt_tokens:
+                    raise RuntimeError(
+                        f"request {request_id!r} initial compression is not at "
+                        f"final prefill: semantic={semantic_num_tokens}, "
+                        f"prompt={request.num_prompt_tokens}"
+                    )
+            else:
+                physical_num_tokens = (
+                    active.physical_anchor
+                    + semantic_num_tokens
+                    - active.semantic_anchor
                 )
             if (
-                semantic_num_tokens
-                <= self.method_runtime_spec.compression_threshold_tokens
+                physical_num_tokens
+                < self.method_runtime_spec.compression_threshold_tokens
             ):
                 raise RuntimeError(
-                    f"request {request_id!r} does not cross compression threshold"
+                    f"request {request_id!r} physical length {physical_num_tokens} "
+                    "does not cross compression threshold"
                 )
 
             source_block_ids = tuple(tuple(ids) for ids in request.block_ids)
@@ -339,6 +344,7 @@ class AscendKVCompressionProvider:
                 CompressionRequest(
                     request_id=request_id,
                     semantic_num_tokens=semantic_num_tokens,
+                    physical_num_tokens=physical_num_tokens,
                     source_block_ids=source_block_ids,
                     destination_block_ids=destination,
                     source_block_ids_device=source_ids_device,
@@ -445,6 +451,56 @@ class AscendKVCompressionProvider:
                 semantic_anchor=pending.semantic_num_tokens,
                 physical_anchor=pending.physical_num_tokens,
             )
+        self._sync_request_offset_rows()
+
+    def _sync_request_offset_rows(self) -> None:
+        """Update device offsets only when batch membership or state changes."""
+        if (
+            self.runner is None
+            or self._request_offsets_cpu is None
+            or self._request_offsets_device is None
+        ):
+            return
+        num_reqs = self.runner.input_batch.num_reqs
+        offsets = tuple(
+            self.active[request_id].removed_tokens
+            if request_id in self.active
+            else 0
+            for request_id in self.runner.input_batch.req_ids[:num_reqs]
+        )
+        if offsets == self._offset_row_snapshot:
+            return
+        previous_rows = len(self._offset_row_snapshot)
+        rows_to_update = max(previous_rows, num_reqs)
+        cpu = self._request_offsets_cpu
+        cpu[:rows_to_update].zero_()
+        if offsets:
+            cpu[:num_reqs].copy_(torch.tensor(offsets, dtype=torch.int64))
+        self._request_offsets_device[:rows_to_update].copy_(
+            cpu[:rows_to_update], non_blocking=True
+        )
+        self._offset_row_snapshot = offsets
+        self._has_active_rows = any(offsets)
+
+    def physical_positions_for_slot_mapping(
+        self, positions: torch.Tensor
+    ) -> torch.Tensor:
+        """Return physical cache positions without changing logical RoPE positions."""
+        if not self._has_active_rows:
+            return positions
+        if (
+            self.runner is None
+            or self._request_offsets_device is None
+            or self._physical_positions is None
+        ):
+            raise RuntimeError("compression position buffers are not initialized")
+        num_tokens = positions.numel()
+        return shift_positions(
+            positions,
+            self.runner.req_indices.gpu[:num_tokens],
+            self._request_offsets_device,
+            self._physical_positions[:num_tokens],
+        )
 
     def apply_physical_decode_state(
         self,
@@ -453,51 +509,21 @@ class AscendKVCompressionProvider:
     ) -> None:
         """Use compacted physical lengths while preserving semantic positions."""
         del num_scheduled_tokens
-        if not self.active:
+        if not self._has_active_rows:
             return
         if (
             self.runner is None
             or self._request_offsets_cpu is None
             or self._request_offsets_device is None
-            or self._physical_positions is None
         ):
             raise RuntimeError(
                 "Ascend KV compression decode buffers are not initialized"
             )
         num_reqs = self.runner.input_batch.num_reqs
-        total_tokens = int(scheduler_output.total_num_scheduled_tokens)
-        offsets_cpu = self._request_offsets_cpu
-        offsets_cpu[:num_reqs].zero_()
-        has_compressed_request = False
-        for request_index, request_id in enumerate(
-            self.runner.input_batch.req_ids[:num_reqs]
-        ):
-            state = self.active.get(request_id)
-            if state is not None:
-                offsets_cpu[request_index] = state.removed_tokens
-                has_compressed_request = True
-        if not has_compressed_request:
-            return
-        self._request_offsets_device[:num_reqs].copy_(
-            offsets_cpu[:num_reqs], non_blocking=True
-        )
-        request_indices = self.runner.req_indices.gpu[:total_tokens]
-        per_token_offsets = self._request_offsets_device.index_select(
-            0, request_indices
-        )
-        physical_positions = self._physical_positions[:total_tokens]
-        torch.sub(
-            self.runner.positions[:total_tokens],
-            per_token_offsets,
-            out=physical_positions,
-        )
-        self.runner.input_batch.block_table.compute_slot_mapping(
-            num_reqs,
-            self.runner.query_start_loc.gpu[: num_reqs + 1],
-            physical_positions,
-        )
         self.runner.seq_lens[:num_reqs].sub_(self._request_offsets_device[:num_reqs])
-        self.runner.optimistic_seq_lens_cpu[:num_reqs].sub_(offsets_cpu[:num_reqs])
+        self.runner.optimistic_seq_lens_cpu[:num_reqs].sub_(
+            self._request_offsets_cpu[:num_reqs]
+        )
 
 
 def create_provider(worker: Any) -> AscendKVCompressionProvider:

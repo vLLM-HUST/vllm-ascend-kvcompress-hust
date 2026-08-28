@@ -103,6 +103,42 @@ def register() -> None:
 
     _install_hooks(NPUPlatform, NPUWorker, NPUModelRunner)
     _install_ascend_balance_scheduler_hook()
+    _install_slot_mapping_hook()
+    _install_stateful_hooks()
+
+
+def _install_slot_mapping_hook() -> None:
+    """Fold compression offsets into the runner's existing mapping launch."""
+    from vllm.v1.worker.block_table import BlockTable
+
+    marker = f"{_PATCH_MARKER}_slot_mapping"
+    if BlockTable.__dict__.get(marker, False):
+        return
+    original = BlockTable.compute_slot_mapping
+
+    def compute_slot_mapping(
+        block_table: Any,
+        num_reqs: int,
+        query_start_loc: Any,
+        positions: Any,
+    ) -> None:
+        provider = getattr(block_table, RUNNER_PROVIDER_ATTRIBUTE, None)
+        if provider is not None:
+            positions = provider.physical_positions_for_slot_mapping(positions)
+        original(block_table, num_reqs, query_start_loc, positions)
+
+    setattr(BlockTable, f"{marker}_original", original)
+    BlockTable.compute_slot_mapping = compute_slot_mapping
+    setattr(BlockTable, marker, True)
+
+
+def _install_stateful_hooks() -> None:
+    from vllm.v1.core.sched.scheduler import Scheduler
+    from vllm_ascend.patch.platform.patch_balance_schedule import BalanceScheduler
+
+    from .stateful import install_stateful_compression_hooks
+
+    install_stateful_compression_hooks((Scheduler, BalanceScheduler))
 
 
 def _install_ascend_balance_scheduler_hook() -> None:

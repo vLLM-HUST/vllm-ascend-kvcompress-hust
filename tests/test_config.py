@@ -59,6 +59,7 @@ def test_triattention_config_accepts_documented_values() -> None:
             "score_aggregation": "max",
             "layer_aggregation": "mean",
             "score_chunk_size": 512,
+            "score_layer_stride": 4,
         }
     )
     assert config.stats_path == Path("/tmp/stats.pt")
@@ -71,6 +72,7 @@ def test_triattention_config_accepts_documented_values() -> None:
         ("kv_budget", 2000),
         ("recompute_window", 0),
         ("score_chunk_size", 129),
+        ("score_layer_stride", 0),
         ("protected_recent_window", -1),
         ("score_aggregation", "median"),
     ],

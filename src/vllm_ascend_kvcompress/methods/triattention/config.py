@@ -25,6 +25,7 @@ class TriAttentionConfig:
     score_aggregation: ScoreAggregation = "mean"
     layer_aggregation: LayerAggregation = "mean"
     score_chunk_size: int = 512
+    score_layer_stride: int = 4
 
     @property
     def compression_threshold_tokens(self) -> int:
@@ -42,6 +43,7 @@ class TriAttentionConfig:
             "score_aggregation",
             "layer_aggregation",
             "score_chunk_size",
+            "score_layer_stride",
         }
         unknown = sorted(set(method_config) - known_options)
         if unknown:
@@ -81,6 +83,9 @@ class TriAttentionConfig:
                 ),
             ),
             score_chunk_size=require_int(method_config, "score_chunk_size", 512),
+            score_layer_stride=require_int(
+                method_config, "score_layer_stride", 4
+            ),
         )
         config._validate()
         return config
@@ -104,4 +109,8 @@ class TriAttentionConfig:
         if self.protected_recent_window > self.kv_budget:
             raise ValueError(
                 "method option 'protected_recent_window' cannot exceed 'kv_budget'"
+            )
+        if self.score_layer_stride <= 0:
+            raise ValueError(
+                "method option 'score_layer_stride' must be positive"
             )

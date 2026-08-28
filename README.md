@@ -33,11 +33,11 @@ The tested reference snapshots are vLLM-HUST
 `1a06c55468966de8ef471ecb7612c199e15a153a` and vLLM-Ascend-HUST
 `ac2b94f1536090e2cd0d6c2f8bc8087e336193d5`.
 
-Schema v1 currently supports one Ascend NPU, eager execution, one plain
-full-attention KV group, block size 128, and separate contiguous BF16/FP16 K/V
-tensors. Multi-device execution, graph mode, hybrid/MLA caches, sliding-window
-attention, speculative decoding, KV transfer, sparse layouts, and quantized KV
-caches fail closed.
+Schema v1 currently supports one Ascend NPU, eager or ACL graph execution, one
+plain full-attention KV group, block size 128, and separate contiguous BF16/FP16
+K/V tensors. Multi-device execution, hybrid/MLA caches, sliding-window attention,
+speculative decoding, KV transfer, sparse layouts, and quantized KV caches fail
+closed.
 
 ## Installation
 
@@ -69,7 +69,6 @@ the flat JSON-scalar `method` option:
 
 ```bash
 vllm serve /path/to/model \
-  --enforce-eager \
   --no-async-scheduling \
   --no-enable-prefix-caching \
   --block-size 128 \
@@ -86,7 +85,8 @@ vllm serve /path/to/model \
       "protected_recent_window": 128,
       "score_aggregation": "mean",
       "layer_aggregation": "mean",
-      "score_chunk_size": 512
+      "score_chunk_size": 512,
+      "score_layer_stride": 4
     }
   }'
 ```
@@ -98,20 +98,29 @@ existing configurations but cannot select another method.
 
 `score_chunk_size=512` is a conservative default. Larger chunks reduce kernel
 launch overhead but consume more temporary device memory. The reference
-Qwen2.5-Coder-14B pressure run below used 8192 after validating that it fit on
-one 64-GiB Ascend 910B2; tune this value for each model and device.
+Qwen2.5-Coder-14B pressure run in the current benchmark report used 8192 after
+validating that it fit on one 64-GiB Ascend 910B2; tune this value for each
+model and device.
+`score_layer_stride=4` uniformly samples calibrated layers for global token
+selection by default while still compacting every KV layer. Set it to `1` for
+full-layer scoring at the cost of compression-transaction latency.
 
 ## Built-in Methods
 
 | Method | Strategy | Required artifact | Status |
 | --- | --- | --- | --- |
-| `triattention` | Query-aware post-RoPE token selection and KV compaction | Complete per-layer TriAttention statistics | Single-NPU eager validated |
+| `triattention` | Query-aware post-RoPE selection and stateful repeated KV compaction | Complete per-layer TriAttention statistics | Single-NPU eager/ACL graph |
 
 TriAttention accepts flat per-query-head or per-KV-head statistics and
 structured `layer_stats` tensors. The loader uses
 `torch.load(..., weights_only=True)` and never falls back to unsafe pickle
 loading. Scaled RoPE requires exact `inv_freq` and per-layer `freq_scale_sq`
 values.
+
+See [TriAttention calibration artifacts](docs/calibration-artifacts.md) for the
+purpose of each statistic, the current local artifacts, reproducible smoke and
+production generation commands, payload schemas, validation, and provenance
+requirements.
 
 ## Adding a Compression Method
 
@@ -124,40 +133,13 @@ commit acknowledgement, and physical decode positions.
 See [Compression method architecture](docs/methods.md) for the complete API,
 configuration contract, extension example, and required tests.
 
-## Reference A/B Results
+## Documentation
 
-The post-refactor A/B suite used one Ascend 910B2,
-Qwen2.5-Coder-14B-Instruct, BF16 KV, block size 128, eager mode, and a
-20.93-GiB preallocated KV pool. The only service-side A/B difference was the
-TriAttention configuration: 2048-token budget, 128-token recompute and recent
-windows, and `score_chunk_size=8192`.
-
-All four matched pairs completed with identical persisted input/output lengths
-and no failures: 30/30 requests in the baseline and 30/30 with TriAttention.
-Latency is shown in milliseconds; changes are TriAttention relative to the
-baseline.
-
-| Scenario | Input/output x requests | Total tok/s, off to on | P99 TTFT, off to on | Mean TPOT, off to on |
-| --- | ---: | ---: | ---: | ---: |
-| prefix-repetition-online | 2560/256 x 4 | 131.76 to 129.72 (-1.55%) | 590.92 to 747.60 (+26.52%) | 81.79 to 82.69 (+1.11%) |
-| random-online | 2560/32 x 2 | 796.29 to 769.50 (-3.36%) | 365.03 to 455.17 (+24.69%) | 80.72 to 81.55 (+1.03%) |
-| knorm-kv-compression-longctx | 8192/256 x 8 | 1246.91 to 1219.72 (-2.18%) | 2628.74 to 2808.23 (+6.83%) | 93.84 to 95.72 (+2.00%) |
-| kv-pressure-online | 8192/64 x 16 | 5060.13 to 5113.44 (+1.05%) | 20440.16 to 20057.73 (-1.87%) | 182.85 to 194.95 (+6.61%) |
-
-Every TriAttention request produced a compression commit and acknowledgement.
-The 2560-token prompts changed from 20 to 16 physical blocks; the 8192-token
-prompts changed from 64 to 16 and returned 48 blocks per request. Observed
-active KV-pool peaks changed from 29.6% to 12.9% in the long-context run and
-from 94.7% to 26.2% in the pressure run.
-
-The allocator reserves the KV pool at startup, so process-level HBM does not
-fall when blocks are reclaimed. Active KV-pool usage and returned blocks are
-the meaningful capacity signals. These are single-run engineering results,
-not a cross-platform guarantee; lossy quality must be evaluated separately.
-
-See [Benchmarking and result interpretation](docs/benchmarking.md) for exact
-baseline/TriAttention service startup commands, all four benchmark client
-commands, the reproduction contract, and reporting requirements.
+- [Current benchmark results](docs/resuts.md)
+- [Core Ascend adaptations from the TriAttention vLLM runtime](docs/ascend-adaptation-vs-triattention-vllm.md)
+- [TriAttention calibration artifacts](docs/calibration-artifacts.md)
+- [Benchmarking and result interpretation](docs/benchmarking.md)
+- [Compression method architecture](docs/methods.md)
 
 ## Validation
 

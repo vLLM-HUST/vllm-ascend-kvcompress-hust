@@ -14,7 +14,8 @@ and output length for both runs. The only intended difference is
 `--kv-cache-compression-config`.
 
 For the built-in method, report all method options, especially `kv_budget`,
-`recompute_window`, `protected_recent_window`, and `score_chunk_size`. The
+`recompute_window`, `protected_recent_window`, `score_chunk_size`, and
+`score_layer_stride`. The
 score chunk is a performance/memory tuning parameter: larger values reduce
 kernel-launch overhead and increase temporary device memory.
 
@@ -27,7 +28,7 @@ Recommended vLLM-HUST Benchmark scenarios are:
   boundary.
 
 Disable prefix caching and the independent Knorm owner when isolating this
-plugin. Use eager mode, block size 128, and the same `max_model_len` and
+plugin. Use the default ACL graph mode, block size 128, and the same `max_model_len` and
 `gpu_memory_utilization` in both runs.
 
 ## Reproduction Environment
@@ -41,8 +42,12 @@ export STATS=/path/to/triattention-stats.pt
 export RESULT_ROOT=/path/to/ab-results
 export ASCEND_RT_VISIBLE_DEVICES=5
 export VLLM_KNORM_ENABLED=0
-export VLLM_ASCEND_TORCH_PREFLIGHT=0
 ```
+
+Generate and validate `STATS` for the exact model revision before starting the
+A/B pair. See [TriAttention calibration artifacts](calibration-artifacts.md).
+Keep the artifact path and SHA-256 identical in every compression-enabled
+repeat.
 
 Check `npu-smi info` first. The selected physical device must show no process
 and its idle HBM baseline before either service is launched.
@@ -53,7 +58,6 @@ Start the baseline service without a compression configuration:
 
 ```bash
 vllm serve "$MODEL" \
-  --enforce-eager \
   --no-async-scheduling \
   --no-enable-prefix-caching \
   --block-size 128 \
@@ -66,7 +70,6 @@ release, and start the otherwise identical service with:
 
 ```bash
 vllm serve "$MODEL" \
-  --enforce-eager \
   --no-async-scheduling \
   --no-enable-prefix-caching \
   --block-size 128 \
@@ -83,7 +86,8 @@ vllm serve "$MODEL" \
 \"protected_recent_window\":128,\
 \"score_aggregation\":\"mean\",\
 \"layer_aggregation\":\"mean\",\
-\"score_chunk_size\":8192}}"
+\"score_chunk_size\":8192,\
+\"score_layer_stride\":4}}"
 ```
 
 Wait for `Application startup complete` and verify

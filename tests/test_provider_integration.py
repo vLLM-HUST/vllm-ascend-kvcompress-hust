@@ -68,6 +68,8 @@ def _provider_without_init() -> AscendKVCompressionProvider:
     provider._request_offsets_cpu = None
     provider._request_offsets_device = None
     provider._physical_positions = None
+    provider._offset_row_snapshot = ()
+    provider._has_active_rows = False
     return provider
 
 
@@ -208,9 +210,63 @@ def test_commit_ack_replaces_tables_and_decode_uses_physical_positions() -> None
         SimpleNamespace(total_num_scheduled_tokens=2),
         np.array([1, 1], dtype=np.int32),
     )
+    physical_positions = provider.physical_positions_for_slot_mapping(
+        provider.runner.positions
+    )
     torch.testing.assert_close(provider.runner.positions, torch.tensor([300, 20]))
-    torch.testing.assert_close(block_table.physical_positions, torch.tensor([128, 20]))
+    torch.testing.assert_close(physical_positions, torch.tensor([128, 20]))
+    assert block_table.physical_positions is None
     torch.testing.assert_close(provider.runner.seq_lens, torch.tensor([129, 21]))
     torch.testing.assert_close(
         provider.runner.optimistic_seq_lens_cpu, torch.tensor([129, 21])
+    )
+
+
+def test_repeated_compression_uses_current_physical_window() -> None:
+    provider = _provider_without_init()
+    provider.layer_caches = (
+        LayerCache("model.layers.0.self_attn", 0, torch.empty(0), torch.empty(0)),
+    )
+    request = SimpleNamespace(
+        num_computed_tokens=427,
+        num_prompt_tokens=300,
+        block_ids=([5, 9],),
+    )
+    provider.runner = SimpleNamespace(
+        device=torch.device("cpu"), requests={"r": request}
+    )
+    provider.vllm_config = SimpleNamespace(
+        cache_config=SimpleNamespace(enable_prefix_caching=False)
+    )
+    provider.active["r"] = ActiveCompression(300, 128)
+    scheduler_output = SimpleNamespace(
+        kv_cache_compression_transaction_ids={"r": 8},
+        num_scheduled_tokens={"r": 1},
+        kv_cache_compression_destination_block_ids=None,
+    )
+
+    plans = provider.compress_transactions(scheduler_output)
+
+    assert len(plans) == 1
+    assert plans[0].semantic_num_tokens == 428
+    assert provider.method.last_request is not None
+    assert provider.method.last_request.physical_num_tokens == 256
+    assert provider.method.last_request.semantic_num_tokens == 428
+
+
+def test_unchanged_decode_rows_do_not_refresh_device_offsets() -> None:
+    provider = _provider_without_init()
+    provider.active["r"] = ActiveCompression(300, 128)
+    provider.runner = SimpleNamespace(
+        input_batch=SimpleNamespace(num_reqs=1, req_ids=["r"])
+    )
+    provider._request_offsets_cpu = torch.tensor([172], dtype=torch.int64)
+    provider._request_offsets_device = torch.tensor([172], dtype=torch.int64)
+    provider._offset_row_snapshot = (172,)
+
+    provider._request_offsets_cpu[0] = 999
+    provider._sync_request_offset_rows()
+
+    torch.testing.assert_close(
+        provider._request_offsets_device, torch.tensor([172], dtype=torch.int64)
     )

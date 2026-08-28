@@ -45,10 +45,11 @@ class LayerCache:
 
 @dataclass(frozen=True)
 class CompressionRequest:
-    """Method-facing view of one final-prefill compression transaction."""
+    """Method-facing view of one stateful compression transaction."""
 
     request_id: str
     semantic_num_tokens: int
+    physical_num_tokens: int
     source_block_ids: tuple[tuple[int, ...], ...]
     destination_block_ids: tuple[tuple[int, ...], ...]
     source_block_ids_device: torch.Tensor
@@ -90,4 +91,4 @@ class KVCompressionMethod(ABC):
 
     @abstractmethod
     def compress(self, request: CompressionRequest) -> CompressionResult:
-        """Materialize one final-prefill transaction into destination blocks."""
+        """Materialize one compression transaction into destination blocks."""

@@ -68,3 +68,20 @@ def materialize_selected_tokens(
     destination_slots = token_slots(destination_block_ids, dense_indices, block_size)
     flat_k.index_copy_(0, destination_slots, gathered_k)
     flat_v.index_copy_(0, destination_slots, gathered_v)
+
+
+def materialize_token_slots(
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    source_slots: torch.Tensor,
+    destination_slots: torch.Tensor,
+    k_workspace: torch.Tensor,
+    v_workspace: torch.Tensor,
+) -> None:
+    """Move precomputed slots through persistent, overlap-safe workspaces."""
+    flat_k = k_cache.view(-1, k_cache.shape[2], k_cache.shape[3])
+    flat_v = v_cache.view(-1, v_cache.shape[2], v_cache.shape[3])
+    torch.index_select(flat_k, 0, source_slots, out=k_workspace)
+    torch.index_select(flat_v, 0, source_slots, out=v_workspace)
+    flat_k.index_copy_(0, destination_slots, k_workspace)
+    flat_v.index_copy_(0, destination_slots, v_workspace)

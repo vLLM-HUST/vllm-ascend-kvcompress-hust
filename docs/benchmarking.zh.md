@@ -12,7 +12,8 @@ KV 池大小、执行模式、提示集、到达模式、并发度、采样参�
 唯一差异是是否设置 `--kv-cache-compression-config`。
 
 测试内置方法时必须报告全部方法选项，尤其是 `kv_budget`、
-`recompute_window`、`protected_recent_window` 和 `score_chunk_size`。
+`recompute_window`、`protected_recent_window`、`score_chunk_size` 和
+`score_layer_stride`。
 score chunk 是性能/内存调优参数：增大该值可以减少 kernel 启动开销，但会
 增加临时设备内存。
 
@@ -24,7 +25,7 @@ score chunk 是性能/内存调优参数：增大该值可以减少 kernel 启�
 - `kv-pressure-online`：接近 KV 容量边界的同时到达负载。
 
 单独验证本插件时，应禁用 prefix caching 和独立的 Knorm owner。两组测试都
-使用 eager 模式、block size 128，以及相同的 `max_model_len` 和
+使用默认 ACL graph 模式、block size 128，以及相同的 `max_model_len` 和
 `gpu_memory_utilization`。
 
 ## 复现环境
@@ -38,8 +39,11 @@ export STATS=/path/to/triattention-stats.pt
 export RESULT_ROOT=/path/to/ab-results
 export ASCEND_RT_VISIBLE_DEVICES=5
 export VLLM_KNORM_ENABLED=0
-export VLLM_ASCEND_TORCH_PREFLIGHT=0
 ```
+
+启动 A/B pair 之前，必须为精确模型 revision 生成并校验 `STATS`，详见
+[TriAttention 校准产物](calibration-artifacts.zh.md)。所有压缩开启重复必须使用完全一致的
+产物路径与 SHA-256。
 
 启动任一服务前先检查 `npu-smi info`。选中的物理设备必须没有进程，并处于
 空闲 HBM 基线。
@@ -50,7 +54,6 @@ export VLLM_ASCEND_TORCH_PREFLIGHT=0
 
 ```bash
 vllm serve "$MODEL" \
-  --enforce-eager \
   --no-async-scheduling \
   --no-enable-prefix-caching \
   --block-size 128 \
@@ -63,7 +66,6 @@ vllm serve "$MODEL" \
 
 ```bash
 vllm serve "$MODEL" \
-  --enforce-eager \
   --no-async-scheduling \
   --no-enable-prefix-caching \
   --block-size 128 \
@@ -80,7 +82,8 @@ vllm serve "$MODEL" \
 \"protected_recent_window\":128,\
 \"score_aggregation\":\"mean\",\
 \"layer_aggregation\":\"mean\",\
-\"score_chunk_size\":8192}}"
+\"score_chunk_size\":8192,\
+\"score_layer_stride\":4}}"
 ```
 
 等待日志出现 `Application startup complete`，并在启动客户端前确认

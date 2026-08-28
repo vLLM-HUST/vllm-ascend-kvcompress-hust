@@ -28,6 +28,10 @@ The built-in TriAttention package illustrates the expected organization:
 | `methods/triattention/stats.py` | Calibration artifact loading and validation |
 | `methods/triattention/cache.py` | Paged-cache gather and materialization |
 
+The artifact generator, accepted payload schemas, field semantics, validation,
+and lifecycle are documented in
+[TriAttention calibration artifacts](calibration-artifacts.md).
+
 The outer vLLM provider is always `ascend_kvcompress`. The flat
 `provider_config.method` scalar selects a registered method. Remaining scalar
 options are passed unchanged to that method's factory.
@@ -42,7 +46,7 @@ Implement `KVCompressionMethod` from `methods/base.py`:
 - `compatibility_reasons(worker)`: side-effect-free method-specific checks.
 - `bind_model_runner(runner, layer_caches)`: initialize state after common cache
   layout validation and allocation.
-- `compress(request)`: materialize one final-prefill transaction and return its
+- `compress(request)`: materialize one initial or repeated transaction and return its
   physical length, plus optional per-layer lengths.
 
 The common provider validates method results before creating a scheduler plan.
