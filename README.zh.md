@@ -1,165 +1,206 @@
-# vLLM Ascend KV 缓存压缩
+# vLLM Ascend KV Cache Compression
 
 [English](README.md) | 简体中文
 
-面向 HUST 维护的 vLLM 昇腾技术栈的可扩展 KV 缓存压缩插件。它将压缩方法接入
-vLLM-HUST 的事务式 KV 缓存生命周期，无需修改 vLLM-HUST 或
-vLLM-Ascend-HUST 源码树。
+这是面向已与上游对齐的 vLLM-HUST、vLLM-Ascend-HUST 的独立
+TriAttention KV-cache 压缩插件。0.3 版本不再依赖已删除的 fork 专有压缩
+生命周期，也不会修改两个宿主仓库。
 
-当前版本内置以正确性为优先的 TriAttention 方法，并提供用于接入其他压缩算法
-的公开方法接口。
+> 当前状态：实验性。声明源码快照上的打包与 Extension Manager 生命周期、
+> Ascend 910B2 kernel smoke、Manager 包装的服务启动和重复压缩均已通过。
+> 默认 2048-token budget 未通过已记录的长上下文质量门槛；精确依赖栈以及完整
+> 性能/HBM 矩阵仍是发布门槛，详见[验收记录](docs/validation.zh.md)。
 
-## 主要特性
+## 归属与维护
 
-- 与具体算法无关的昇腾 provider，通过配置选择压缩方法。
-- 内置 `triattention` token 选择方法。
-- 提供公开 Python registry 和第三方 entry-point group。
-- 在正式分配 KV 缓存前执行 fail-closed 兼容性检查。
-- 通过 vLLM-HUST 原生生命周期实现 scheduler 原子提交、block 回收以及语义/
-  物理位置分离。
-- 提供英文和简体中文用户文档。
+- 学校：华中科技大学（HUST）
+- 课题组：CGCL
+- 指导教师：万瑶教授
+- 主要负责人：刘思辰（[@Seas0](https://github.com/Seas0)）
+- 当前维护者：张家万（[@Jiawan23](https://github.com/Jiawan23)）、
+  韦若皓（[@kotoriqaq0](https://github.com/kotoriqaq0)）、刘思辰
+  （[@Seas0](https://github.com/Seas0)）
 
-## 兼容性
+团队同意持续维护 vLLM-HUST、vLLM-Ascend-HUST 的版本兼容性，并同意接入
+vLLM-HUST Extension Manager。本仓库是由 CGCL 维护的独立插件，不是直接
+内置于上游对齐宿主仓库中的代码。
 
-当前版本面向以下源码版本线：
+## 算法来源与许可证
 
-| 组件 | 兼容版本 |
-| --- | --- |
-| vLLM-HUST | `>=0.23.1,<0.24` |
-| vLLM-Ascend-HUST | `>=0.19.1,<0.20` |
-| Python | `>=3.10,<3.15` |
+评分方法改编自 [TriAttention](https://github.com/WeianMao/triattention) 的
+[`a4bc3c8f709db60f016ef42c3feb290fd0c00c1b`](https://github.com/WeianMao/triattention/tree/a4bc3c8f709db60f016ef42c3feb290fd0c00c1b)
+快照，对应论文 [*TriAttention: Efficient Long Reasoning with Trigonometric
+KV Compression*](https://arxiv.org/abs/2604.04921)。本实现针对 Ascend 分页
+K/V 存储重新实现，并未复制上游 CUDA runtime kernel。详见 [NOTICE](NOTICE)
+和[适配说明](docs/ascend-adaptation-vs-triattention-vllm.zh.md)。
 
-经过测试的参考快照为 vLLM-HUST
-`1a06c55468966de8ef471ecb7612c199e15a153a` 和 vLLM-Ascend-HUST
-`ac2b94f1536090e2cd0d6c2f8bc8087e336193d5`。
+仓库代码和已提交文档采用 Apache-2.0。已提交的校准统计是模型派生的聚合
+产物，生成来源信息并不完整；不能仅凭本仓库许可证推定原始模型或数据集可
+再分发。原始 benchmark 输入、模型权重、服务日志和未公开数据集不属于可
+分发安装包。范围说明见[归属与许可](docs/ownership-and-licensing.zh.md)。
 
-Schema v1 当前支持单张昇腾 NPU、eager/ACL graph 执行、一个普通全注意力
-KV group、block size 128，以及独立连续的 BF16/FP16 K/V 张量。
-多设备、混合/MLA 缓存、滑动窗口注意力、推测解码、KV transfer、稀疏布局
-和量化 KV 缓存都会按 fail-closed 原则拒绝。
+## 兼容范围
 
-## 安装
+| 组件 | 支持版本线 | 已核对快照 |
+| --- | --- | --- |
+| vLLM-HUST / `vllm` | `>=0.17.2rc1.dev0,<0.18` | `5b343ed52`（`0.17.2rc1.dev5941+g5b343ed52.empty`） |
+| vLLM-Ascend-HUST / `vllm-ascend` | `>=0.25.1rc1,<0.26` | `4e57439`（`0.25.1rc1+hust.20260903.4`） |
+| Extension Manager | `>=0.2.0.dev0,<0.3` | `9fb467e` |
+| Python | `>=3.10,<3.15` | 3.11.16 |
 
-安装到已经包含匹配 editable vLLM-HUST 和 vLLM-Ascend-HUST 包的环境：
+当前仅支持单张 Ascend NPU、标准 v1 Scheduler（包括当前 Ascend 内置但未启用
+balance 功能的 `BalanceScheduler` 包装类）和 `NPUModelRunner`、单个普通
+full-attention KV group、block size 128，以及 BF16/FP16 稠密 K/V。不支持的
+组合会在启动阶段失败并给出原因。
+
+## 安装与管理
+
+先安装当前宿主栈，再安装插件和 Extension Manager。源码安装方式：
 
 ```bash
-uv pip install -e /path/to/vllm-ascend-kvcompress-hust
+python -m pip install ./extension-manager
+python -m pip install ./vllm-ascend-kvcompress-hust
 ```
 
-如果显式设置了 `VLLM_PLUGINS`，请加入规范插件名称：
+发布到 PyPI 后，对应的插件安装命令为：
 
 ```bash
-export VLLM_PLUGINS=ascend_kvcompress
+python -m pip install 'vllm-ascend-kvcompress-hust[manager]==0.3.0'
 ```
 
-当前 vLLM-HUST 在禁用 prefix caching 时会默认启用独立的 Knorm 压缩器。
-必须将其关闭，确保只有一个组件负责修改 KV block table：
+复制 [examples/triattention.json](examples/triattention.json)，把 `stats_path`
+替换为与目标模型版本严格匹配的统计文件绝对路径，然后配置并启用：
 
 ```bash
-export VLLM_KNORM_ENABLED=0
+vllm-hust-ext extension validate org.vllm-hust.ascend-kvcompress
+vllm-hust-ext extension configure org.vllm-hust.ascend-kvcompress \
+  --file /absolute/path/triattention.json
+vllm-hust-ext extension enable org.vllm-hust.ascend-kvcompress
+vllm-hust-ext extension status org.vllm-hust.ascend-kvcompress
 ```
 
-## 快速开始：TriAttention
-
-不同算法共用稳定的 provider 名，通过扁平 JSON 标量 `method` 选项选择具体
-实现：
+通过管理器启动服务。如果环境已经用 `VLLM_PLUGINS` 作为白名单，必须同时
+包含 Ascend 平台和本插件：
 
 ```bash
-vllm serve /path/to/model \
-  --no-async-scheduling \
-  --no-enable-prefix-caching \
+export VLLM_PLUGINS=ascend,ascend_kvcompress
+vllm-hust-ext run -- vllm serve /path/to/model \
   --block-size 128 \
-  --max-model-len 12288 \
-  --gpu-memory-utilization 0.8 \
-  --kv-cache-compression-config '{
-    "schema_version": 1,
-    "provider": "ascend_kvcompress",
-    "provider_config": {
-      "method": "triattention",
-      "stats_path": "/path/to/triattention_stats.pt",
-      "kv_budget": 2048,
-      "recompute_window": 128,
-      "protected_recent_window": 128,
-      "score_aggregation": "mean",
-      "layer_aggregation": "mean",
-      "score_chunk_size": 512,
-      "score_layer_stride": 4
-    }
-  }'
+  --no-enable-prefix-caching \
+  --no-async-scheduling
 ```
 
-提示达到 `kv_budget + recompute_window` 之后开始压缩。budget、recompute
-window 和 score chunk 必须是 block size 128 的正整数倍。旧 provider 名
-`triattention_ascend` 仍可用于现有配置，但不能选择其他方法。
+若未设置 `VLLM_PLUGINS`，vLLM 会发现所有已安装的 general plugin；但在
+Extension Manager 或直接启用变量没有激活本插件时，注册函数仍保持无操作。
 
-`score_chunk_size=512` 是偏保守的默认值。增大分块可减少 kernel 启动开销，
-但会消耗更多临时设备内存。当前基准报告中的 Qwen2.5-Coder-14B
-压力测试在确认单张 64 GiB 昇腾 910B2 可容纳后使用了 8192；该值应针
-对具体模型和设备调优。
-`score_layer_stride=4` 默认均匀抽取校准层参与全局 token 选择，但所有 KV 层
-仍会完成压缩。设置为 `1` 可恢复全层打分，但会增加压缩事务延迟。
-
-## 内置方法
-
-| 方法 | 策略 | 必需产物 | 状态 |
-| --- | --- | --- | --- |
-| `triattention` | 基于 query 感知的 post-RoPE token 选择和有状态多轮 KV 压缩 | 完整逐层 TriAttention 统计 | 单 NPU eager/ACL graph |
-
-TriAttention 支持扁平的逐 query-head 或逐 KV-head 统计，也支持结构化
-`layer_stats` 张量。加载器使用 `torch.load(..., weights_only=True)`，绝不
-回退到不安全的 pickle 加载。缩放 RoPE 需要精确的 `inv_freq` 和逐层
-`freq_scale_sq`。
-
-各统计字段的功能、当前本地产物、可复现的 smoke/生产生成命令、payload schema、
-校验与溯源要求见 [TriAttention 校准产物](docs/calibration-artifacts.zh.md)。
-
-## 添加压缩方法
-
-新方法需要实现 `KVCompressionMethod` 协议，并在进程内注册 factory，或通过
-`vllm_ascend_kvcompress.methods` Python entry-point group 注册。公共 provider
-继续负责 vLLM hook、缓存布局检查、调度事务、提交确认和物理解码位置。
-
-完整 API、配置协议、扩展示例和必需测试见
-[压缩方法架构](docs/methods.zh.md)。
-
-## 文档
-
-- [当前基准测试结果](docs/resuts.zh.md)
-- [相较 TriAttention vLLM runtime 的核心 Ascend 适配](docs/ascend-adaptation-vs-triattention-vllm.zh.md)
-- [TriAttention 校准产物](docs/calibration-artifacts.zh.md)
-- [基准测试与结果解读](docs/benchmarking.zh.md)
-- [压缩方法架构](docs/methods.zh.md)
-
-## 验证
+安全禁用流程是先停止宿主进程，再执行下列命令并重启：
 
 ```bash
-python -m pytest -q
-ruff check .
-ruff format --check .
-python -m compileall -q src tests
+vllm-hust-ext extension disable org.vllm-hust.ascend-kvcompress
 ```
 
-运行时变更还必须在其他条件完全一致的长上下文负载上执行压缩关闭/开启对比。
-记录提示和输出长度、并发度、TTFT、TPOT/ITL、吞吐量、成功请求数、释放的 KV
-block 和 NPU 内存。始终选择空闲且已分配的 NPU，并在测试结束后确认服务进程
-退出。
+卸载时先停止所有宿主进程，再执行：
 
-## 文档维护规范
+```bash
+vllm-hust-ext extension disable org.vllm-hust.ascend-kvcompress
+vllm-hust-ext extension forget org.vllm-hust.ascend-kvcompress
+python -m pip uninstall vllm-ascend-kvcompress-hust
+```
 
-- `README.md`、`README.zh.md`、`CONTRIBUTING.md`、
-  `CONTRIBUTING.zh.md` 和 `docs/` 下的公开文件只描述稳定、可发布的行为。
-- 本地实验、中间 benchmark 日志、机器路径和模型专用验证报告放入
-  `docs/dev/`。
-- 生成的校准文件和本地产物放入 `artifacts/`。
-- `docs/dev/` 被有意加入 git ignore。
-- 英文公开文档为规范版本；同一修改必须同步更新对应 `.zh.md` 文档。
+这些操作只改变安装包和 Extension Manager 状态，不修改 vLLM-HUST 或
+vLLM-Ascend-HUST。
 
-## HUST 相关项目
+### 不通过 Extension Manager 的直接启用
 
-- [vLLM-HUST](https://github.com/vLLM-HUST/vllm-hust)
-- [vLLM-Ascend-HUST](https://github.com/vLLM-HUST/vllm-ascend-hust)
-- [vLLM-HUST Benchmark](https://github.com/vLLM-HUST/vllm-hust-benchmark)
+仅建议开发调试时使用；配置变量既可接收 JSON 文件路径，也可接收内联 JSON：
 
-## 许可证
+```bash
+export VLLM_PLUGINS=ascend,ascend_kvcompress
+export VLLM_ASCEND_KVCOMPRESS_ENABLED=1
+export VLLM_ASCEND_KVCOMPRESS_CONFIG=/absolute/path/triattention.json
+vllm serve /path/to/model --block-size 128 --no-enable-prefix-caching
+```
 
-Apache License 2.0。详见 [LICENSE](LICENSE) 和 [NOTICE](NOTICE)。
+取消设置两个 `VLLM_ASCEND_KVCOMPRESS_*` 变量并重启，即可关闭直接启用。
+
+## 当前接入方式
+
+安装包使用公开的 `vllm.general_plugins` entry point 和静态 Extension Manager
+manifest。显式启用后，适配层会检查并挂接当前宿主中的以下符号：
+
+- `vllm.v1.core.sched.scheduler.Scheduler`
+- `vllm.v1.core.kv_cache_manager.KVCacheManager.allocate_slots`
+- `vllm.v1.worker.block_table.BlockTable.compute_slot_mapping`
+- `vllm_ascend.worker.model_runner_v1.NPUModelRunner` 的
+  `initialize_kv_cache`、`_update_states`、`_build_attention_metadata`、
+  `sample_tokens`
+
+NPU runner 挂钩会在 worker 模块真正加载时才注入，API 和管理器进程不会因此
+提前导入重型 NPU runner。这些宿主符号仍是未冻结内部接口，所以插件刻意使用
+窄版本范围；每次宿主版本线更新都必须先完成验收再扩大范围。
+
+压缩在同步模型步骤之后执行。调度器只在下一次调度屏障释放旧尾部 block；语义
+RoPE position 保持不变，物理 slot 和 attention length 使用请求级偏移。由于
+压缩后的 block 不再代表可哈希的语义前缀，prefix cache 必须关闭。
+
+## 长上下文优化
+
+0.3 版本保持 block 对齐的固定物理预算，并加入：
+
+- 直接读取 Ascend 分页 K cache 评分，不先物化所有 key；
+- 复用全长分数、K/V copy、聚合和 dense index 工作区；
+- NPU 上融合归一化、query-head 最大值和跨层聚合；
+- 把压缩轮次和请求长度保持为 JIT 动态参数，避免每种长度重新编译评分/聚合；
+- 专用 kernel 和通用路径复用同一份 score workspace；
+- 只抽样部分 layer 评分，但对每层 K/V 执行物化；
+- 设备驻留的语义/物理偏移，以及单次 slot mapping。
+
+这些改动减少临时分配、编译和 kernel launch 压力。在 Ascend 910B2 kernel
+微基准中，分页 copy、直接评分和融合聚合路径相对通用 reference 分别达到
+1.70x、2.47x 和 1.04x。将轮次/长度改为动态参数后，已观察到的每种长度
+5--6 秒重复编译被消除：一次冷编译后，2,176 与 6,311 token 事务交替执行均为
+22--26 ms。6,311-token prompt 加 300-token 输出的服务测试中，优化后插件平均
+25.71 秒，优化前为 35.97 秒，但仍比配对 baseline 慢 2.0%；四路并发总吞吐为
+897.6 tok/s，baseline 为 923.1 tok/s（-2.8%），日志 KV-cache 占用约 20%，
+baseline 约 60%。这些是有限验收数据，不是普遍吞吐提升声明，详见
+[验收记录](docs/validation.zh.md)。旧生命周期结果仍只保留在
+[results](docs/resuts.zh.md)，不能作为 0.3 验收结果。
+
+## 冲突矩阵
+
+| 功能 | 0.3 状态 | 行为 |
+| --- | --- | --- |
+| Prefix cache | 冲突 | 启动拒绝，必须关闭 |
+| Speculative decoding | 冲突 | 启动拒绝 |
+| KV transfer / P-D 分离 | 冲突 | 启动拒绝 |
+| 量化 KV | 冲突 | 启动拒绝，仅支持 BF16/FP16 稠密 K/V |
+| Hybrid、MLA、sliding/local attention | 冲突 | 启动拒绝 |
+| Async scheduling | 冲突 | 启动拒绝 |
+| TP、PP、DP、DCP、PCP 大于 1 | 冲突 | 启动拒绝 |
+| BidKV 或其它 scheduler class | 冲突 | 必须使用上游 v1 `Scheduler` 或当前未启用 balance 功能的 Ascend `BalanceScheduler` 包装类；启用 balance 时拒绝启动 |
+| 原 Prefix Router、KV Tiering、KNorm、PyramidKV Ascend、SliceGPT 代码 | 未接入 | 当前宿主已不存在，本插件不导入也不作任何假设 |
+| 其它 `vllm.general_plugins` | 未验证 | 使用显式白名单并逐项验证 |
+
+## 配置与校准
+
+示例配置选择 2048-token 物理预算、128-token 重算窗口，并每四层选一层评分。
+`kv_budget`、`recompute_window` 和 `score_chunk_size` 必须是 128 的正整数倍。
+部署前必须使用模型匹配统计，并阅读[校准产物指南](docs/calibration-artifacts.zh.md)。
+
+## 验收与开发
+
+- [当前验收记录](docs/validation.zh.md)
+- [Benchmark 规范](docs/benchmarking.zh.md)
+- [打包与发布指南](docs/packaging-and-release.zh.md)
+- [方法扩展接口](docs/methods.zh.md)
+- [校准产物](docs/calibration-artifacts.zh.md)
+
+CPU 和打包检查：
+
+```bash
+VLLM_PLUGINS='' TORCH_DEVICE_BACKEND_AUTOLOAD=0 python -m pytest -q
+python -m ruff check src tests
+```
+
+NPU release candidate 还必须在声明的精确宿主快照上通过 kernel 数值 smoke、
+长上下文质量、baseline/压缩配对吞吐与时延，以及 block/HBM 验收。

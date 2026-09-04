@@ -4,7 +4,32 @@
 from __future__ import annotations
 
 import torch
-from vllm.triton_utils import tl, triton
+
+try:
+    import triton
+    import triton.language as tl
+except (ImportError, ModuleNotFoundError):
+    # Static manifest discovery and CPU-only validation must not import the
+    # accelerator toolchain. NPU calls below still fail closed.
+    class _UnavailableTriton:
+        @staticmethod
+        def jit(function=None, **kwargs):
+            del kwargs
+
+            def decorate(candidate):
+                return candidate
+
+            return decorate(function) if function is not None else decorate
+
+    class _UnavailableLanguage:
+        constexpr = object()
+
+    triton = _UnavailableTriton()  # type: ignore[assignment]
+    tl = _UnavailableLanguage()  # type: ignore[assignment]
+
+
+def _triton_available() -> bool:
+    return hasattr(triton, "cdiv") and hasattr(triton, "next_power_of_2")
 
 
 def shift_positions(
@@ -22,7 +47,7 @@ def shift_positions(
     return output
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["round_start", "num_tokens"])
 def _score_paged_keys_mean_kernel(
     k_cache_ptr,
     source_block_ids_ptr,
@@ -75,9 +100,9 @@ def _score_paged_keys_mean_kernel(
         mask=frequency_mask,
         other=0.0,
     ).to(tl.float32)
-    omega = tl.load(
-        omega_ptr + frequency_offsets, mask=frequency_mask, other=0.0
-    ).to(tl.float32)
+    omega = tl.load(omega_ptr + frequency_offsets, mask=frequency_mask, other=0.0).to(
+        tl.float32
+    )
     offset_cos = tl.load(
         offset_cos_mean_ptr + frequency_offsets,
         mask=frequency_mask,
@@ -127,9 +152,7 @@ def _score_paged_keys_mean_kernel(
         axis=1,
     )
     key_abs = tl.sqrt(key_real * key_real + key_imag * key_imag)
-    extra = tl.sum(
-        key_abs * extra_coefficient[None, :] * scale[None, :], axis=1
-    )
+    extra = tl.sum(key_abs * extra_coefficient[None, :] * scale[None, :], axis=1)
     tl.store(
         output_ptr + query_head * output_head_stride + token_offsets,
         base_score + extra,
@@ -156,6 +179,8 @@ def score_paged_keys_mean(
     """Score paged post-RoPE keys without first gathering them."""
     if k_cache.device.type != "npu":
         return False
+    if not _triton_available():
+        raise RuntimeError("triton-ascend is unavailable or failed to import")
     kv_heads, queries_per_kv, frequency_count = q_real.shape
     block_frequency = triton.next_power_of_2(frequency_count)
     _score_paged_keys_mean_kernel[
@@ -183,5 +208,78 @@ def score_paged_keys_mean(
         ROPE_STYLE=0 if rope_style == "interleaved" else 1,
         BLOCK_N=16,
         BLOCK_F=block_frequency,
+    )
+    return True
+
+
+@triton.jit(do_not_specialize=["num_tokens"])
+def _aggregate_normalized_scores_kernel(
+    scores_ptr,
+    mean_ptr,
+    variance_ptr,
+    aggregate_ptr,
+    num_tokens,
+    score_head_stride,
+    num_heads: tl.constexpr,
+    MODE: tl.constexpr,
+    FIRST_LAYER: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_H: tl.constexpr,
+):
+    token_offsets = tl.program_id(0) * BLOCK_N + tl.arange(0, BLOCK_N)
+    head_offsets = tl.arange(0, BLOCK_H)
+    token_mask = token_offsets < num_tokens
+    head_mask = head_offsets < num_heads
+    scores = tl.load(
+        scores_ptr + head_offsets[None, :] * score_head_stride + token_offsets[:, None],
+        mask=token_mask[:, None] & head_mask[None, :],
+        other=float("-inf"),
+    ).to(tl.float32)
+    mean = tl.load(mean_ptr + head_offsets, mask=head_mask, other=0.0).to(tl.float32)
+    variance = tl.load(variance_ptr + head_offsets, mask=head_mask, other=0.0).to(
+        tl.float32
+    )
+    normalized = (scores - mean[None, :]) * tl.rsqrt(variance[None, :] + 1e-6)
+    layer_score = tl.max(normalized, axis=1)
+    if FIRST_LAYER:
+        result = layer_score
+    else:
+        previous = tl.load(aggregate_ptr + token_offsets, mask=token_mask, other=0.0)
+        if MODE == 0:
+            result = previous + layer_score
+        else:
+            result = tl.maximum(previous, layer_score)
+    tl.store(aggregate_ptr + token_offsets, result, mask=token_mask)
+
+
+def aggregate_normalized_scores(
+    scores: torch.Tensor,
+    mean: torch.Tensor,
+    variance: torch.Tensor,
+    aggregate: torch.Tensor,
+    num_tokens: int,
+    *,
+    layer_aggregation: str,
+    first_layer: bool,
+) -> bool:
+    """Fuse normalization, query-head max, and cross-layer accumulation."""
+    if scores.device.type != "npu":
+        return False
+    if not _triton_available():
+        raise RuntimeError("triton-ascend is unavailable or failed to import")
+    num_heads = mean.numel()
+    block_heads = triton.next_power_of_2(num_heads)
+    _aggregate_normalized_scores_kernel[(triton.cdiv(num_tokens, 128),)](
+        scores,
+        mean,
+        variance,
+        aggregate,
+        num_tokens,
+        scores.stride(-2),
+        num_heads=num_heads,
+        MODE=0 if layer_aggregation == "mean" else 1,
+        FIRST_LAYER=first_layer,
+        BLOCK_N=128,
+        BLOCK_H=block_heads,
     )
     return True

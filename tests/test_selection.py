@@ -33,9 +33,7 @@ def test_selection_reuses_first_pass_score_chunks(monkeypatch) -> None:
         protected_recent_window=0,
         score_chunk_size=128,
     )
-    stats = SimpleNamespace(
-        q_mean_real=torch.zeros((1, 1, 1)), omega=torch.ones(1)
-    )
+    stats = SimpleNamespace(q_mean_real=torch.zeros((1, 1, 1)), omega=torch.ones(1))
     method.layer_caches = (
         TriAttentionLayerCache(
             name="layer.0",
@@ -45,6 +43,8 @@ def test_selection_reuses_first_pass_score_chunks(monkeypatch) -> None:
         ),
     )
     method.offsets = torch.tensor([1.0])
+    method.score_workspace = torch.empty((1, 1, 256), dtype=torch.float32)
+    method.aggregate_workspace = torch.empty(256, dtype=torch.float32)
     score_calls = 0
 
     def fake_gather(*args, count: int, **kwargs) -> torch.Tensor:
@@ -76,9 +76,7 @@ def test_selection_scores_uniform_layer_sample(monkeypatch) -> None:
         score_chunk_size=128,
         score_layer_stride=2,
     )
-    stats = SimpleNamespace(
-        q_mean_real=torch.zeros((1, 1, 1)), omega=torch.ones(1)
-    )
+    stats = SimpleNamespace(q_mean_real=torch.zeros((1, 1, 1)), omega=torch.ones(1))
     method.layer_caches = tuple(
         TriAttentionLayerCache(
             name=f"layer.{index}",
@@ -89,6 +87,8 @@ def test_selection_scores_uniform_layer_sample(monkeypatch) -> None:
         for index in range(5)
     )
     method.offsets = torch.tensor([1.0])
+    method.score_workspace = torch.empty((1, 1, 256), dtype=torch.float32)
+    method.aggregate_workspace = torch.empty(256, dtype=torch.float32)
     scored_layers = 0
 
     def fake_gather(*args, count: int, **kwargs) -> torch.Tensor:
@@ -119,9 +119,7 @@ def test_selection_does_not_add_unsampled_layers(monkeypatch) -> None:
         score_chunk_size=128,
         score_layer_stride=2,
     )
-    stats = SimpleNamespace(
-        q_mean_real=torch.zeros((1, 1, 1)), omega=torch.ones(1)
-    )
+    stats = SimpleNamespace(q_mean_real=torch.zeros((1, 1, 1)), omega=torch.ones(1))
     method.layer_caches = tuple(
         TriAttentionLayerCache(
             name=f"layer.{index}",
@@ -132,6 +130,8 @@ def test_selection_does_not_add_unsampled_layers(monkeypatch) -> None:
         for index in range(6)
     )
     method.offsets = torch.tensor([1.0])
+    method.score_workspace = torch.empty((1, 1, 256), dtype=torch.float32)
+    method.aggregate_workspace = torch.empty(256, dtype=torch.float32)
     scored_layers = 0
 
     def fake_gather(*args, count: int, **kwargs) -> torch.Tensor:

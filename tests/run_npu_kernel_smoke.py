@@ -12,6 +12,7 @@ from vllm_ascend_kvcompress.methods.triattention.cache import (
     token_slots,
 )
 from vllm_ascend_kvcompress.methods.triattention.kernels import (
+    aggregate_normalized_scores,
     score_paged_keys_mean,
     shift_positions,
 )
@@ -77,9 +78,11 @@ def main() -> None:
     torch.testing.assert_close(k_cache[2].cpu(), expected_k.cpu())
     torch.testing.assert_close(v_cache[2].cpu(), expected_v.cpu())
 
-    score_cache = torch.linspace(
-        -1.0, 1.0, 3 * block_size * 2 * 8, dtype=torch.float32
-    ).view(3, block_size, 2, 8).to(dtype=torch.bfloat16, device=device)
+    score_cache = (
+        torch.linspace(-1.0, 1.0, 3 * block_size * 2 * 8, dtype=torch.float32)
+        .view(3, block_size, 2, 8)
+        .to(dtype=torch.bfloat16, device=device)
+    )
     score_source = torch.tensor([2, 0], device=device, dtype=torch.int64)
     q_real = torch.linspace(0.1, 0.8, 16, device=device).view(2, 2, 4)
     q_imag = torch.linspace(-0.4, 0.3, 16, device=device).view(2, 2, 4)
@@ -87,9 +90,7 @@ def main() -> None:
     frequency_scale = torch.linspace(0.8, 1.2, 16, device=device).view(2, 2, 4)
     omega = torch.tensor([1.0, 0.1, 0.01, 0.001], device=device)
     future_offsets = torch.tensor([1.0, 2.0, 4.0], device=device)
-    extra_coefficient = q_abs - torch.sqrt(
-        q_real.square() + q_imag.square() + 1e-8
-    )
+    extra_coefficient = q_abs - torch.sqrt(q_real.square() + q_imag.square() + 1e-8)
     output = torch.empty((2, 2, 256), dtype=torch.float32, device=device)
     assert score_paged_keys_mean(
         score_cache,
@@ -132,6 +133,27 @@ def main() -> None:
     torch.npu.synchronize()
     torch.testing.assert_close(
         output.cpu(), expected_scores.cpu(), rtol=2e-3, atol=2e-3
+    )
+
+    head_mean = output.mean(dim=-1)
+    head_variance = output.var(dim=-1, correction=0)
+    aggregate = torch.empty(256, dtype=torch.float32, device=device)
+    assert aggregate_normalized_scores(
+        output,
+        head_mean,
+        head_variance,
+        aggregate,
+        256,
+        layer_aggregation="mean",
+        first_layer=True,
+    )
+    expected_aggregate = (
+        (output - head_mean.unsqueeze(-1))
+        * torch.rsqrt(head_variance.unsqueeze(-1) + 1e-6)
+    ).amax(dim=(0, 1))
+    torch.npu.synchronize()
+    torch.testing.assert_close(
+        aggregate.cpu(), expected_aggregate.cpu(), rtol=2e-3, atol=2e-3
     )
     print("Ascend kernel smoke: PASS")
 

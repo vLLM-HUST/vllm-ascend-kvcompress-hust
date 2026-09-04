@@ -1,13 +1,15 @@
-# 当前基准测试结果
+# 0.2 历史基准测试结果
 
 [English](resuts.md) | 简体中文
 
-本文是当前仓库版本唯一的公开基准测试结果摘要。README 不再记录 A/B
-结果表；复现命令和报告规则独立维护在[基准测试指南](benchmarking.zh.md)中。
+> **仅作历史证据，不属于 0.3 版本验收。** 这些测量使用已删除的 fork 专用
+> 生命周期和旧宿主快照，不能被表述为当前独立插件的性能、质量、正确性或 HBM
+> 结果。当前状态见[验收记录](validation.zh.md)，新测量必须遵循
+> [0.3 验收规程](benchmarking.zh.md)。
 
 ## 状态
 
-当前实现已在单张 Ascend 910B2 的 ACL graph 模式下通过功能、容量和在线
+原 0.2 实现曾在单张 Ascend 910B2 的 ACL graph 模式下通过功能、容量和在线
 服务验证。所有 TriAttention 测试均确实执行了压缩，全部请求完成，被测
 8192-token 提示由 64 个物理 block 压缩到 16 个。
 
@@ -34,7 +36,7 @@
 | KV 布局 | 独立 BF16/FP16 K/V，block size 128 |
 | 最大模型长度 | 12288 |
 | Async scheduling / prefix caching | 关闭 / 关闭 |
-| 独立 Knorm 压缩器 | 关闭 |
+| 旧宿主独立 Knorm 压缩器 | 关闭 |
 | TriAttention budget | 2048 token |
 | Recompute / protected recent window | 128 / 128 token |
 | Score layer stride | 4 |

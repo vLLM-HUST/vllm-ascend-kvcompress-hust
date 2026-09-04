@@ -2,116 +2,97 @@
 
 English | [简体中文](methods.zh.md)
 
-## Layers
+## Runtime layers
 
-The plugin has three explicit layers:
+Version 0.3 is a self-contained plugin and does not use the removed
+vLLM-HUST compression lifecycle:
 
-1. `plugin.py` installs idempotent vLLM-Ascend hooks.
-2. `provider.py` owns the common Ascend cache contract and vLLM-HUST
-   transaction lifecycle.
-3. Each `methods/<name>/` package owns one algorithm's configuration,
-   compatibility, state, scoring, and KV materialization.
+1. `plugin.py` is the opt-in `vllm.general_plugins` entry point. It patches
+   scheduler-side symbols immediately and installs the Ascend worker hook
+   lazily, so manager and API-only processes do not import the NPU runner.
+2. `stateful.py` owns scheduler/KV-manager state. It commits a completed
+   compression at the next synchronous scheduling barrier and frees the old
+   block-table tail.
+3. `provider.py` validates current host objects, mirrors transactions in the
+   worker, translates semantic positions to physical slots, and delegates
+   selection/materialization to a method.
+4. `methods/<name>/` owns an algorithm's options, compatibility checks,
+   scoring, calibration, and KV materialization.
 
-The common package root must not contain built-in-method scoring, calibration,
-or cache-manipulation modules. The method registry depends only on the stable
-contracts in `methods/base.py`, so adding or changing an algorithm does not
-expand the common provider's dependency surface.
+The current adapter deliberately depends on the internal host symbols listed
+in the main README. Those interfaces are not frozen, so support must remain on
+the tested host version line and fail closed after incompatible changes.
 
-The built-in TriAttention package illustrates the expected organization:
+## Configuration contract
 
-| Path | Responsibility |
-| --- | --- |
-| `methods/triattention/__init__.py` | Public method exports and factory |
-| `methods/triattention/config.py` | Method-owned option parsing and validation |
-| `methods/triattention/method.py` | `KVCompressionMethod` implementation |
-| `methods/triattention/scoring.py` | Vectorized token scoring |
-| `methods/triattention/stats.py` | Calibration artifact loading and validation |
-| `methods/triattention/cache.py` | Paged-cache gather and materialization |
+The manager stores one JSON object. `schema_version`, `provider`, `method`, and
+`method_config` are required. For example:
 
-The artifact generator, accepted payload schemas, field semantics, validation,
-and lifecycle are documented in
-[TriAttention calibration artifacts](calibration-artifacts.md).
+```json
+{
+  "schema_version": 1,
+  "provider": "ascend_kvcompress",
+  "method": "triattention",
+  "method_config": {
+    "stats_path": "/absolute/path/stats.pt",
+    "kv_budget": 2048,
+    "recompute_window": 128,
+    "protected_recent_window": 128,
+    "score_aggregation": "mean",
+    "layer_aggregation": "mean",
+    "score_chunk_size": 512,
+    "score_layer_stride": 4
+  }
+}
+```
 
-The outer vLLM provider is always `ascend_kvcompress`. The flat
-`provider_config.method` scalar selects a registered method. Remaining scalar
-options are passed unchanged to that method's factory.
+Unknown keys, methods, incompatible block alignment, and unavailable
+calibration files are rejected rather than ignored.
 
-## Method Contract
+## Method contract
 
 Implement `KVCompressionMethod` from `methods/base.py`:
 
-- `name`: stable configuration and registry name.
-- `runtime_spec`: scheduler-visible threshold, recompute window, maximum
-  physical length, and private-destination requirement.
-- `compatibility_reasons(worker)`: side-effect-free method-specific checks.
-- `bind_model_runner(runner, layer_caches)`: initialize state after common cache
-  layout validation and allocation.
-- `compress(request)`: materialize one initial or repeated transaction and return its
-  physical length, plus optional per-layer lengths.
+- `name`: stable registry/configuration name.
+- `runtime_spec`: block-aligned threshold, recompute window, maximum physical
+  length, and destination requirements visible to the scheduler adapter.
+- `compatibility_reasons(worker)`: side-effect-free method checks.
+- `bind_model_runner(runner, layer_caches)`: allocate state after common cache
+  validation.
+- `compress(request)`: synchronously materialize one transaction and return
+  the new physical length, plus optional per-layer lengths.
 
-The common provider validates method results before creating a scheduler plan.
-Methods must not mutate scheduler ownership or model-runner block tables.
-If a method returns per-layer physical lengths, it must report every bound
-layer exactly once with a positive value no larger than the global physical
-length.
+Methods receive validated cache bindings. They must not mutate scheduler-owned
+request objects or block tables. Returned lengths must be positive, no larger
+than the declared maximum, and cover every layer when per-layer lengths are
+used.
 
-## In-Process Registration
+## Register another method
+
+In-process registration:
 
 ```python
-from collections.abc import Mapping
-from typing import Any
-
 from vllm_ascend_kvcompress import register_method
-from vllm_ascend_kvcompress.config import JsonScalar
-from vllm_ascend_kvcompress.methods.base import KVCompressionMethod, ModelShape
-
-
-def create_method(
-    options: Mapping[str, JsonScalar],
-    vllm_config: Any,
-    model_shape: ModelShape,
-) -> KVCompressionMethod:
-    return MyCompressionMethod(options, vllm_config, model_shape)
-
 
 register_method("my_method", create_method)
 ```
 
-## Third-Party Entry Point
-
-External packages can register without importing the plugin eagerly:
+External packages may declare:
 
 ```toml
 [project.entry-points."vllm_ascend_kvcompress.methods"]
 my_method = "my_package.method:create_method"
 ```
 
-Use it with:
+Names are lowercase letters, digits, hyphens, or underscores. Duplicate names,
+bad factories, and name mismatches fail closed.
 
-```json
-{
-  "schema_version": 1,
-  "provider": "ascend_kvcompress",
-  "provider_config": {
-    "method": "my_method",
-    "option_owned_by_my_method": 128
-  }
-}
-```
+## Acceptance checklist
 
-Names are normalized to lowercase and may contain letters, digits, hyphens,
-and underscores. Duplicate names, unknown methods, invalid factories, and
-factory/name mismatches fail closed.
-
-## Method Checklist
-
-- Parse only owned options and reject unknown keys.
-- Return deterministic, positive scheduler limits before KV allocation.
-- Validate model/calibration constraints in `compatibility_reasons`.
-- Use only the validated `LayerCache` bindings passed by the provider.
-- Materialize into the supplied destination blocks before returning.
-- Return a valid physical length no larger than the advertised maximum.
-- Add registry, configuration, compatibility, materialization, and transaction
-  tests.
-- Run matched long-context compression-off/on benchmarks and document stable
-  public behavior; keep raw machine-specific logs under `docs/dev/`.
+- Parse only method-owned options and reject unknown values.
+- Make all scheduler limits deterministic and block aligned.
+- Validate model, RoPE, calibration, dtype, and cache layout before serving.
+- Materialize every layer before returning from `compress`.
+- Add registry, configuration, transaction, and numerical tests.
+- Run matched compression-off/on correctness, quality, throughput, latency,
+  and HBM acceptance on the exact supported host revisions.

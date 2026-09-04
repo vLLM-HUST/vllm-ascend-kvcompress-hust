@@ -1,214 +1,74 @@
-# 基准测试与结果解读
+# 0.3 版本验收规程
 
 [English](benchmarking.md) | 简体中文
 
-KV 缓存压缩必须作为容量、延迟、吞吐和质量之间的权衡进行评估。仅有更低的
-物理 KV 占用，不能证明端到端效果得到改善。
+本规程适用于当前独立插件。旧 fork 专用的
+`--kv-cache-compression-config` 参数已不存在，不能继续使用。baseline 与压缩组
+必须保持宿主提交、模型、校准产物、prompt、请求顺序、预热、设备和环境一致。
 
-## 匹配 A/B 协议
+## 1. 固定溯源
 
-两组测试必须使用相同的模型、revision、tokenizer、NPU、dtype、block size、
-KV 池大小、执行模式、提示集、到达模式、并发度、采样参数和输出长度。预期的
-唯一差异是是否设置 `--kv-cache-compression-config`。
+每次运行前记录：
 
-测试内置方法时必须报告全部方法选项，尤其是 `kv_budget`、
-`recompute_window`、`protected_recent_window`、`score_chunk_size` 和
-`score_layer_stride`。
-score chunk 是性能/内存调优参数：增大该值可以减少 kernel 启动开销，但会
-增加临时设备内存。
+- vLLM-HUST、vLLM-Ascend-HUST、Extension Manager、插件、Triton-Ascend、
+  PyTorch、torch-npu、CANN、驱动和固件版本；
+- 模型路径/ID 与不可变 revision、tokenizer revision、dtype、RoPE 配置和模型
+  文件 hash；
+- 校准产物路径、SHA-256、生成器 revision、输入来源和 metadata；
+- NPU 型号/编号、可用 HBM、功耗/频率模式和其他进程；
+- 插件 JSON、完整启动参数、benchmark 命令、prompt 集 hash 和原始输出目录。
 
-推荐使用以下 vLLM-HUST Benchmark 场景：
+无法重建溯源的行不能公开成性能结论。
 
-- `prefix-repetition-online`：重复前缀缓存行为；
-- `random-online`：小规模合成在线 smoke 负载；
-- `knorm-kv-compression-longctx`：持续长上下文服务；
-- `kv-pressure-online`：接近 KV 容量边界的同时到达负载。
+## 2. 验证包生命周期
 
-单独验证本插件时，应禁用 prefix caching 和独立的 Knorm owner。两组测试都
-使用默认 ACL graph 模式、block size 128，以及相同的 `max_model_len` 和
-`gpu_memory_utilization`。
+在干净虚拟环境安装 wheel 和管理器，依次执行 validate、configure、enable、
+status、disable、forget 和 pip uninstall。还要确认：禁用时导入无副作用；
+enable/disable 在进程重启后生效；卸载后 Manager 不再发现该扩展。命令见主
+[README](../README.zh.md#安装与管理)。
 
-## 复现环境
+## 3. NPU kernel 数值验收
 
-激活目标 conda 环境后，在 `vllm-hust-benchmark` checkout 中执行命令。根据
-本机路径设置：
-
-```bash
-export MODEL=/path/to/Qwen2.5-Coder-14B-Instruct
-export STATS=/path/to/triattention-stats.pt
-export RESULT_ROOT=/path/to/ab-results
-export ASCEND_RT_VISIBLE_DEVICES=5
-export VLLM_KNORM_ENABLED=0
-```
-
-启动 A/B pair 之前，必须为精确模型 revision 生成并校验 `STATS`，详见
-[TriAttention 校准产物](calibration-artifacts.zh.md)。所有压缩开启重复必须使用完全一致的
-产物路径与 SHA-256。
-
-启动任一服务前先检查 `npu-smi info`。选中的物理设备必须没有进程，并处于
-空闲 HBM 基线。
-
-## 启动服务
-
-不传入压缩配置，启动 baseline 服务：
+用 PyTorch reference 对直接分页评分、融合聚合、选择及可能重叠的 K/V 物化做
+对照。覆盖空/短尾部、非二次幂长度、全部支持 dtype、重复压缩以及多种层/head
+形状，并记录最大绝对和相对误差，而不仅是 pass/fail。
 
 ```bash
-vllm serve "$MODEL" \
-  --no-async-scheduling \
-  --no-enable-prefix-caching \
-  --block-size 128 \
-  --max-model-len 12288 \
-  --gpu-memory-utilization 0.8
+python tests/run_npu_kernel_smoke.py
+python tests/run_npu_kernel_benchmark.py
 ```
 
-启用压缩的 A/B 组需要先停止 baseline 服务并确认 NPU 已释放，再以完全相同
-的其他参数启动：
+## 4. 服务正确性与质量
+
+测试低于、等于和高于首次/重复压缩阈值的序列，检查：无崩溃、非法 slot、block
+泄漏或跨请求污染；多次事务后语义位置仍单调；下一调度屏障释放 block，请求结束
+或取消后全部归还；确定性配置输出稳定；预先约定的长上下文质量套件不越界。
+
+记录任务名、样本数、seed、评分代码 revision、baseline/压缩分数及允许差值。
+单个 smoke prompt 不能替代质量验收。
+
+## 5. 匹配性能矩阵
+
+至少选择三个必定触发压缩的输入长度/并发单元，例如模型支持时使用 8K/c=1、
+32K/c=4、64K/c=8。每格至少一次预热、三次测量，并交替 baseline/压缩顺序。
+
+报告中位数和范围：输入/输出/总 token 吞吐；TTFT 和 TPOT p50/p90/p99；端到端
+时延 p50/p90/p99；峰值/稳态 HBM 和 cache block；压缩次数与压缩耗时分位数；
+OOM、拒绝和失败数。
+
+baseline 通过 Manager 禁用插件并重启宿主；压缩组使用同一宿主命令：
 
 ```bash
-vllm serve "$MODEL" \
-  --no-async-scheduling \
-  --no-enable-prefix-caching \
-  --block-size 128 \
-  --max-model-len 12288 \
-  --gpu-memory-utilization 0.8 \
-  --kv-cache-compression-config "{\
-\"schema_version\":1,\
-\"provider\":\"ascend_kvcompress\",\
-\"provider_config\":{\
-\"method\":\"triattention\",\
-\"stats_path\":\"$STATS\",\
-\"kv_budget\":2048,\
-\"recompute_window\":128,\
-\"protected_recent_window\":128,\
-\"score_aggregation\":\"mean\",\
-\"layer_aggregation\":\"mean\",\
-\"score_chunk_size\":8192,\
-\"score_layer_stride\":4}}"
+export VLLM_PLUGINS=ascend,ascend_kvcompress
+vllm-hust-ext run -- vllm serve /path/to/model \
+  --block-size 128 --no-enable-prefix-caching --no-async-scheduling
 ```
 
-等待日志出现 `Application startup complete`，并在启动客户端前确认
-`curl -f http://127.0.0.1:8000/health` 成功。
+不能与 prefix cache、speculative decoding、KV transfer、量化 KV、BidKV 或已
+删除的宿主优化混合测量；这些是未支持组合，不是独立调优变量。
 
-## 运行四个 Benchmark 客户端
+## 6. 发布门槛
 
-压缩关闭服务设置 `MODE=baseline`，启用服务设置 `MODE=triattention`。对应
-服务保持运行时，两组分别执行完全相同的以下四条命令。
-
-### prefix-repetition-online
-
-```bash
-python -m vllm_hust_benchmark.cli run prefix-repetition-online \
-  --model "$MODEL" \
-  --set num_prompts=4 \
-  --set prefix_repetition_num_prefixes=2 \
-  --set prefix_repetition_prefix_len=2304 \
-  --set prefix_repetition_suffix_len=256 \
-  --set prefix_repetition_output_len=64 \
-  --set custom_output_len=64 \
-  --set request_rate=1 \
-  --set max_concurrency=1 \
-  --set temperature=0 \
-  --set ignore_eos=true \
-  --set save_result=true \
-  --set save_detailed=true \
-  --set result_dir="$RESULT_ROOT/prefix-repetition-online/$MODE" \
-  --set result_filename=raw.json \
-  --execute
-```
-
-### random-online
-
-```bash
-python -m vllm_hust_benchmark.cli run random-online \
-  --model "$MODEL" \
-  --set num_prompts=2 \
-  --set input_len=2560 \
-  --set output_len=32 \
-  --set request_rate=1 \
-  --set max_concurrency=1 \
-  --set temperature=0 \
-  --set ignore_eos=true \
-  --set save_result=true \
-  --set save_detailed=true \
-  --set result_dir="$RESULT_ROOT/random-online/$MODE" \
-  --set result_filename=raw.json \
-  --execute
-```
-
-### knorm-kv-compression-longctx
-
-```bash
-python -m vllm_hust_benchmark.cli run knorm-kv-compression-longctx \
-  --model "$MODEL" \
-  --set num_prompts=8 \
-  --set prefix_repetition_num_prefixes=2 \
-  --set prefix_repetition_prefix_len=7168 \
-  --set prefix_repetition_suffix_len=1024 \
-  --set prefix_repetition_output_len=128 \
-  --set custom_output_len=128 \
-  --set request_rate=2 \
-  --set max_concurrency=4 \
-  --set temperature=0 \
-  --set ignore_eos=true \
-  --set save_result=true \
-  --set save_detailed=true \
-  --set result_dir="$RESULT_ROOT/knorm-kv-compression-longctx/$MODE" \
-  --set result_filename=raw.json \
-  --execute
-```
-
-### kv-pressure-online
-
-```bash
-python -m vllm_hust_benchmark.cli run kv-pressure-online \
-  --model "$MODEL" \
-  --set num_prompts=16 \
-  --set input_len=8192 \
-  --set output_len=64 \
-  --set request_rate=inf \
-  --set max_concurrency=16 \
-  --set temperature=0 \
-  --set ignore_eos=true \
-  --set save_result=true \
-  --set save_detailed=true \
-  --set result_dir="$RESULT_ROOT/kv-pressure-online/$MODE" \
-  --set result_filename=raw.json \
-  --execute
-```
-
-已验证的 benchmark 快照中，prefix-repetition 客户端即使收到更小的专用输出
-覆盖值，仍可能采用通用的 256-token 默认值。必须比较两份原始 JSON 中实际
-持久化的 `input_lens` 和 `output_lens`；不一致的 A/B pair 必须作废。
-
-第四个客户端结束后停止服务，并检查 8000 端口无监听、没有遗留 vLLM 进程，
-且 `npu-smi info` 显示所选 NPU 回到运行前空闲基线。
-
-## 必报指标
-
-至少记录：
-
-- 成功和失败请求数；
-- 精确输入/输出 token 数和并发度；
-- 请求、输出 token 和总 token 吞吐；
-- TTFT、TPOT 和 ITL 的平均值与 P99；
-- 每次压缩提交的源、目标和释放 KV block 数；
-- 活跃 KV 池峰值占用、运行请求数和等待请求数；
-- 有损压缩在目标模型上的质量或任务准确率；
-- NPU 选择、进程退出和测试后资源释放情况。
-
-## 显存解读
-
-vLLM 会在启动时预分配 KV 池。将物理 block 归还 scheduler 会增加可复用容量，
-但通常不会降低 `npu-smi` 显示的进程级 HBM 分配。应将活跃 KV 池占用以及
-提交后的物理 token/block 作为压缩容量信号。预分配池不变时，不应宣称
-allocator 级 HBM 分配下降。
-
-block size 为 128 时，将 8192-token 提示从 64 个 block 压缩到 16 个 block，
-会保留 2048 个物理 token、释放 48 个 block，即提示词 KV 减少 75%。语义
-位置仍为 8192；降低的只是物理缓存占用。
-
-## 发布规范
-
-稳定的方法和范围明确的汇总结果放在公开文档中。原始 JSON、带机器路径的完整
-命令、失败尝试、profiler 日志和调优笔记放在被 git ignore 的 `docs/dev/`。
-单次运行只能作为工程证据，不应视为普遍性能保证。
+生命周期和 CPU suite 通过后，可以声明 Manager/包兼容；只有在声明快照上通过
+kernel 与服务正确性后，才能声明 NPU 支持；只有发布匹配性能矩阵和完整溯源后，
+才能声明吞吐/HBM 提升。历史 0.2 数据不能替代本门槛。

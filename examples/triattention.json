@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "provider": "ascend_kvcompress",
+  "method": "triattention",
+  "method_config": {
+    "stats_path": "artifacts/qwen2.5-coder-14b-stats.pt",
+    "kv_budget": 2048,
+    "recompute_window": 128,
+    "protected_recent_window": 128,
+    "score_aggregation": "mean",
+    "layer_aggregation": "mean",
+    "score_chunk_size": 512,
+    "score_layer_stride": 4
+  }
+}

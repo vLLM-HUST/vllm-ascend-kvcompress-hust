@@ -1,224 +1,108 @@
-# Benchmarking and Result Interpretation
+# Version 0.3 Acceptance Protocol
 
 English | [简体中文](benchmarking.zh.md)
 
-KV-cache compression must be evaluated as a capacity, latency, throughput,
-and quality trade-off. A lower physical KV footprint alone does not establish
-an end-to-end improvement.
+This protocol applies to the current independently packaged plugin. The old
+fork-only `--kv-cache-compression-config` flag no longer exists and must not be
+used. Baseline and compression runs must use identical host commits, model,
+artifact, prompts, request order, warm-up, device, and environment.
 
-## Matched A/B Contract
+## 1. Freeze provenance
 
-Use the same model, revision, tokenizer, NPU, dtype, block size, KV-pool size,
-execution mode, prompt set, arrival pattern, concurrency, sampling parameters,
-and output length for both runs. The only intended difference is
-`--kv-cache-compression-config`.
+Record before each run:
 
-For the built-in method, report all method options, especially `kv_budget`,
-`recompute_window`, `protected_recent_window`, `score_chunk_size`, and
-`score_layer_stride`. The
-score chunk is a performance/memory tuning parameter: larger values reduce
-kernel-launch overhead and increase temporary device memory.
+- vLLM-HUST, vLLM-Ascend-HUST, Extension Manager, plugin, Triton-Ascend,
+  PyTorch, torch-npu, CANN, driver, and firmware versions;
+- model path/ID and immutable revision, tokenizer revision, dtype, RoPE config,
+  and model-file hashes;
+- calibration artifact path, SHA-256, generator revision, input provenance,
+  and metadata;
+- NPU model/ID, available HBM, power/frequency mode, and other processes;
+- plugin JSON, full launch arguments, benchmark command, prompt-set hash, and
+  raw-output directory.
 
-Recommended vLLM-HUST Benchmark scenarios are:
+Do not publish rows whose provenance cannot be reconstructed.
 
-- `prefix-repetition-online` for repeated-prefix cache behavior;
-- `random-online` for a small synthetic online smoke workload;
-- `knorm-kv-compression-longctx` for sustained long-context serving;
-- `kv-pressure-online` for a simultaneous workload near the KV capacity
-  boundary.
+## 2. Validate package lifecycle
 
-Disable prefix caching and the independent Knorm owner when isolating this
-plugin. Use the default ACL graph mode, block size 128, and the same `max_model_len` and
-`gpu_memory_utilization` in both runs.
-
-## Reproduction Environment
-
-Run commands from the `vllm-hust-benchmark` checkout with the target conda
-environment activated. Set these paths for the local machine:
+From a clean virtual environment, install the wheel and manager, then run:
 
 ```bash
-export MODEL=/path/to/Qwen2.5-Coder-14B-Instruct
-export STATS=/path/to/triattention-stats.pt
-export RESULT_ROOT=/path/to/ab-results
-export ASCEND_RT_VISIBLE_DEVICES=5
-export VLLM_KNORM_ENABLED=0
+vllm-hust-ext extension validate org.vllm-hust.ascend-kvcompress
+vllm-hust-ext extension configure org.vllm-hust.ascend-kvcompress \
+  --file /absolute/path/triattention.json
+vllm-hust-ext extension enable org.vllm-hust.ascend-kvcompress
+vllm-hust-ext extension status org.vllm-hust.ascend-kvcompress
+vllm-hust-ext extension disable org.vllm-hust.ascend-kvcompress
+vllm-hust-ext extension forget org.vllm-hust.ascend-kvcompress
+python -m pip uninstall vllm-ascend-kvcompress-hust
 ```
 
-Generate and validate `STATS` for the exact model revision before starting the
-A/B pair. See [TriAttention calibration artifacts](calibration-artifacts.md).
-Keep the artifact path and SHA-256 identical in every compression-enabled
-repeat.
+Also verify that importing the plugin while disabled is inert, enable/disable
+takes effect after process restart, and uninstall removes manager discovery.
 
-Check `npu-smi info` first. The selected physical device must show no process
-and its idle HBM baseline before either service is launched.
+## 3. Kernel numerical acceptance
 
-## Start the Service
-
-Start the baseline service without a compression configuration:
+Run the NPU smoke test against a PyTorch reference for direct paged scoring,
+fused aggregation, selection, and overlapping K/V materialization. Include
+empty/small tails, non-power-of-two lengths, all supported dtypes, repeated
+compression, and multiple layer/head shapes. Report maximum absolute and
+relative error, not only pass/fail.
 
 ```bash
-vllm serve "$MODEL" \
-  --no-async-scheduling \
-  --no-enable-prefix-caching \
-  --block-size 128 \
-  --max-model-len 12288 \
-  --gpu-memory-utilization 0.8
+python tests/run_npu_kernel_smoke.py
+python tests/run_npu_kernel_benchmark.py
 ```
 
-For the enabled half of the A/B pair, stop the baseline service, confirm NPU
-release, and start the otherwise identical service with:
+## 4. Service correctness and quality
+
+Test sequences below, at, and above the first and repeated compression
+thresholds. Assert:
+
+- no crash, invalid slot, leaked block, or cross-request contamination;
+- semantic positions remain monotonic after one and several transactions;
+- block counts fall at the next scheduling barrier and return after request
+  completion/cancellation;
+- deterministic outputs under a deterministic decoding configuration; and
+- an agreed long-context quality suite stays within its predeclared threshold.
+
+Record exact task names, sample count, seeds, scoring code revision, baseline
+score, compressed score, and permitted delta. A smoke prompt is not a quality
+acceptance test.
+
+## 5. Matched performance matrix
+
+Use at least three prompt-length/concurrency cells that force compression, for
+example 8K/c=1, 32K/c=4, and 64K/c=8 where the model supports them. Run at
+least one warm-up and three measured repetitions per cell, alternating
+baseline and compression order.
+
+Report median and range for:
+
+- input, output, and total token throughput;
+- TTFT and TPOT p50/p90/p99;
+- end-to-end latency p50/p90/p99;
+- peak and steady-state HBM plus cache block usage;
+- compression count and compression-time p50/p90/p99; and
+- OOM/rejection/failure counts.
+
+Baseline means the plugin is disabled through Extension Manager and the host
+is restarted. Compression means the same host command is launched through:
 
 ```bash
-vllm serve "$MODEL" \
-  --no-async-scheduling \
-  --no-enable-prefix-caching \
-  --block-size 128 \
-  --max-model-len 12288 \
-  --gpu-memory-utilization 0.8 \
-  --kv-cache-compression-config "{\
-\"schema_version\":1,\
-\"provider\":\"ascend_kvcompress\",\
-\"provider_config\":{\
-\"method\":\"triattention\",\
-\"stats_path\":\"$STATS\",\
-\"kv_budget\":2048,\
-\"recompute_window\":128,\
-\"protected_recent_window\":128,\
-\"score_aggregation\":\"mean\",\
-\"layer_aggregation\":\"mean\",\
-\"score_chunk_size\":8192,\
-\"score_layer_stride\":4}}"
+export VLLM_PLUGINS=ascend,ascend_kvcompress
+vllm-hust-ext run -- vllm serve /path/to/model \
+  --block-size 128 --no-enable-prefix-caching --no-async-scheduling
 ```
 
-Wait for `Application startup complete` and verify
-`curl -f http://127.0.0.1:8000/health` before starting a client.
+Do not combine results with prefix caching, speculative decoding, KV transfer,
+quantized KV, BidKV, or removed host optimizations. They are unsupported, not
+independent tuning variables.
 
-## Run the Four Benchmark Clients
+## 6. Publication gate
 
-Set `MODE=baseline` for the compression-off service or
-`MODE=triattention` for the enabled service. Run the same four commands for
-both modes while the corresponding service remains running.
-
-### prefix-repetition-online
-
-```bash
-python -m vllm_hust_benchmark.cli run prefix-repetition-online \
-  --model "$MODEL" \
-  --set num_prompts=4 \
-  --set prefix_repetition_num_prefixes=2 \
-  --set prefix_repetition_prefix_len=2304 \
-  --set prefix_repetition_suffix_len=256 \
-  --set prefix_repetition_output_len=64 \
-  --set custom_output_len=64 \
-  --set request_rate=1 \
-  --set max_concurrency=1 \
-  --set temperature=0 \
-  --set ignore_eos=true \
-  --set save_result=true \
-  --set save_detailed=true \
-  --set result_dir="$RESULT_ROOT/prefix-repetition-online/$MODE" \
-  --set result_filename=raw.json \
-  --execute
-```
-
-### random-online
-
-```bash
-python -m vllm_hust_benchmark.cli run random-online \
-  --model "$MODEL" \
-  --set num_prompts=2 \
-  --set input_len=2560 \
-  --set output_len=32 \
-  --set request_rate=1 \
-  --set max_concurrency=1 \
-  --set temperature=0 \
-  --set ignore_eos=true \
-  --set save_result=true \
-  --set save_detailed=true \
-  --set result_dir="$RESULT_ROOT/random-online/$MODE" \
-  --set result_filename=raw.json \
-  --execute
-```
-
-### knorm-kv-compression-longctx
-
-```bash
-python -m vllm_hust_benchmark.cli run knorm-kv-compression-longctx \
-  --model "$MODEL" \
-  --set num_prompts=8 \
-  --set prefix_repetition_num_prefixes=2 \
-  --set prefix_repetition_prefix_len=7168 \
-  --set prefix_repetition_suffix_len=1024 \
-  --set prefix_repetition_output_len=128 \
-  --set custom_output_len=128 \
-  --set request_rate=2 \
-  --set max_concurrency=4 \
-  --set temperature=0 \
-  --set ignore_eos=true \
-  --set save_result=true \
-  --set save_detailed=true \
-  --set result_dir="$RESULT_ROOT/knorm-kv-compression-longctx/$MODE" \
-  --set result_filename=raw.json \
-  --execute
-```
-
-### kv-pressure-online
-
-```bash
-python -m vllm_hust_benchmark.cli run kv-pressure-online \
-  --model "$MODEL" \
-  --set num_prompts=16 \
-  --set input_len=8192 \
-  --set output_len=64 \
-  --set request_rate=inf \
-  --set max_concurrency=16 \
-  --set temperature=0 \
-  --set ignore_eos=true \
-  --set save_result=true \
-  --set save_detailed=true \
-  --set result_dir="$RESULT_ROOT/kv-pressure-online/$MODE" \
-  --set result_filename=raw.json \
-  --execute
-```
-
-The prefix-repetition client in the validated benchmark snapshot may still use
-its 256-token generic output default even when the dedicated output override is
-smaller. Always compare the exact `input_lens` and `output_lens` persisted in
-both raw JSON files; reject a pair if they differ.
-
-After the fourth client, stop the service and check that port 8000 has no
-listener, no vLLM process remains, and `npu-smi info` reports the selected NPU
-at its pre-run idle baseline.
-
-## Required Metrics
-
-Record at least:
-
-- completed and failed requests;
-- exact input/output token counts and concurrency;
-- request, output-token, and total-token throughput;
-- mean and P99 TTFT, TPOT, and ITL;
-- source, destination, and released KV blocks per compression commit;
-- peak active KV-pool usage, running requests, and waiting requests;
-- model-specific quality or task-accuracy results for lossy compression;
-- NPU selection, process exit, and post-run resource release.
-
-## Memory Interpretation
-
-vLLM preallocates the KV pool at startup. Returning physical blocks to the
-scheduler increases reusable capacity but normally does not reduce the
-process-level HBM allocation shown by `npu-smi`. Report active KV-pool usage
-and committed physical tokens or blocks as the compression-capacity signal.
-Do not claim allocator-level HBM savings from an unchanged preallocated pool.
-
-For block size 128, compressing an 8192-token prompt from 64 blocks to 16
-blocks retains 2048 physical tokens and releases 48 blocks, a 75% prompt-KV
-reduction. Semantic positions remain at 8192; only physical cache occupancy is
-reduced.
-
-## Publication Policy
-
-Keep stable methodology and carefully scoped summary results in public docs.
-Put raw JSON, full commands with machine paths, failed attempts, profiler logs,
-and tuning notes under git-ignored `docs/dev/`. Treat a single run as
-engineering evidence rather than a universal performance guarantee.
+A release may claim manager/package compatibility after the lifecycle and CPU
+suite pass. It may claim NPU support only after kernel and service correctness
+pass on the declared snapshots. It may claim a throughput/HBM improvement only
+when the matched matrix and raw provenance are published. Historical 0.2
+measurements are not a substitute for this gate.

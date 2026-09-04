@@ -2,11 +2,8 @@
 
 from types import SimpleNamespace
 
-import numpy as np
-import pytest
 import torch
 
-from vllm_ascend_kvcompress.config import PROVIDER_NAME
 from vllm_ascend_kvcompress.methods.base import (
     CompressionRequest,
     CompressionResult,
@@ -17,29 +14,8 @@ from vllm_ascend_kvcompress.provider import (
     ActiveCompression,
     AscendKVCompressionProvider,
     PendingCompression,
-    _plain_full_attention_spec_reasons,
-    _unpack_separate_kv_cache,
-    _validate_method_layer_lengths,
-    _validate_method_runtime_spec,
+    _unpack_layer_cache,
 )
-
-
-class _RecordingBlockTable:
-    def __init__(self) -> None:
-        self.added: tuple[tuple[list[int], ...], int] | None = None
-        self.physical_positions: torch.Tensor | None = None
-
-    def add_row(self, block_ids: tuple[list[int], ...], row_idx: int) -> None:
-        self.added = (block_ids, row_idx)
-
-    def compute_slot_mapping(
-        self,
-        num_reqs: int,
-        query_start_loc: torch.Tensor,
-        positions: torch.Tensor,
-    ) -> None:
-        del num_reqs, query_start_loc
-        self.physical_positions = positions.clone()
 
 
 class _RecordingMethod:
@@ -53,15 +29,20 @@ class _RecordingMethod:
         return CompressionResult(physical_num_tokens=128)
 
 
-def _provider_without_init() -> AscendKVCompressionProvider:
+class _RecordingBlockTable:
+    def __init__(self) -> None:
+        self.added = None
+
+    def add_row(self, block_ids, row_idx) -> None:
+        self.added = block_ids, row_idx
+
+
+def _provider() -> AscendKVCompressionProvider:
     provider = AscendKVCompressionProvider.__new__(AscendKVCompressionProvider)
-    provider.provider_name = PROVIDER_NAME
     provider.method = _RecordingMethod()
-    provider.method_runtime_spec = MethodRuntimeSpec(
-        requires_private_destination=True,
-        compression_threshold_tokens=256,
-        required_recompute_tokens=128,
-        max_physical_num_tokens=128,
+    provider.runtime_spec = MethodRuntimeSpec(True, 256, 128, 128)
+    provider.layer_caches = (
+        LayerCache("model.layers.0.self_attn", 0, torch.empty(0), torch.empty(0)),
     )
     provider.pending = {}
     provider.active = {}
@@ -70,75 +51,27 @@ def _provider_without_init() -> AscendKVCompressionProvider:
     provider._physical_positions = None
     provider._offset_row_snapshot = ()
     provider._has_active_rows = False
+    provider._physical_lengths_applied = False
     return provider
 
 
-def test_current_ascend_direct_tuple_cache_binding_is_accepted() -> None:
+def test_current_standardized_cache_uses_ascend_unpacker() -> None:
     k_cache = torch.empty(2, 128, 1, 4)
     v_cache = torch.empty_like(k_cache)
-    direct_k, direct_v = _unpack_separate_kv_cache("layer", (k_cache, v_cache))
-    wrapped_k, wrapped_v = _unpack_separate_kv_cache("layer", [(k_cache, v_cache)])
 
-    assert direct_k is k_cache
-    assert direct_v is v_cache
-    assert wrapped_k is k_cache
-    assert wrapped_v is v_cache
+    class Impl:
+        def _unpack_kv_cache(self, cache):
+            assert cache == "standardized-cache"
+            return k_cache, v_cache
 
-
-def test_unquantized_full_attention_spec_is_not_rejected() -> None:
-    from vllm.v1.kv_cache_interface import KVQuantMode
-
-    spec = SimpleNamespace(
-        sliding_window=None,
-        attention_chunk_size=None,
-        non_causal=False,
-        head_size=128,
-        head_size_v=128,
-        kv_quant_mode=KVQuantMode.NONE,
-        page_size_padded=None,
-        indexes_kv_by_block_stride=False,
-    )
-    assert _plain_full_attention_spec_reasons(spec) == ()
+    layer = SimpleNamespace(kv_cache=["standardized-cache"], impl=Impl())
+    actual_k, actual_v = _unpack_layer_cache("layer", layer)
+    assert actual_k is k_cache
+    assert actual_v is v_cache
 
 
-def test_method_runtime_spec_rejects_non_boolean_destination_flag() -> None:
-    spec = MethodRuntimeSpec(
-        requires_private_destination=1,
-        compression_threshold_tokens=256,
-        required_recompute_tokens=128,
-        max_physical_num_tokens=128,
-    )
-    with pytest.raises(ValueError, match="must be a boolean"):
-        _validate_method_runtime_spec("bad", spec)
-
-
-def test_method_layer_lengths_require_exact_bound_layer_set() -> None:
-    caches = (
-        LayerCache("layer.0", 0, torch.empty(0), torch.empty(0)),
-        LayerCache("layer.1", 1, torch.empty(0), torch.empty(0)),
-    )
-
-    with pytest.raises(RuntimeError, match="missing=layer.1"):
-        _validate_method_layer_lengths(
-            "bad",
-            (("layer.0", 128),),
-            caches,
-            128,
-        )
-
-
-def test_final_prefill_builds_plan_after_overlap_safe_materialization() -> None:
-    provider = _provider_without_init()
-    k_cache = torch.arange(4 * 128, dtype=torch.float32).view(4, 128, 1, 1)
-    v_cache = k_cache.clone() + 1000
-    provider.layer_caches = (
-        LayerCache(
-            "model.layers.0.self_attn",
-            0,
-            k_cache,
-            v_cache,
-        ),
-    )
+def test_final_prefill_compresses_and_arms_worker_commit() -> None:
+    provider = _provider()
     request = SimpleNamespace(
         num_computed_tokens=256,
         num_prompt_tokens=300,
@@ -147,75 +80,78 @@ def test_final_prefill_builds_plan_after_overlap_safe_materialization() -> None:
     provider.runner = SimpleNamespace(
         device=torch.device("cpu"), requests={"r": request}
     )
-    provider.vllm_config = SimpleNamespace(
-        cache_config=SimpleNamespace(enable_prefix_caching=False)
-    )
-    scheduler_output = SimpleNamespace(
-        kv_cache_compression_transaction_ids={"r": 7},
-        num_scheduled_tokens={"r": 44},
-        kv_cache_compression_destination_block_ids=None,
+
+    provider.compress_scheduled_requests(
+        SimpleNamespace(num_scheduled_tokens={"r": 44})
     )
 
-    plans = provider.compress_transactions(scheduler_output)
-
-    assert len(plans) == 1
-    assert plans[0].semantic_num_tokens == 300
-    assert plans[0].physical_num_tokens == 128
-    assert plans[0].expected_block_ids == ((2, 0, 3),)
-    assert provider.pending["r"].destination_block_ids == ((2,),)
+    assert provider.pending["r"] == PendingCompression(300, 128, (2,))
     assert provider.method.last_request is not None
-    assert provider.method.last_request.semantic_num_tokens == 300
+    assert provider.method.last_request.physical_num_tokens == 300
 
 
-def test_commit_ack_replaces_tables_and_decode_uses_physical_positions() -> None:
-    provider = _provider_without_init()
+def test_worker_commit_truncates_tables_and_activates_offsets() -> None:
+    provider = _provider()
     block_table = _RecordingBlockTable()
-    request = SimpleNamespace(block_ids=([1, 2, 3],))
-    input_batch = SimpleNamespace(
-        req_id_to_index={"compressed": 0, "plain": 1},
-        req_ids=["compressed", "plain"],
-        num_reqs=2,
-        block_table=block_table,
-    )
+    request = SimpleNamespace(block_ids=([2, 0, 3],))
     provider.runner = SimpleNamespace(
-        requests={"compressed": request, "plain": SimpleNamespace()},
-        input_batch=input_batch,
+        requests={"r": request},
+        input_batch=SimpleNamespace(req_id_to_index={"r": 0}, block_table=block_table),
+    )
+    provider.pending["r"] = PendingCompression(300, 128, (2,))
+    output = SimpleNamespace(
+        finished_req_ids=set(),
+        preempted_req_ids=set(),
+        scheduled_cached_reqs=SimpleNamespace(resumed_req_ids=set()),
+    )
+
+    provider.before_update_states(output)
+
+    assert request.block_ids == ([2],)
+    assert block_table.added == (([2],), 0)
+    assert provider.active["r"] == ActiveCompression(300, 128)
+
+
+def test_worker_discards_preempted_compression_state() -> None:
+    provider = _provider()
+    provider.runner = SimpleNamespace(
+        requests={},
+        input_batch=SimpleNamespace(req_id_to_index={}),
+    )
+    provider.pending["r"] = PendingCompression(300, 128, (2,))
+    provider.active["r"] = ActiveCompression(300, 128)
+    output = SimpleNamespace(
+        finished_req_ids=set(),
+        preempted_req_ids={"r"},
+        scheduled_cached_reqs=SimpleNamespace(resumed_req_ids=set()),
+    )
+
+    provider.before_update_states(output)
+
+    assert "r" not in provider.pending
+    assert "r" not in provider.active
+
+
+def test_physical_positions_and_lengths_preserve_semantic_rope() -> None:
+    provider = _provider()
+    provider.active["compressed"] = ActiveCompression(300, 128)
+    provider._request_offsets_cpu = torch.tensor([172, 0], dtype=torch.int64)
+    provider._request_offsets_device = torch.tensor([172, 0], dtype=torch.int64)
+    provider._physical_positions = torch.empty(2, dtype=torch.int64)
+    provider._has_active_rows = True
+    positions = torch.tensor([300, 20], dtype=torch.int64)
+    provider.runner = SimpleNamespace(
         req_indices=SimpleNamespace(gpu=torch.tensor([0, 1], dtype=torch.long)),
-        query_start_loc=SimpleNamespace(gpu=torch.tensor([0, 1, 2], dtype=torch.int32)),
-        positions=torch.tensor([300, 20], dtype=torch.int64),
+        input_batch=SimpleNamespace(num_reqs=2),
         seq_lens=torch.tensor([301, 21], dtype=torch.int64),
         optimistic_seq_lens_cpu=torch.tensor([301, 21], dtype=torch.int64),
     )
-    provider.pending["compressed"] = PendingCompression(
-        semantic_num_tokens=300,
-        physical_num_tokens=128,
-        destination_block_ids=((5,),),
-    )
-    provider._request_offsets_cpu = torch.zeros(2, dtype=torch.int64)
-    provider._request_offsets_device = torch.zeros(2, dtype=torch.int64)
-    provider._physical_positions = torch.empty(2, dtype=torch.int64)
 
-    provider.consume_block_table_updates(
-        SimpleNamespace(
-            finished_req_ids=set(),
-            kv_cache_compression_block_table_updates={"compressed": ([5, 9],)},
-        )
-    )
+    physical = provider.physical_positions_for_slot_mapping(positions)
+    provider.apply_physical_attention_lengths()
 
-    assert request.block_ids == ([5, 9],)
-    assert block_table.added == (([5, 9],), 0)
-    assert provider.active["compressed"] == ActiveCompression(300, 128)
-
-    provider.apply_physical_decode_state(
-        SimpleNamespace(total_num_scheduled_tokens=2),
-        np.array([1, 1], dtype=np.int32),
-    )
-    physical_positions = provider.physical_positions_for_slot_mapping(
-        provider.runner.positions
-    )
-    torch.testing.assert_close(provider.runner.positions, torch.tensor([300, 20]))
-    torch.testing.assert_close(physical_positions, torch.tensor([128, 20]))
-    assert block_table.physical_positions is None
+    torch.testing.assert_close(positions, torch.tensor([300, 20]))
+    torch.testing.assert_close(physical, torch.tensor([128, 20]))
     torch.testing.assert_close(provider.runner.seq_lens, torch.tensor([129, 21]))
     torch.testing.assert_close(
         provider.runner.optimistic_seq_lens_cpu, torch.tensor([129, 21])
@@ -223,10 +159,7 @@ def test_commit_ack_replaces_tables_and_decode_uses_physical_positions() -> None
 
 
 def test_repeated_compression_uses_current_physical_window() -> None:
-    provider = _provider_without_init()
-    provider.layer_caches = (
-        LayerCache("model.layers.0.self_attn", 0, torch.empty(0), torch.empty(0)),
-    )
+    provider = _provider()
     request = SimpleNamespace(
         num_computed_tokens=427,
         num_prompt_tokens=300,
@@ -235,38 +168,10 @@ def test_repeated_compression_uses_current_physical_window() -> None:
     provider.runner = SimpleNamespace(
         device=torch.device("cpu"), requests={"r": request}
     )
-    provider.vllm_config = SimpleNamespace(
-        cache_config=SimpleNamespace(enable_prefix_caching=False)
-    )
     provider.active["r"] = ActiveCompression(300, 128)
-    scheduler_output = SimpleNamespace(
-        kv_cache_compression_transaction_ids={"r": 8},
-        num_scheduled_tokens={"r": 1},
-        kv_cache_compression_destination_block_ids=None,
-    )
 
-    plans = provider.compress_transactions(scheduler_output)
+    provider.compress_scheduled_requests(SimpleNamespace(num_scheduled_tokens={"r": 1}))
 
-    assert len(plans) == 1
-    assert plans[0].semantic_num_tokens == 428
+    assert provider.pending["r"] == PendingCompression(428, 128, (5,))
     assert provider.method.last_request is not None
     assert provider.method.last_request.physical_num_tokens == 256
-    assert provider.method.last_request.semantic_num_tokens == 428
-
-
-def test_unchanged_decode_rows_do_not_refresh_device_offsets() -> None:
-    provider = _provider_without_init()
-    provider.active["r"] = ActiveCompression(300, 128)
-    provider.runner = SimpleNamespace(
-        input_batch=SimpleNamespace(num_reqs=1, req_ids=["r"])
-    )
-    provider._request_offsets_cpu = torch.tensor([172], dtype=torch.int64)
-    provider._request_offsets_device = torch.tensor([172], dtype=torch.int64)
-    provider._offset_row_snapshot = (172,)
-
-    provider._request_offsets_cpu[0] = 999
-    provider._sync_request_offset_rows()
-
-    torch.testing.assert_close(
-        provider._request_offsets_device, torch.tensor([172], dtype=torch.int64)
-    )

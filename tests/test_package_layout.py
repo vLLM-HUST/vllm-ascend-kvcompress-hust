@@ -5,6 +5,10 @@ from pathlib import Path
 import vllm_ascend_kvcompress
 
 
+def test_runtime_version_matches_distribution_version() -> None:
+    assert vllm_ascend_kvcompress.__version__ == "0.3.0"
+
+
 def test_builtin_method_owns_its_implementation_modules() -> None:
     package_root = Path(vllm_ascend_kvcompress.__file__).parent
     method_root = package_root / "methods" / "triattention"

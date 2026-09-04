@@ -1,193 +1,248 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Plugin-local compatibility layer for repeated compression transactions."""
+"""Scheduler-side state for the upstream-aligned plugin adapter."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
-from vllm.v1.kv_cache_compression import KVCacheCompressionError
+from .config import ASCEND_BLOCK_SIZE, ProviderSelection
+from .methods.triattention.config import TriAttentionConfig
 
-from .config import ASCEND_BLOCK_SIZE
+_STATE_ATTRIBUTE = "_ascend_kvcompress_scheduler_state_v3"
+_OFFSETS_ATTRIBUTE = "_ascend_kvcompress_active_offsets_v3"
+_PATCH_MARKER = "_ascend_kvcompress_manager_patch_v3"
+_SUPPORTED_SCHEDULER_TYPES = frozenset(
+    {
+        ("vllm.v1.core.sched.scheduler", "Scheduler"),
+        (
+            "vllm_ascend.patch.platform.patch_balance_schedule",
+            "BalanceScheduler",
+        ),
+    }
+)
 
-_STATEFUL_MARKER = "_ascend_kvcompress_stateful_v1"
+
+@dataclass(frozen=True)
+class SchedulerPendingCompression:
+    semantic_anchor: int
+    physical_anchor: int
+    block_ids: tuple[int, ...]
 
 
-def _validate_repeated_plan(manager: Any, request: Any, plan: Any) -> int:
-    config = manager.kv_cache_compression_config
-    runtime_spec = manager.kv_cache_compression_runtime_spec
-    current_physical = manager._compressed_request_physical_tokens.get(
-        request.request_id
-    )
-    if config is None or runtime_spec is None or current_physical is None:
-        raise KVCacheCompressionError("repeated compression state is unavailable")
-    if plan.schema_version != config.schema_version or plan.provider != config.provider:
-        raise KVCacheCompressionError("repeated compression plan contract mismatch")
-    if plan.request_id != request.request_id:
-        raise KVCacheCompressionError("repeated compression request_id mismatch")
-    if plan.semantic_num_tokens != request.num_computed_tokens:
-        raise KVCacheCompressionError(
-            f"request {request.request_id!r} repeated plan is stale: "
-            f"plan={plan.semantic_num_tokens}, computed={request.num_computed_tokens}"
-        )
-    if current_physical < runtime_spec.compression_threshold_tokens:
-        raise KVCacheCompressionError(
-            f"request {request.request_id!r} physical length {current_physical} "
-            "is below the repeated compression threshold"
-        )
-    if not 0 < plan.physical_num_tokens <= runtime_spec.max_physical_num_tokens:
-        raise KVCacheCompressionError("repeated compression physical length is invalid")
-    layer_lengths = plan.per_layer_physical_num_tokens
-    expected_layers = manager.kv_cache_config.kv_cache_groups[0].layer_names
-    if (
-        not layer_lengths
-        or {name for name, _ in layer_lengths} != set(expected_layers)
-        or max(length for _, length in layer_lengths) != plan.physical_num_tokens
-    ):
-        raise KVCacheCompressionError("repeated compression layer lengths are invalid")
+@dataclass(frozen=True)
+class SchedulerActiveCompression:
+    semantic_anchor: int
+    physical_anchor: int
 
-    num_blocks = (plan.physical_num_tokens + ASCEND_BLOCK_SIZE - 1) // ASCEND_BLOCK_SIZE
-    try:
-        if manager.enable_caching:
-            destination = manager._compression_destination_reservations.get(
-                request.request_id
+    @property
+    def removed_tokens(self) -> int:
+        return self.semantic_anchor - self.physical_anchor
+
+
+class SchedulerCompressionState:
+    """Mirror worker transactions across the synchronous execution barrier."""
+
+    def __init__(self, scheduler: Any, selection: ProviderSelection) -> None:
+        if selection.method != "triattention":
+            raise ValueError(
+                f"scheduler adapter does not support method {selection.method!r}"
             )
-            if destination is None:
-                raise ValueError(
-                    f"request {request.request_id!r} has no private repeat destination"
-                )
-            manager.coordinator.validate_request_block_replacement(
-                request.request_id,
-                num_blocks,
-                plan.expected_block_ids,
-                destination,
+        config = TriAttentionConfig.from_method_config(selection.method_config)
+        self.scheduler = scheduler
+        self.threshold = config.compression_threshold_tokens
+        self.budget = config.kv_budget
+        self.pending: dict[str, SchedulerPendingCompression] = {}
+        self.active: dict[str, SchedulerActiveCompression] = {}
+        self._validate_host()
+        setattr(scheduler.kv_cache_manager, _OFFSETS_ATTRIBUTE, self.active)
+
+    def _validate_host(self) -> None:
+        scheduler = self.scheduler
+        config = scheduler.vllm_config
+        reasons: list[str] = []
+        scheduler_type = type(scheduler)
+        scheduler_identity = (scheduler_type.__module__, scheduler_type.__name__)
+        if scheduler_identity not in _SUPPORTED_SCHEDULER_TYPES:
+            reasons.append(
+                "the upstream v1 Scheduler or the current Ascend "
+                "BalanceScheduler wrapper is required"
             )
-        else:
-            manager.coordinator.validate_request_tail_truncation(
-                request.request_id,
-                num_blocks,
-                plan.expected_block_ids,
+        if bool(getattr(scheduler, "_balance_enabled", False)):
+            reasons.append("Ascend balance scheduling must be disabled")
+        if bool(config.cache_config.enable_prefix_caching):
+            reasons.append("prefix caching must be disabled")
+        if int(scheduler.block_size) != ASCEND_BLOCK_SIZE:
+            reasons.append(
+                f"scheduler block size must be {ASCEND_BLOCK_SIZE}, "
+                f"got {scheduler.block_size}"
             )
-    except ValueError as error:
-        raise KVCacheCompressionError(str(error)) from error
-    return num_blocks
+        if config.speculative_config is not None:
+            reasons.append("speculative decoding is unsupported")
+        if config.kv_transfer_config is not None:
+            reasons.append("KV transfer is unsupported")
+        if bool(getattr(config.scheduler_config, "async_scheduling", False)):
+            reasons.append("asynchronous scheduling is unsupported")
+        parallel = config.parallel_config
+        for name, attr in (
+            ("tensor parallel", "tensor_parallel_size"),
+            ("pipeline parallel", "pipeline_parallel_size"),
+            ("data parallel", "data_parallel_size"),
+            ("prefill context parallel", "prefill_context_parallel_size"),
+            ("decode context parallel", "decode_context_parallel_size"),
+        ):
+            value = int(getattr(parallel, attr, 1))
+            if value != 1:
+                reasons.append(f"{name} size must be one, got {value}")
+        if len(scheduler.kv_cache_config.kv_cache_groups) != 1:
+            reasons.append("exactly one full-attention KV group is required")
+        if reasons:
+            raise RuntimeError(
+                "Ascend KV compression is incompatible with this scheduler:\n- "
+                + "\n- ".join(reasons)
+            )
 
-
-def _install_manager_hooks(manager_cls: type[Any]) -> None:
-    if manager_cls.__dict__.get(_STATEFUL_MARKER, False):
-        return
-    original_validate = manager_cls.validate_compression_plan
-    original_apply = manager_cls.apply_compression_plan
-
-    def validate(manager: Any, request: Any, plan: Any) -> int:
-        if request.request_id not in manager._compressed_request_physical_tokens:
-            return original_validate(manager, request, plan)
-        return _validate_repeated_plan(manager, request, plan)
-
-    def apply(manager: Any, request: Any, plan: Any) -> Any:
-        if request.request_id not in manager._compressed_request_physical_tokens:
-            return original_apply(manager, request, plan)
-        num_blocks = _validate_repeated_plan(manager, request, plan)
-        try:
-            if manager.enable_caching:
-                destination = manager._compression_destination_reservations[
-                    request.request_id
-                ]
-                source, target, released, retained = (
-                    manager.coordinator.replace_request_blocks(
-                        request.request_id,
-                        num_blocks,
-                        plan.expected_block_ids,
-                        destination,
-                    )
+    def before_schedule(self) -> None:
+        """Free the compacted tail only after the prior worker step completed."""
+        scheduler = self.scheduler
+        for request_id in tuple(scheduler.finished_req_ids):
+            self.pending.pop(request_id, None)
+            self.active.pop(request_id, None)
+        manager = scheduler.kv_cache_manager
+        single_managers = manager.coordinator.single_type_managers
+        if len(single_managers) != 1:
+            raise RuntimeError("compression requires exactly one cache manager")
+        cache_manager = single_managers[0]
+        for request_id, pending in tuple(self.pending.items()):
+            if request_id not in scheduler.requests:
+                self.pending.pop(request_id, None)
+                continue
+            blocks = cache_manager.req_to_blocks.get(request_id)
+            if blocks is None:
+                self.pending.pop(request_id, None)
+                continue
+            keep = len(pending.block_ids)
+            actual_prefix = tuple(block.block_id for block in blocks[:keep])
+            if actual_prefix != pending.block_ids:
+                raise RuntimeError(
+                    f"request {request_id!r} block table changed before "
+                    "compression commit"
                 )
-                del manager._compression_destination_reservations[request.request_id]
-            else:
-                source = plan.expected_block_ids[0]
-                released = manager.coordinator.truncate_request_tail_blocks(
-                    request.request_id,
-                    num_blocks,
-                    plan.expected_block_ids,
+            tail = blocks[keep:]
+            del blocks[keep:]
+            manager.block_pool.free_blocks(reversed(tail))
+            if hasattr(cache_manager, "num_cached_block"):
+                cache_manager.num_cached_block[request_id] = min(
+                    int(cache_manager.num_cached_block.get(request_id, 0)), keep
                 )
-                target = source[:num_blocks]
-                retained = ()
-        except ValueError as error:
-            raise KVCacheCompressionError(str(error)) from error
+            self.active[request_id] = SchedulerActiveCompression(
+                pending.semantic_anchor, pending.physical_anchor
+            )
+            self.pending.pop(request_id, None)
 
-        manager._compressed_request_physical_tokens[request.request_id] = (
-            plan.physical_num_tokens
-        )
-        from vllm.v1.core.kv_cache_manager import KVCacheCompressionCommitResult
+    def after_schedule(self, output: Any) -> None:
+        """Arm the same deterministic transaction the worker performs."""
+        reset_ids = set(getattr(output, "preempted_req_ids", ()))
+        reset_ids.update(output.finished_req_ids)
+        for request_id in reset_ids:
+            self.pending.pop(request_id, None)
+            self.active.pop(request_id, None)
 
-        return KVCacheCompressionCommitResult(
-            source_block_ids=source,
-            destination_block_ids=target,
-            released_block_ids=released,
-            retained_hashed_source_block_ids=retained,
-        )
-
-    manager_cls.validate_compression_plan = validate
-    manager_cls.apply_compression_plan = apply
-    setattr(manager_cls, _STATEFUL_MARKER, True)
-
-
-def _install_scheduler_hook(scheduler_cls: type[Any]) -> None:
-    marker = f"{_STATEFUL_MARKER}_schedule"
-    if scheduler_cls.__dict__.get(marker, False):
-        return
-    original_schedule = scheduler_cls.schedule
-
-    def schedule(scheduler: Any, *args: Any, **kwargs: Any) -> Any:
-        output = original_schedule(scheduler, *args, **kwargs)
-        runtime_spec = getattr(
-            scheduler, "kv_cache_compression_runtime_spec", None
-        )
-        manager = getattr(scheduler, "kv_cache_manager", None)
-        if runtime_spec is None or manager is None:
-            return output
-
-        transactions = dict(output.kv_cache_compression_transaction_ids or {})
-        destinations = dict(
-            output.kv_cache_compression_destination_block_ids or {}
+        single_manager = (
+            self.scheduler.kv_cache_manager.coordinator.single_type_managers[0]
         )
         for request_id in output.num_scheduled_tokens:
-            if (
-                request_id in transactions
-                or request_id
-                in scheduler._inflight_kv_cache_compression_transactions
-            ):
+            if request_id in self.pending:
                 continue
-            physical = manager.get_compressed_physical_num_tokens(request_id)
-            if physical is None or physical < runtime_spec.compression_threshold_tokens:
-                continue
-            request = scheduler.requests.get(request_id)
+            request = self.scheduler.requests.get(request_id)
             if request is None:
                 continue
-            if manager.enable_caching:
-                try:
-                    destinations[request_id] = manager.reserve_compression_destination(
-                        request
-                    )
-                except (KVCacheCompressionError, ValueError):
+            # The current host advances this value in ``_update_after_schedule``
+            # before ``Scheduler.schedule`` returns. The worker receives the
+            # pre-step value and separately adds its scheduled-token count.
+            semantic = int(request.num_computed_tokens)
+            active = self.active.get(request_id)
+            if active is None:
+                physical = semantic
+                if semantic != int(request.num_prompt_tokens):
                     continue
-            scheduler._arm_kv_cache_compression_transaction(
-                request_id, transactions
+            else:
+                physical = active.physical_anchor + semantic - active.semantic_anchor
+            if physical < self.threshold:
+                continue
+            blocks = single_manager.req_to_blocks.get(request_id, ())
+            keep = _blocks_for_tokens(self.budget)
+            if len(blocks) < keep:
+                raise RuntimeError(
+                    f"request {request_id!r} has too few scheduler blocks"
+                )
+            self.pending[request_id] = SchedulerPendingCompression(
+                semantic_anchor=semantic,
+                physical_anchor=self.budget,
+                block_ids=tuple(block.block_id for block in blocks[:keep]),
             )
 
-        output.kv_cache_compression_transaction_ids = transactions or None
-        output.kv_cache_compression_destination_block_ids = destinations or None
+
+def install_stateful_compression_hooks(
+    scheduler_cls: type[Any],
+    manager_cls: type[Any],
+    selection: ProviderSelection,
+) -> None:
+    """Install idempotent scheduler and allocation wrappers."""
+    _install_manager_hooks(manager_cls)
+    marker = f"{_PATCH_MARKER}_scheduler"
+    if scheduler_cls.__dict__.get(marker, False):
+        return
+    original_init = scheduler_cls.__init__
+    original_schedule = scheduler_cls.schedule
+
+    def initialize(scheduler: Any, *args: Any, **kwargs: Any) -> None:
+        original_init(scheduler, *args, **kwargs)
+        setattr(
+            scheduler, _STATE_ATTRIBUTE, SchedulerCompressionState(scheduler, selection)
+        )
+
+    def schedule(scheduler: Any, *args: Any, **kwargs: Any) -> Any:
+        state = getattr(scheduler, _STATE_ATTRIBUTE)
+        state.before_schedule()
+        output = original_schedule(scheduler, *args, **kwargs)
+        state.after_schedule(output)
         return output
 
-    setattr(scheduler_cls, f"{marker}_original", original_schedule)
+    setattr(scheduler_cls, f"{marker}_original_init", original_init)
+    setattr(scheduler_cls, f"{marker}_original_schedule", original_schedule)
+    scheduler_cls.__init__ = initialize
     scheduler_cls.schedule = schedule
     setattr(scheduler_cls, marker, True)
 
 
-def install_stateful_compression_hooks(
-    scheduler_classes: tuple[type[Any], ...],
-) -> None:
-    """Install repeated-compression support without modifying vLLM sources."""
-    from vllm.v1.core.kv_cache_manager import KVCacheManager
+def _install_manager_hooks(manager_cls: type[Any]) -> None:
+    if manager_cls.__dict__.get(_PATCH_MARKER, False):
+        return
+    original_allocate = manager_cls.allocate_slots
+    original_free = manager_cls.free
 
-    _install_manager_hooks(KVCacheManager)
-    for scheduler_cls in scheduler_classes:
-        _install_scheduler_hook(scheduler_cls)
+    def allocate_slots(manager: Any, request: Any, *args: Any, **kwargs: Any) -> Any:
+        active = getattr(manager, _OFFSETS_ATTRIBUTE, {}).get(request.request_id)
+        if active is None:
+            return original_allocate(manager, request, *args, **kwargs)
+        semantic = int(request.num_computed_tokens)
+        request.num_computed_tokens = semantic - active.removed_tokens
+        try:
+            return original_allocate(manager, request, *args, **kwargs)
+        finally:
+            request.num_computed_tokens = semantic
+
+    def free(manager: Any, request: Any) -> Any:
+        getattr(manager, _OFFSETS_ATTRIBUTE, {}).pop(request.request_id, None)
+        return original_free(manager, request)
+
+    setattr(manager_cls, f"{_PATCH_MARKER}_original_allocate", original_allocate)
+    setattr(manager_cls, f"{_PATCH_MARKER}_original_free", original_free)
+    manager_cls.allocate_slots = allocate_slots
+    manager_cls.free = free
+    setattr(manager_cls, _PATCH_MARKER, True)
+
+
+def _blocks_for_tokens(num_tokens: int) -> int:
+    return (num_tokens + ASCEND_BLOCK_SIZE - 1) // ASCEND_BLOCK_SIZE

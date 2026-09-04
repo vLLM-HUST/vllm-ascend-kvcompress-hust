@@ -83,9 +83,7 @@ class TriAttentionConfig:
                 ),
             ),
             score_chunk_size=require_int(method_config, "score_chunk_size", 512),
-            score_layer_stride=require_int(
-                method_config, "score_layer_stride", 4
-            ),
+            score_layer_stride=require_int(method_config, "score_layer_stride", 4),
         )
         config._validate()
         return config
@@ -111,6 +109,4 @@ class TriAttentionConfig:
                 "method option 'protected_recent_window' cannot exceed 'kv_budget'"
             )
         if self.score_layer_stride <= 0:
-            raise ValueError(
-                "method option 'score_layer_stride' must be positive"
-            )
+            raise ValueError("method option 'score_layer_stride' must be positive")

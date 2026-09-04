@@ -1,83 +1,113 @@
 # SPDX-License-Identifier: Apache-2.0
 
-from types import SimpleNamespace
+from importlib.machinery import ModuleSpec
+from types import ModuleType
 
+import vllm_ascend_kvcompress.plugin as plugin
 from vllm_ascend_kvcompress.plugin import (
-    _install_balance_scheduler_hook,
-    _install_hooks,
+    _install_runner_hooks,
+    _install_slot_mapping_hook,
+    _RunnerPatchLoader,
 )
-from vllm_ascend_kvcompress.provider import PROVIDER_FACTORY_QUALNAME
-
-
-class _Platform:
-    @classmethod
-    def get_kv_cache_compression_provider_factory(cls) -> str | None:
-        del cls
-        return None
-
-
-class _Worker:
-    def validate_kv_cache_compression(self):
-        return "original-validate"
-
-    def initialize_from_config(self, config):
-        return config
 
 
 class _Runner:
+    def initialize_kv_cache(self, config):
+        return config
+
     def _update_states(self, output):
         return output
 
-    def _prepare_inputs(self, output, scheduled):
-        return output, scheduled
+    def _build_attention_metadata(self, *args, **kwargs):
+        return args, kwargs
 
     def sample_tokens(self, grammar):
         return grammar
 
 
-def test_hook_installation_is_idempotent() -> None:
-    _install_hooks(_Platform, _Worker, _Runner)
-    first_validate = _Worker.validate_kv_cache_compression
-    first_prepare = _Runner._prepare_inputs
+class _BlockTable:
+    def compute_slot_mapping(self, num_reqs, query_start_loc, positions):
+        self.arguments = num_reqs, query_start_loc, positions
 
-    _install_hooks(_Platform, _Worker, _Runner)
 
-    assert _Platform.get_kv_cache_compression_provider_factory() == (
-        PROVIDER_FACTORY_QUALNAME
+class _WrappedLoader:
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        module.NPUModelRunner = _Runner
+
+
+def test_runner_hook_installation_is_idempotent() -> None:
+    selection = object()
+    _install_runner_hooks(_Runner, selection)
+    first_update = _Runner._update_states
+    first_sample = _Runner.sample_tokens
+
+    _install_runner_hooks(_Runner, selection)
+
+    assert _Runner._update_states is first_update
+    assert _Runner.sample_tokens is first_sample
+
+
+def test_slot_mapping_hook_is_idempotent() -> None:
+    _install_slot_mapping_hook(_BlockTable)
+    first = _BlockTable.compute_slot_mapping
+    _install_slot_mapping_hook(_BlockTable)
+    assert _BlockTable.compute_slot_mapping is first
+
+
+def test_lazy_loader_patches_runner_after_module_execution(monkeypatch) -> None:
+    calls = []
+    selection = object()
+    monkeypatch.setattr(
+        plugin,
+        "_install_runner_hooks",
+        lambda runner, config: calls.append((runner, config)),
     )
-    assert _Worker.validate_kv_cache_compression is first_validate
-    assert _Runner._prepare_inputs is first_prepare
+    loader = _RunnerPatchLoader(_WrappedLoader(), selection)
+    module = ModuleType("fake_runner")
+    spec = ModuleSpec(module.__name__, loader)
+
+    assert loader.create_module(spec) is None
+    loader.exec_module(module)
+
+    assert calls == [(_Runner, selection)]
 
 
-def test_balance_scheduler_forwards_compression_runtime_spec() -> None:
-    class BaseScheduler:
-        def __init__(self, **kwargs):
-            self.base_kwargs = kwargs
+def test_runner_binds_the_normalized_ascend_cache_plan(monkeypatch) -> None:
+    events = []
 
-    class BalanceScheduler(BaseScheduler):
-        def __init__(self, **kwargs):
-            self.original_kwargs = kwargs
+    class Provider:
+        def __init__(self, vllm_config, selection):
+            events.append(("create", vllm_config, selection))
 
-    class VictimSelector:
-        @classmethod
-        def from_vllm_config(cls, config):
-            return (cls, config)
+        def validate_host(self, runner):
+            events.append(("validate", runner))
 
-    _install_balance_scheduler_hook(
-        BalanceScheduler,
-        VictimSelector,
-        lambda config: True,
-    )
-    config = SimpleNamespace(parallel_config=SimpleNamespace(data_parallel_size=2))
-    runtime_spec = object()
-    scheduler = BalanceScheduler(
-        vllm_config=config,
-        kv_cache_config=object(),
-        structured_output_manager=object(),
-        block_size=128,
-        kv_cache_compression_runtime_spec=runtime_spec,
-    )
+        def bind_model_runner(self, runner, cache_config):
+            events.append(("bind", runner, cache_config))
 
-    assert scheduler.base_kwargs["kv_cache_compression_runtime_spec"] is runtime_spec
-    assert len(scheduler.balance_queue) == 2
-    assert scheduler.victim_selector == (VictimSelector, config)
+    class Runner:
+        vllm_config = object()
+
+        def initialize_kv_cache(self, incoming):
+            self.kv_cache_config = "normalized-cache-plan"
+            return incoming
+
+        def _update_states(self, output):
+            return output
+
+        def _build_attention_metadata(self, *args, **kwargs):
+            return args, kwargs
+
+        def sample_tokens(self, grammar):
+            return grammar
+
+    monkeypatch.setattr(plugin, "AscendKVCompressionProvider", Provider)
+    selection = object()
+    _install_runner_hooks(Runner, selection)
+
+    assert Runner().initialize_kv_cache("incoming-plan") == "incoming-plan"
+    assert events[-1][0] == "bind"
+    assert events[-1][2] == "normalized-cache-plan"

@@ -7,13 +7,15 @@ select cached keys. The `.pt` files under `artifacts/` contain those statistics.
 They are generated offline, selected at service startup through `stats_path`,
 and treated as read-only for the lifetime of the service.
 
-`artifacts/` is intentionally git-ignored. A clean clone does not contain a
-calibration file; operators must generate or securely distribute one for the
-exact model revision they serve.
+Two legacy calibration files are committed for development and historical
+reproducibility, but they are excluded from the Python wheel. Their generation
+provenance is incomplete. Operators must generate or securely distribute a
+fully traced artifact for the exact model revision they serve and must not
+infer model/dataset redistribution rights from this repository's license.
 
-## Current Local Artifacts
+## Committed Legacy Artifacts
 
-The current workspace contains these two Qwen2.5-Coder-14B-Instruct artifacts:
+The repository contains these two Qwen2.5-Coder-14B-Instruct artifacts:
 
 | File | Intended use | Size | SHA-256 |
 | --- | --- | ---: | --- |

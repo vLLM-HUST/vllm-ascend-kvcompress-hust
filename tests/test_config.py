@@ -6,9 +6,15 @@ from types import SimpleNamespace
 import pytest
 
 from vllm_ascend_kvcompress.config import (
+    CONFIG_ENV,
+    ENABLE_ENV,
+    EXTENSION_ID,
     LEGACY_PROVIDER_NAME,
+    MANAGER_ENABLED_ENV,
     PROVIDER_NAME,
     ProviderSelection,
+    extension_enabled,
+    load_runtime_selection,
 )
 from vllm_ascend_kvcompress.methods.triattention import TriAttentionConfig
 
@@ -88,3 +94,20 @@ def test_triattention_config_rejects_unknown_option() -> None:
         TriAttentionConfig.from_method_config(
             {"stats_path": "/tmp/stats.pt", "typo": 1}
         )
+
+
+def test_extension_activation_is_explicit() -> None:
+    assert not extension_enabled({})
+    assert extension_enabled({ENABLE_ENV: "1"})
+    assert extension_enabled({MANAGER_ENABLED_ENV: f"other,{EXTENSION_ID}"})
+
+
+def test_direct_runtime_config_accepts_json_or_path(tmp_path: Path) -> None:
+    payload = '{"method_config":{"stats_path":"/tmp/stats.pt"}}'
+    direct = load_runtime_selection({CONFIG_ENV: payload})
+    config_path = tmp_path / "config.json"
+    config_path.write_text(payload, encoding="utf-8")
+    from_path = load_runtime_selection({CONFIG_ENV: str(config_path)})
+
+    assert direct == from_path
+    assert direct.method_config["stats_path"] == "/tmp/stats.pt"

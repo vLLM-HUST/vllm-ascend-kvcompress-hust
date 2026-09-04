@@ -20,7 +20,7 @@ from ..base import (
 )
 from .cache import gather_paged_range, materialize_token_slots, token_slots
 from .config import TriAttentionConfig
-from .kernels import score_paged_keys_mean
+from .kernels import aggregate_normalized_scores, score_paged_keys_mean
 from .scoring import (
     build_geometric_offsets,
     normalize_head_scores,
@@ -61,6 +61,8 @@ class TriAttentionMethod(KVCompressionMethod):
         self.k_workspace: torch.Tensor | None = None
         self.v_workspace: torch.Tensor | None = None
         self.score_workspace: torch.Tensor | None = None
+        self.aggregate_workspace: torch.Tensor | None = None
+        self.dense_indices: torch.Tensor | None = None
 
     @property
     def name(self) -> str:
@@ -145,6 +147,14 @@ class TriAttentionMethod(KVCompressionMethod):
             dtype=torch.float32,
             device=runner.device,
         )
+        self.aggregate_workspace = torch.empty(
+            int(self.vllm_config.model_config.max_model_len),
+            dtype=torch.float32,
+            device=runner.device,
+        )
+        self.dense_indices = torch.arange(
+            self.config.kv_budget, device=runner.device, dtype=torch.long
+        )
 
     def compress(self, request: CompressionRequest) -> CompressionResult:
         if (
@@ -153,6 +163,7 @@ class TriAttentionMethod(KVCompressionMethod):
             or self.k_workspace is None
             or self.v_workspace is None
             or self.score_workspace is None
+            or self.dense_indices is None
         ):
             raise RuntimeError("TriAttention method is not bound to KV cache")
         keep_indices = self._select_keep_indices(
@@ -163,12 +174,9 @@ class TriAttentionMethod(KVCompressionMethod):
         source_slots = token_slots(
             request.source_block_ids_device, keep_indices, ASCEND_BLOCK_SIZE
         )
-        dense_indices = torch.arange(
-            keep_indices.shape[0], device=keep_indices.device, dtype=torch.long
-        )
         destination_slots = token_slots(
             request.destination_block_ids_device,
-            dense_indices,
+            self.dense_indices,
             ASCEND_BLOCK_SIZE,
         )
         for layer in self.layer_caches:
@@ -195,32 +203,26 @@ class TriAttentionMethod(KVCompressionMethod):
         round_start: int,
     ) -> torch.Tensor:
         assert self.offsets is not None
-        aggregated_scores = torch.empty(
-            (physical_num_tokens,),
-            dtype=torch.float32,
-            device=source_block_ids.device,
-        )
+        if self.aggregate_workspace is None or self.score_workspace is None:
+            raise RuntimeError("TriAttention score workspaces are not initialized")
+        aggregated_scores = self.aggregate_workspace[:physical_num_tokens]
         # Scoring every model layer serializes dozens of small reductions in the
         # scheduler hot path. Uniformly sample calibrated layers while still
         # materializing the selected KV tokens for every cache layer.
         scoring_layers = self.layer_caches[:: self.config.score_layer_stride]
         layer_count = len(scoring_layers)
         for layer_index, layer in enumerate(scoring_layers):
-            score_workspace = getattr(self, "score_workspace", None)
+            score_workspace = self.score_workspace
             kernel_inputs = (
                 layer.frequency_scale,
                 layer.extra_coefficient,
                 layer.offset_cos_mean,
                 layer.offset_sin_mean,
             )
-            if (
-                self.config.score_aggregation == "mean"
-                and score_workspace is not None
-                and all(value is not None for value in kernel_inputs)
+            if self.config.score_aggregation == "mean" and all(
+                value is not None for value in kernel_inputs
             ):
-                raw_scores = score_workspace[
-                    :, :, :physical_num_tokens
-                ]
+                raw_scores = score_workspace[:, :, :physical_num_tokens]
                 used_kernel = score_paged_keys_mean(
                     layer.k_cache,
                     source_block_ids,
@@ -243,26 +245,24 @@ class TriAttentionMethod(KVCompressionMethod):
                 head_variance, head_mean = torch.var_mean(
                     raw_scores, dim=-1, correction=0
                 )
-                normalized = normalize_head_scores(
-                    raw_scores, head_mean, head_variance
-                )
-                layer_scores = normalized.amax(dim=(0, 1))
-                if layer_index == 0:
-                    aggregated_scores.copy_(layer_scores)
-                elif self.config.layer_aggregation == "mean":
-                    aggregated_scores.add_(layer_scores)
-                else:
-                    torch.maximum(
-                        aggregated_scores, layer_scores, out=aggregated_scores
+                if not aggregate_normalized_scores(
+                    raw_scores,
+                    head_mean,
+                    head_variance,
+                    aggregated_scores,
+                    physical_num_tokens,
+                    layer_aggregation=self.config.layer_aggregation,
+                    first_layer=layer_index == 0,
+                ):
+                    self._aggregate_torch(
+                        raw_scores,
+                        head_mean,
+                        head_variance,
+                        aggregated_scores,
+                        layer_index,
                     )
                 continue
-            head_sum = torch.zeros(
-                layer.stats.q_mean_real.shape[:2],
-                dtype=torch.float32,
-                device=source_block_ids.device,
-            )
-            head_square_sum = torch.zeros_like(head_sum)
-            score_chunks: list[torch.Tensor] = []
+            raw_scores = score_workspace[:, :, :physical_num_tokens]
             for start in range(0, physical_num_tokens, self.config.score_chunk_size):
                 count = min(self.config.score_chunk_size, physical_num_tokens - start)
                 keys = gather_paged_range(
@@ -272,34 +272,31 @@ class TriAttentionMethod(KVCompressionMethod):
                     count=count,
                     block_size=ASCEND_BLOCK_SIZE,
                 )
-                raw_scores = score_post_rope_keys(
+                chunk_scores = score_post_rope_keys(
                     keys,
                     layer.stats,
                     round_start=round_start,
                     offsets=self.offsets,
                     aggregation=self.config.score_aggregation,
                 )
-                score_chunks.append(raw_scores)
-                head_sum.add_(raw_scores.sum(dim=-1))
-                head_square_sum.add_(raw_scores.square().sum(dim=-1))
-            head_mean = head_sum / float(physical_num_tokens)
-            head_variance = (
-                head_square_sum / float(physical_num_tokens) - head_mean.square()
-            ).clamp_min_(0.0)
-
-            start = 0
-            for raw_scores in score_chunks:
-                count = raw_scores.shape[-1]
-                normalized = normalize_head_scores(raw_scores, head_mean, head_variance)
-                layer_scores = normalized.amax(dim=(0, 1))
-                target = aggregated_scores[start : start + count]
-                if layer_index == 0:
-                    target.copy_(layer_scores)
-                elif self.config.layer_aggregation == "mean":
-                    target.add_(layer_scores)
-                else:
-                    torch.maximum(target, layer_scores, out=target)
-                start += count
+                raw_scores[:, :, start : start + count].copy_(chunk_scores)
+            head_variance, head_mean = torch.var_mean(raw_scores, dim=-1, correction=0)
+            if not aggregate_normalized_scores(
+                raw_scores,
+                head_mean,
+                head_variance,
+                aggregated_scores,
+                physical_num_tokens,
+                layer_aggregation=self.config.layer_aggregation,
+                first_layer=layer_index == 0,
+            ):
+                self._aggregate_torch(
+                    raw_scores,
+                    head_mean,
+                    head_variance,
+                    aggregated_scores,
+                    layer_index,
+                )
 
         if self.config.layer_aggregation == "mean":
             aggregated_scores.div_(float(layer_count))
@@ -316,6 +313,23 @@ class TriAttentionMethod(KVCompressionMethod):
             sorted=False,
         ).indices
         return torch.sort(selected).values.contiguous()
+
+    def _aggregate_torch(
+        self,
+        raw_scores: torch.Tensor,
+        head_mean: torch.Tensor,
+        head_variance: torch.Tensor,
+        aggregated_scores: torch.Tensor,
+        layer_index: int,
+    ) -> None:
+        normalized = normalize_head_scores(raw_scores, head_mean, head_variance)
+        layer_scores = normalized.amax(dim=(0, 1))
+        if layer_index == 0:
+            aggregated_scores.copy_(layer_scores)
+        elif self.config.layer_aggregation == "mean":
+            aggregated_scores.add_(layer_scores)
+        else:
+            torch.maximum(aggregated_scores, layer_scores, out=aggregated_scores)
 
 
 def create_triattention_method(

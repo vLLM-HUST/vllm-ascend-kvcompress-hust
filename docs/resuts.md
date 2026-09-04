@@ -1,15 +1,17 @@
-# Current Benchmark Results
+# Historical 0.2 Benchmark Results
 
 English | [简体中文](resuts.zh.md)
 
-This document is the single public summary of benchmark results for the current
-repository version. The README intentionally contains no A/B result table.
-Commands and reporting rules are maintained separately in the
-[benchmarking guide](benchmarking.md).
+> **Historical evidence only — not version 0.3 acceptance.** These measurements
+> used the removed fork-specific host lifecycle and an older host snapshot.
+> They must not be presented as performance, quality, correctness, or HBM
+> results for the current independently packaged plugin. Current acceptance
+> status is tracked in [Validation](validation.md), and new measurements must
+> follow the [version 0.3 protocol](benchmarking.md).
 
 ## Status
 
-The current implementation has passed functional, capacity, and serving
+The former 0.2 implementation passed functional, capacity, and serving
 validation on one Ascend 910B2 in ACL graph mode. Compression was active in all
 TriAttention runs, every request completed, and the tested 8192-token prompts
 were reduced from 64 physical blocks to 16.
@@ -38,7 +40,7 @@ performance or quality claim.
 | KV layout | Separate BF16/FP16 K/V, block size 128 |
 | Maximum model length | 12288 |
 | Async scheduling / prefix caching | Disabled / disabled |
-| Independent Knorm compressor | Disabled |
+| Old-host independent Knorm compressor | Disabled |
 | TriAttention budget | 2048 tokens |
 | Recompute / protected recent window | 128 / 128 tokens |
 | Score layer stride | 4 |

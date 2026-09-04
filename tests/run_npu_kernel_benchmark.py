@@ -15,6 +15,7 @@ from vllm_ascend_kvcompress.methods.triattention.cache import (
     token_slots,
 )
 from vllm_ascend_kvcompress.methods.triattention.kernels import (
+    aggregate_normalized_scores,
     score_paged_keys_mean,
     shift_positions,
 )
@@ -80,6 +81,7 @@ def main() -> None:
         torch.arange(budget, device=device, dtype=torch.int64),
         block_size,
     )
+
     def kernel_copy() -> None:
         materialize_token_slots(
             k_cache,
@@ -105,9 +107,7 @@ def main() -> None:
         device=device,
         dtype=torch.float32,
     )
-    extra_coefficient = q_abs - torch.sqrt(
-        q_real.square() + q_imag.square() + 1e-8
-    )
+    extra_coefficient = q_abs - torch.sqrt(q_real.square() + q_imag.square() + 1e-8)
     output = torch.empty(
         kv_heads, queries_per_kv, num_tokens, device=device, dtype=torch.float32
     )
@@ -157,10 +157,35 @@ def main() -> None:
     generic_score_ms = elapsed_ms(generic_score, 2, 5)
     kernel_score_ms = elapsed_ms(kernel_score, 2, 5)
 
+    head_mean = output.mean(dim=-1)
+    head_variance = output.var(dim=-1, correction=0)
+    aggregate = torch.empty(num_tokens, device=device, dtype=torch.float32)
+
+    def generic_aggregate() -> None:
+        normalized = (output - head_mean.unsqueeze(-1)) * torch.rsqrt(
+            head_variance.unsqueeze(-1) + 1e-6
+        )
+        torch.amax(normalized, dim=(0, 1), out=aggregate)
+
+    def kernel_aggregate() -> None:
+        aggregate_normalized_scores(
+            output,
+            head_mean,
+            head_variance,
+            aggregate,
+            num_tokens,
+            layer_aggregation="mean",
+            first_layer=True,
+        )
+
+    generic_aggregate_ms = elapsed_ms(generic_aggregate, 5, 50)
+    kernel_aggregate_ms = elapsed_ms(kernel_aggregate, 5, 50)
+
     positions = torch.arange(4096, device=device, dtype=torch.int64)
     request_indices = torch.arange(4096, device=device, dtype=torch.int64) % 16
     request_offsets = torch.arange(16, device=device, dtype=torch.int64) * 128
     physical_positions = torch.empty_like(positions)
+
     def generic_shift() -> None:
         torch.sub(
             positions,
@@ -186,6 +211,11 @@ def main() -> None:
     print(
         f"score generic={generic_score_ms:.3f}ms kernel={kernel_score_ms:.3f}ms "
         f"speedup={generic_score_ms / kernel_score_ms:.2f}x"
+    )
+    print(
+        f"aggregate generic={generic_aggregate_ms:.3f}ms "
+        f"kernel={kernel_aggregate_ms:.3f}ms "
+        f"speedup={generic_aggregate_ms / kernel_aggregate_ms:.2f}x"
     )
     print(
         f"offset generic={generic_shift_ms:.3f}ms kernel={kernel_shift_ms:.3f}ms "

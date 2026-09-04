@@ -1,0 +1,2 @@
+prune artifacts
+global-exclude __pycache__ *.py[cod]

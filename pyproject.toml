@@ -1,18 +1,26 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "vllm-ascend-kvcompress-hust"
-version = "0.2.0"
-description = "Extensible KV-cache compression methods for vLLM-Ascend-HUST"
+version = "0.3.0"
+description = "TriAttention KV-cache compression plugin for vLLM Ascend"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
 license = "Apache-2.0"
-license-files = ["LICENSE"]
-authors = [{name = "vLLM-HUST contributors"}]
+license-files = ["LICENSE", "NOTICE"]
+authors = [
+    {name = "HUST CGCL"},
+    {name = "Sichen Liu"},
+]
+maintainers = [
+    {name = "Jiawan Zhang"},
+    {name = "Ruohao Wei"},
+    {name = "Sichen Liu"},
+]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3.10",
@@ -23,24 +31,39 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "vllm>=0.23.1,<0.24",
-    "vllm-ascend-hust>=0.19.1,<0.20",
+    "vllm>=0.17.2rc1.dev0,<0.18",
+    "vllm-ascend>=0.25.1rc1,<0.26",
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8", "ruff>=0.16"]
+test = [
+    "pytest>=8",
+    "ruff>=0.16",
+    "vllm-hust-ext>=0.2.0.dev0,<0.3",
+]
+manager = ["vllm-hust-ext>=0.2.0.dev0,<0.3"]
 
 [project.urls]
 Homepage = "https://github.com/vLLM-HUST/vllm-ascend-kvcompress-hust"
 Repository = "https://github.com/vLLM-HUST/vllm-ascend-kvcompress-hust"
 Issues = "https://github.com/vLLM-HUST/vllm-ascend-kvcompress-hust/issues"
+TriAttention = "https://github.com/WeianMao/triattention"
+Paper = "https://arxiv.org/abs/2604.04921"
+"Lead-Seas0" = "https://github.com/Seas0"
+"Maintainer-Jiawan23" = "https://github.com/Jiawan23"
+"Maintainer-kotoriqaq0" = "https://github.com/kotoriqaq0"
 
 [project.entry-points."vllm.general_plugins"]
 ascend_kvcompress = "vllm_ascend_kvcompress.plugin:register"
-triattention_ascend = "vllm_ascend_kvcompress.plugin:register"
+
+[project.entry-points."vllm_hust.extension_bundles"]
+"org.vllm-hust.ascend-kvcompress" = "vllm_ascend_kvcompress.manifests"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"vllm_ascend_kvcompress.manifests" = ["*.json"]
 
 [tool.ruff]
 line-length = 88

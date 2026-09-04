@@ -2,110 +2,69 @@
 
 [English](methods.md) | 简体中文
 
-## 分层
+## 运行时分层
 
-插件包含三个明确层次：
+0.3 是自包含插件，不再使用已删除的 vLLM-HUST 压缩生命周期：
 
-1. `plugin.py` 安装幂等的 vLLM-Ascend hook。
-2. `provider.py` 负责公共昇腾缓存协议和 vLLM-HUST 事务生命周期。
-3. 每个 `methods/<name>/` 包负责一种算法的配置、兼容性、状态、评分和 KV
-   物化。
+1. `plugin.py` 是显式启用的 `vllm.general_plugins` 入口。调度侧立即挂接，
+   Ascend worker 在对应模块真正加载时才挂接，因此管理器和纯 API 进程不会
+   提前导入 NPU runner。
+2. `stateful.py` 管理 scheduler/KV manager 状态。在同步调度边界提交已完成的
+   压缩，并释放旧 block table 尾部。
+3. `provider.py` 校验当前宿主对象、在 worker 镜像事务、把语义位置转换为物理
+   slot，并把选择和物化委托给具体方法。
+4. `methods/<name>/` 负责算法选项、兼容性检查、评分、校准和 KV 物化。
 
-公共包根目录不得放置内置方法专用的评分、校准或缓存操作模块。方法 registry
-只依赖 `methods/base.py` 中的稳定协议，因此新增或修改算法不会扩大公共
-provider 的依赖面。
+适配层明确依赖主 README 列出的宿主内部符号。这些接口尚未冻结，所以只能在
+已测试版本线上提供支持；接口变化时必须拒绝启动并重新验收。
 
-内置 TriAttention 包展示了推荐组织方式：
+## 配置契约
 
-| 路径 | 职责 |
-| --- | --- |
-| `methods/triattention/__init__.py` | 方法的公开导出和 factory |
-| `methods/triattention/config.py` | 方法专用选项解析和校验 |
-| `methods/triattention/method.py` | `KVCompressionMethod` 实现 |
-| `methods/triattention/scoring.py` | 向量化 token 评分 |
-| `methods/triattention/stats.py` | 校准产物加载和校验 |
-| `methods/triattention/cache.py` | 分页缓存 gather 和物化 |
+Extension Manager 保存一个 JSON 对象，必须包含 `schema_version`、`provider`、
+`method` 和 `method_config`。完整示例见
+[`examples/triattention.json`](../examples/triattention.json)。未知字段、未知方法、
+不满足 block 对齐的值及不存在的校准文件都会报错，不会被静默忽略。
 
-产物生成器、可接受的 payload schema、字段语义、校验和生命周期见
-[TriAttention 校准产物](calibration-artifacts.zh.md)。
-
-外层 vLLM provider 固定为 `ascend_kvcompress`。扁平的
-`provider_config.method` 标量选择已注册的方法，其余标量选项原样传递给该
-方法的 factory。
-
-## 方法协议
+## 方法契约
 
 实现 `methods/base.py` 中的 `KVCompressionMethod`：
 
-- `name`：稳定的配置和 registry 名称。
-- `runtime_spec`：scheduler 可见的阈值、recompute window、最大物理长度和
-  私有目标要求。
-- `compatibility_reasons(worker)`：无副作用的方法专用检查。
-- `bind_model_runner(runner, layer_caches)`：公共缓存布局检查和分配完成后
-  初始化状态。
-- `compress(request)`：物化一次初始或重复压缩事务，返回物理长度以及可选的
-  逐层长度。
+- `name`：稳定的注册和配置名称；
+- `runtime_spec`：供 scheduler 适配层使用的 block 对齐阈值、重算窗口、最大
+  物理长度和目标区要求；
+- `compatibility_reasons(worker)`：无副作用的算法兼容检查；
+- `bind_model_runner(runner, layer_caches)`：公共缓存校验后分配状态；
+- `compress(request)`：同步完成一次物化并返回新物理长度，以及可选的逐层长度。
 
-公共 provider 会在创建 scheduler plan 前验证方法结果。方法不得修改
-scheduler 所有权或 model-runner block table。
-如果方法返回逐层物理长度，必须完整且不重复地报告每个已绑定层；每个值都必须
-为正数，且不能超过全局物理长度。
+方法只能使用已校验的 cache binding，不能修改 scheduler 拥有的 request 或
+block table。返回长度必须为正、不超过声明上限；使用逐层长度时必须覆盖全部层。
 
-## 进程内注册
+## 注册其他方法
+
+仓库内部可调用：
 
 ```python
-from collections.abc import Mapping
-from typing import Any
-
 from vllm_ascend_kvcompress import register_method
-from vllm_ascend_kvcompress.config import JsonScalar
-from vllm_ascend_kvcompress.methods.base import KVCompressionMethod, ModelShape
-
-
-def create_method(
-    options: Mapping[str, JsonScalar],
-    vllm_config: Any,
-    model_shape: ModelShape,
-) -> KVCompressionMethod:
-    return MyCompressionMethod(options, vllm_config, model_shape)
-
 
 register_method("my_method", create_method)
 ```
 
-## 第三方 Entry Point
-
-外部包无需提前导入插件即可注册：
+外部包可声明：
 
 ```toml
 [project.entry-points."vllm_ascend_kvcompress.methods"]
 my_method = "my_package.method:create_method"
 ```
 
-使用配置：
+名称只允许小写字母、数字、连字符和下划线；重复名称、非法 factory 或名称不匹配
+都会失败关闭。
 
-```json
-{
-  "schema_version": 1,
-  "provider": "ascend_kvcompress",
-  "provider_config": {
-    "method": "my_method",
-    "option_owned_by_my_method": 128
-  }
-}
-```
+## 验收清单
 
-名称会规范为小写，可包含字母、数字、连字符和下划线。重复名称、未知方法、
-无效 factory 以及 factory/方法名称不一致都会按 fail-closed 原则失败。
-
-## 方法检查清单
-
-- 只解析自身拥有的选项，并拒绝未知键。
-- 在 KV 分配前返回确定的正数 scheduler 限制。
-- 在 `compatibility_reasons` 中验证模型和校准约束。
-- 只使用 provider 传入且已经验证的 `LayerCache` binding。
-- 返回前将结果物化到提供的目标 block。
-- 返回不超过声明最大值的有效物理长度。
-- 添加 registry、配置、兼容性、物化和事务测试。
-- 运行长上下文压缩关闭/开启匹配 benchmark；稳定公开行为写入发布文档，原始
-  机器专用日志放入 `docs/dev/`。
+- 只解析本方法拥有的选项，拒绝未知值；
+- scheduler 限制必须确定且满足 block 对齐；
+- 服务启动前校验模型、RoPE、校准、dtype 和 cache layout；
+- `compress` 返回前完成所有层的物化；
+- 补齐注册、配置、事务和数值测试；
+- 在精确宿主 revision 上完成压缩关闭/开启的正确性、质量、吞吐、时延和 HBM
+  对照验收。
