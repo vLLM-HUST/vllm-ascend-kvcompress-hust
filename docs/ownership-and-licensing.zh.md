@@ -34,7 +34,7 @@ kernel。本地实现、打包、测试和文档均采用 Apache-2.0。
 | 模型权重、tokenizer 资产 | 否 | 否 | 按其上游条款另行获取 |
 | 校准或 benchmark 输入文本 | 否 | 否 | 使用者自行确认使用和再分发权利 |
 | 原始服务日志、prompt、生成结果、profiler trace | 否 | 否 | 属于运行环境材料，本仓库未授予再分发权 |
-| `docs/resuts*.md` 历史测量 | 是 | 仅作为文档 | 文档采用 Apache-2.0，但不是 0.3 版本验收证据 |
+| `docs/resuts*.md` 历史测量 | 是 | 仅作为文档 | 文档采用 Apache-2.0，但不是 0.4 版本验收证据 |
 
 分发校准产物前，至少应记录 SHA-256、模型及其 revision、tokenizer revision、
 生成器提交、输入数据来源、token 数、生成日期和责任维护者。现有两个遗留产物

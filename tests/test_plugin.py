@@ -3,10 +3,14 @@
 from importlib.machinery import ModuleSpec
 from types import ModuleType
 
+import pytest
+
 import vllm_ascend_kvcompress.plugin as plugin
 from vllm_ascend_kvcompress.plugin import (
     _install_runner_hooks,
+    _install_runtime_slot_mapping_hooks,
     _install_slot_mapping_hook,
+    _prepare_current_triton_runtime,
     _RunnerPatchLoader,
 )
 
@@ -50,11 +54,88 @@ def test_runner_hook_installation_is_idempotent() -> None:
     assert _Runner.sample_tokens is first_sample
 
 
+def test_runner_hook_supplies_removed_xdrope_compatibility_attribute() -> None:
+    class Runner:
+        def initialize_kv_cache(self, config):
+            return config
+
+        def _update_states(self, output):
+            return output
+
+        def _build_attention_metadata(self, *args, **kwargs):
+            return args, kwargs
+
+        def sample_tokens(self, grammar):
+            return grammar
+
+    assert not hasattr(Runner, "uses_xdrope_dim")
+    _install_runner_hooks(Runner, object())
+    assert Runner.uses_xdrope_dim == 0
+
+
+def test_current_triton_runtime_preloads_gluon_descriptor_namespace(
+    monkeypatch,
+) -> None:
+    imported = []
+    modules = (
+        "test_triton.experimental",
+        "test_triton.experimental.gluon",
+        "test_triton.experimental.gluon.language",
+        "test_triton.experimental.gluon.nvidia",
+    )
+    monkeypatch.setattr(plugin, "_TRITON_GLUON_MODULES", modules)
+    monkeypatch.setattr(plugin, "import_module", imported.append)
+
+    _prepare_current_triton_runtime()
+
+    assert imported == list(modules)
+
+
 def test_slot_mapping_hook_is_idempotent() -> None:
     _install_slot_mapping_hook(_BlockTable)
     first = _BlockTable.compute_slot_mapping
     _install_slot_mapping_hook(_BlockTable)
     assert _BlockTable.compute_slot_mapping is first
+
+
+def test_runtime_slot_mapping_hook_uses_concrete_ascend_table() -> None:
+    class ConcreteBlockTable:
+        def compute_slot_mapping(self, num_reqs, query_start_loc, positions):
+            self.arguments = num_reqs, query_start_loc, positions
+
+    concrete = ConcreteBlockTable()
+    runner = type(
+        "Runner",
+        (),
+        {
+            "input_batch": type(
+                "InputBatch",
+                (),
+                {"block_table": type("MultiGroup", (), {"block_tables": [concrete]})()},
+            )()
+        },
+    )()
+
+    _install_runtime_slot_mapping_hooks(runner)
+
+    assert ConcreteBlockTable.__dict__["_ascend_kvcompress_patch_v3_slot_mapping"]
+
+
+def test_runtime_slot_mapping_hook_rejects_changed_group_layout() -> None:
+    runner = type(
+        "Runner",
+        (),
+        {
+            "input_batch": type(
+                "InputBatch",
+                (),
+                {"block_table": type("MultiGroup", (), {"block_tables": []})()},
+            )()
+        },
+    )()
+
+    with pytest.raises(RuntimeError, match="exactly one concrete block table"):
+        _install_runtime_slot_mapping_hooks(runner)
 
 
 def test_lazy_loader_patches_runner_after_module_execution(monkeypatch) -> None:
@@ -93,6 +174,12 @@ def test_runner_binds_the_normalized_ascend_cache_plan(monkeypatch) -> None:
 
         def initialize_kv_cache(self, incoming):
             self.kv_cache_config = "normalized-cache-plan"
+            concrete = _BlockTable()
+            self.input_batch = type(
+                "InputBatch",
+                (),
+                {"block_table": type("MultiGroup", (), {"block_tables": [concrete]})()},
+            )()
             return incoming
 
         def _update_states(self, output):

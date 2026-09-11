@@ -6,6 +6,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from vllm.logger import logger
+
 from .config import ASCEND_BLOCK_SIZE, ProviderSelection
 from .methods.triattention.config import TriAttentionConfig
 
@@ -56,6 +58,12 @@ class SchedulerCompressionState:
         self.active: dict[str, SchedulerActiveCompression] = {}
         self._validate_host()
         setattr(scheduler.kv_cache_manager, _OFFSETS_ATTRIBUTE, self.active)
+        logger.info(
+            "Ascend KV compression scheduler bound threshold_tokens=%d "
+            "target_tokens=%d",
+            self.threshold,
+            self.budget,
+        )
 
     def _validate_host(self) -> None:
         scheduler = self.scheduler
@@ -129,6 +137,7 @@ class SchedulerCompressionState:
                     "compression commit"
                 )
             tail = blocks[keep:]
+            source_block_count = len(blocks)
             del blocks[keep:]
             manager.block_pool.free_blocks(reversed(tail))
             if hasattr(cache_manager, "num_cached_block"):
@@ -137,6 +146,17 @@ class SchedulerCompressionState:
                 )
             self.active[request_id] = SchedulerActiveCompression(
                 pending.semantic_anchor, pending.physical_anchor
+            )
+            logger.info(
+                "KV compression scheduler commit request_id=%s "
+                "semantic_tokens=%d physical_tokens=%d source_blocks=%d "
+                "destination_blocks=%d released_blocks=%d",
+                request_id,
+                pending.semantic_anchor,
+                pending.physical_anchor,
+                source_block_count,
+                keep,
+                len(tail),
             )
             self.pending.pop(request_id, None)
 

@@ -183,7 +183,7 @@ python "$TRIATTENTION_CHECKOUT/scripts/calibrate.py" \
             "q_mean_imag": Tensor[40, 64],
             "q_abs_mean": Tensor[40, 64],
             "freq_scale_sq": Tensor[40, 64],  # 适用时为 scaled RoPE 提供
-            "inv_freq": Tensor[64],           # 精确逐层值
+            "inv_freq": Tensor[64],  # 精确逐层值
         },
         # 必须包含模型的每一层。
     },

@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import sys
+from importlib import import_module
 from importlib.abc import Loader, MetaPathFinder
 from importlib.machinery import ModuleSpec, PathFinder
 from types import ModuleType
 from typing import Any
+
+from vllm.logger import logger
 
 from .config import extension_enabled, load_runtime_selection
 from .provider import RUNNER_PROVIDER_ATTRIBUTE, AscendKVCompressionProvider
@@ -15,6 +18,12 @@ from .provider import RUNNER_PROVIDER_ATTRIBUTE, AscendKVCompressionProvider
 _PATCH_MARKER = "_ascend_kvcompress_patch_v3"
 _RUNNER_MODULE = "vllm_ascend.worker.model_runner_v1"
 _runner_patch_finder: _RunnerPatchFinder | None = None
+_TRITON_GLUON_MODULES = (
+    "triton.experimental",
+    "triton.experimental.gluon",
+    "triton.experimental.gluon.language",
+    "triton.experimental.gluon.nvidia",
+)
 
 
 def register() -> None:
@@ -22,13 +31,17 @@ def register() -> None:
     if not extension_enabled():
         return
     selection = load_runtime_selection()
+    logger.info(
+        "Ascend KV compression plugin activated provider=%s method=%s",
+        selection.provider_name,
+        selection.method,
+    )
+    _prepare_current_triton_runtime()
 
     from vllm.v1.core.kv_cache_manager import KVCacheManager
     from vllm.v1.core.sched.scheduler import Scheduler
-    from vllm.v1.worker.block_table import BlockTable
 
     _install_lazy_runner_hook(selection)
-    _install_slot_mapping_hook(BlockTable)
 
     from .stateful import install_stateful_compression_hooks
 
@@ -85,6 +98,13 @@ def _install_lazy_runner_hook(selection: Any) -> None:
 def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
     if runner_cls.__dict__.get(_PATCH_MARKER, False):
         return
+    # Current vLLM folded the legacy ``xdrope_section`` check into
+    # ``uses_mrope`` while the aligned Ascend runner still reads this old
+    # attribute in three paths.  Supply the neutral legacy value only when the
+    # host no longer defines it; models using xdrope are already represented by
+    # ``uses_mrope`` on this validated vLLM line.
+    if not hasattr(runner_cls, "uses_xdrope_dim"):
+        runner_cls.uses_xdrope_dim = 0
     original_initialize = runner_cls.initialize_kv_cache
     original_update = runner_cls._update_states
     original_metadata = runner_cls._build_attention_metadata
@@ -97,6 +117,7 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
         result = original_initialize(runner, kv_cache_config)
         # Ascend deep-copies and normalizes the incoming plan before storing
         # the cache config that actually owns the allocated tensors.
+        _install_runtime_slot_mapping_hooks(runner)
         provider.bind_model_runner(runner, runner.kv_cache_config)
         return result
 
@@ -135,6 +156,57 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
     setattr(runner_cls, _PATCH_MARKER, True)
 
 
+def _prepare_current_triton_runtime() -> None:
+    """Preload a module required by the current Ascend JIT specializer.
+
+    Triton Ascend 3.6 resolves Gluon descriptor types from its native argument
+    specializer.  Its first RoPE launch fails unless the NVIDIA descriptor
+    namespace has already been materialized, even though the package is present
+    in the wheel.  Keep the workaround local to enabled plugin processes and
+    fail with a useful installation error if the expected module is absent.
+    """
+    # vLLM-Ascend's legacy compatibility path creates parent modules with an
+    # empty ``__path__``.  Triton Ascend is distributed as ``triton-ascend``,
+    # so a host check for distribution ``triton`` can select that path even on
+    # 3.6.  Remove only those unmistakable empty stubs before importing the
+    # real packages from the wheel.
+    legacy_stub_present = any(
+        getattr(sys.modules.get(name), "__path__", None) == []
+        for name in _TRITON_GLUON_MODULES[:-1]
+    )
+    if legacy_stub_present:
+        for name in reversed(_TRITON_GLUON_MODULES):
+            sys.modules.pop(name, None)
+
+    try:
+        for name in _TRITON_GLUON_MODULES:
+            import_module(name)
+    except ImportError as error:
+        raise RuntimeError(
+            f"the validated Triton Ascend runtime is incomplete: cannot import {name}"
+        ) from error
+
+
+def _install_runtime_slot_mapping_hooks(runner: Any) -> None:
+    """Patch the concrete tables allocated by the current Ascend runner.
+
+    vLLM-Ascend owns a device-specific BlockTable implementation.  Patching
+    vLLM's generic table is therefore neither sufficient nor a stable way to
+    locate the active slot-mapping seam.  Resolve it from the initialized
+    runner and fail closed if the expected single-group structure changes.
+    """
+    group_table = getattr(getattr(runner, "input_batch", None), "block_table", None)
+    block_tables = getattr(group_table, "block_tables", None)
+    if not isinstance(block_tables, list) or len(block_tables) != 1:
+        raise RuntimeError(
+            "Ascend KV compression requires exactly one concrete block table"
+        )
+    block_table = block_tables[0]
+    if not callable(getattr(block_table, "compute_slot_mapping", None)):
+        raise RuntimeError("Ascend block table does not expose compute_slot_mapping")
+    _install_slot_mapping_hook(type(block_table))
+
+
 def _install_slot_mapping_hook(block_table_cls: type[Any]) -> None:
     marker = f"{_PATCH_MARKER}_slot_mapping"
     if block_table_cls.__dict__.get(marker, False):
@@ -150,7 +222,7 @@ def _install_slot_mapping_hook(block_table_cls: type[Any]) -> None:
         provider = getattr(block_table, RUNNER_PROVIDER_ATTRIBUTE, None)
         if provider is not None:
             positions = provider.physical_positions_for_slot_mapping(positions)
-        original(block_table, num_reqs, query_start_loc, positions)
+        return original(block_table, num_reqs, query_start_loc, positions)
 
     setattr(block_table_cls, f"{marker}_original", original)
     block_table_cls.compute_slot_mapping = compute_slot_mapping

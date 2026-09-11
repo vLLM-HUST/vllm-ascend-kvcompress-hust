@@ -1,74 +1,37 @@
-# 0.3 版本验收规程
+# 0.4 版本验收规程
 
 [English](benchmarking.md) | 简体中文
 
-本规程适用于当前独立插件。旧 fork 专用的
-`--kv-cache-compression-config` 参数已不存在，不能继续使用。baseline 与压缩组
-必须保持宿主提交、模型、校准产物、prompt、请求顺序、预热、设备和环境一致。
+从 HUST V4.6 交付方案提取的项目专项规范见
+[KV 压缩测试要求](kv-compress-test-requirements.zh.md)，其优先级高于下述简要流程。
 
-## 1. 固定溯源
+1. 冻结全部宿主/插件提交、Python/NPU 栈、模型/tokenizer revision、校准来源与
+   SHA-256、设备状态、配置、命令、数据集哈希和原始输出路径。
+2. 完成干净 wheel 安装、Manager 发现/配置/启用/check、禁用惰性、disable/
+   forget/卸载、消失及重装的完整生命周期。
+3. 运行 `tests/run_npu_kernel_smoke.py`，并针对数值参考测试直接评分、K/V copy、
+   聚合、offset、重复压缩、边界长度和支持的数据类型。
+4. 使用确定性且有授权的数据，断言无失败、OOM、死锁、串扰、错误答案、短输出或
+   静默截断；每次 scheduler 压缩提交必须有对应 worker 确认。
+5. A2 固定运行 8,192+512、16,384+1,024，速率 0.05/0.1/0.2/0.4 RPS，
+   并发 4，B0/B1 各三轮独立冷生命周期。A3 使用精确 30,720+2,048、并发 1、
+   预热五分钟、测量 30 分钟并分为六个窗口。
+6. 报告请求/输入/输出/总吞吐、TTFT/TPOT/E2E 分布、失败、HBM 峰值、动态 KV
+   block、压缩次数/耗时、质量、逐轮值、中位数、范围、CV 和各类哈希。
 
-每次运行前记录：
-
-- vLLM-HUST、vLLM-Ascend-HUST、Extension Manager、插件、Triton-Ascend、
-  PyTorch、torch-npu、CANN、驱动和固件版本；
-- 模型路径/ID 与不可变 revision、tokenizer revision、dtype、RoPE 配置和模型
-  文件 hash；
-- 校准产物路径、SHA-256、生成器 revision、输入来源和 metadata；
-- NPU 型号/编号、可用 HBM、功耗/频率模式和其他进程；
-- 插件 JSON、完整启动参数、benchmark 命令、prompt 集 hash 和原始输出目录。
-
-无法重建溯源的行不能公开成性能结论。
-
-## 2. 验证包生命周期
-
-在干净虚拟环境安装 wheel 和管理器，依次执行 validate、configure、enable、
-status、disable、forget 和 pip uninstall。还要确认：禁用时导入无副作用；
-enable/disable 在进程重启后生效；卸载后 Manager 不再发现该扩展。命令见主
-[README](../README.zh.md#安装与管理)。
-
-## 3. NPU kernel 数值验收
-
-用 PyTorch reference 对直接分页评分、融合聚合、选择及可能重叠的 K/V 物化做
-对照。覆盖空/短尾部、非二次幂长度、全部支持 dtype、重复压缩以及多种层/head
-形状，并记录最大绝对和相对误差，而不仅是 pass/fail。
+仓库工具可生成确定性 commissioning 数据、运行单组服务并比较成对结果：
 
 ```bash
-python tests/run_npu_kernel_smoke.py
-python tests/run_npu_kernel_benchmark.py
+python scripts/kvcompress_prepare_dataset.py --output .benchmarks/data/a2.jsonl
+python scripts/kvcompress_long_context_run.py --help
+python scripts/kvcompress_acceptance_compare.py --help
 ```
 
-## 4. 服务正确性与质量
+随机数据、截断、复用 prompt 或仅重启热服务都不能替代正式流程。
+`kv-pressure-online` 仅是快速压力 smoke。正式 B0 必须使用规定的官方 vLLM 0.18
+及匹配官方 Ascend 基线；当前宿主中禁用插件/no-compression 的结果只能标记为工程
+兼容性对照。
 
-测试低于、等于和高于首次/重复压缩阈值的序列，检查：无崩溃、非法 slot、block
-泄漏或跨请求污染；多次事务后语义位置仍单调；下一调度屏障释放 block，请求结束
-或取消后全部归还；确定性配置输出稳定；预先约定的长上下文质量套件不越界。
-
-记录任务名、样本数、seed、评分代码 revision、baseline/压缩分数及允许差值。
-单个 smoke prompt 不能替代质量验收。
-
-## 5. 匹配性能矩阵
-
-至少选择三个必定触发压缩的输入长度/并发单元，例如模型支持时使用 8K/c=1、
-32K/c=4、64K/c=8。每格至少一次预热、三次测量，并交替 baseline/压缩顺序。
-
-报告中位数和范围：输入/输出/总 token 吞吐；TTFT 和 TPOT p50/p90/p99；端到端
-时延 p50/p90/p99；峰值/稳态 HBM 和 cache block；压缩次数与压缩耗时分位数；
-OOM、拒绝和失败数。
-
-baseline 通过 Manager 禁用插件并重启宿主；压缩组使用同一宿主命令：
-
-```bash
-export VLLM_PLUGINS=ascend,ascend_kvcompress
-vllm-hust-ext run -- vllm serve /path/to/model \
-  --block-size 128 --no-enable-prefix-caching --no-async-scheduling
-```
-
-不能与 prefix cache、speculative decoding、KV transfer、量化 KV、BidKV 或已
-删除的宿主优化混合测量；这些是未支持组合，不是独立调优变量。
-
-## 6. 发布门槛
-
-生命周期和 CPU suite 通过后，可以声明 Manager/包兼容；只有在声明快照上通过
-kernel 与服务正确性后，才能声明 NPU 支持；只有发布匹配性能矩阵和完整溯源后，
-才能声明吞吐/HBM 提升。历史 0.2 数据不能替代本门槛。
+Prefix cache、speculative decoding、KV transfer、量化 KV、BidKV 和已移除的
+宿主优化均是不支持组合，不是调参变量。发布结论必须受已完成矩阵和
+[验收记录](validation.zh.md)的限制约束。

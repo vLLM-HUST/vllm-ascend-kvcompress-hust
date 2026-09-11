@@ -205,7 +205,7 @@ values from a different model or silently fall back to the default formula.
             "q_mean_imag": Tensor[40, 64],
             "q_abs_mean": Tensor[40, 64],
             "freq_scale_sq": Tensor[40, 64],  # scaled RoPE when applicable
-            "inv_freq": Tensor[64],           # exact per-layer values
+            "inv_freq": Tensor[64],  # exact per-layer values
         },
         # Every model layer must be present.
     },

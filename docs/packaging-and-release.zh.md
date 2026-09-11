@@ -2,90 +2,82 @@
 
 [English](packaging-and-release.md) | 简体中文
 
-本项目遵循 vLLM-HUST 的 BidKV 打包发布流程。PyPI 包名为
-`vllm-ascend-kvcompress-hust`，Python 模块名为 `vllm_ascend_kvcompress`，稳定的
+本仓库遵循 BidKV 打包流程。PyPI distribution 为
+`vllm-ascend-kvcompress-hust`，Python 包为 `vllm_ascend_kvcompress`，稳定的
 Extension Manager ID 为 `org.vllm-hust.ascend-kvcompress`。
 
 ## 发布门槛
 
-只要[验收记录](validation.zh.md)中仍存在正确性/质量失败项或声明依赖栈尚未验收，
-就不能发布 alpha。打 tag 前必须：
+发布前必须保持项目版本、`__version__` 和 manifest 版本一致；完成 CPU、包、NPU、
+生命周期及声明的服务测试；冻结宿主、模型、校准、数据来源；审核完整 diff。PyPI
+文件不可覆盖，任何代码变更都必须提升版本。
 
-1. 保持 `[project].version`、包 `__version__` 与 manifest
-   `extension_version` 完全一致；
-2. 通过 CPU suite、Ruff、Ascend 数值 smoke 及验收规程中的完整配对服务矩阵；
-3. 记录宿主精确 commit、模型/校准溯源、原始结果和发布 commit；
-4. 确认工作树只包含本次发布需要的变更。
-
-PyPI 文件不可覆盖；上传后若源码变化，必须增加版本号。
+0.4.0 是实验性候选版本。当前验收仅支持有边界的工程性能结论，不支持 V4.6 正式
+通过或生产可用声明。
 
 ## 构建与检查
 
-在仓库根目录禁用本地 source override，同时构建 wheel 和 sdist：
+优先采用 BidKV 的 `uv` 流程：
 
 ```bash
 uv build --no-sources --out-dir dist
+```
+
+若发布环境没有 `uv`，已验证的等价回退方式为：
+
+```bash
+python -m build --no-isolation --outdir dist
+```
+
+随后只检查本次候选文件：
+
+```bash
 python -m zipfile -l \
-  dist/vllm_ascend_kvcompress_hust-0.3.0-py3-none-any.whl
+  dist/vllm_ascend_kvcompress_hust-0.4.0-py3-none-any.whl
+python -m twine check \
+  dist/vllm_ascend_kvcompress_hust-0.4.0-py3-none-any.whl \
+  dist/vllm_ascend_kvcompress_hust-0.4.0.tar.gz
+sha256sum dist/vllm_ascend_kvcompress_hust-0.4.0*
 ```
 
-wheel 必须包含 Python 包、`LICENSE`、`NOTICE` 与
-`manifests/vllm-hust-extension-v0.2.json`；wheel 和 sdist 都不得包含
-`artifacts/*.pt`，因为这些校准文件不具备充分的再分发溯源。`entry_points.txt`
-必须包含：
+wheel 必须包含代码、`LICENSE`、`NOTICE` 和
+`manifests/vllm-hust-extension-v0.2.json`；entry-point metadata 必须同时包含
+`vllm.general_plugins` 和 `vllm_hust.extension_bundles`。两个发行包均不得包含
+`artifacts/*.pt`、原始数据或服务日志。
 
-```ini
-[vllm.general_plugins]
-ascend_kvcompress = vllm_ascend_kvcompress.plugin:register
+## 隔离生命周期
 
-[vllm_hust.extension_bundles]
-org.vllm-hust.ascend-kvcompress = vllm_ascend_kvcompress.manifests
-```
-
-环境中有相应工具时，执行发行元数据和哈希检查：
+在支持的宿主环境中安装 wheel，且不把源码 checkout 加入 `PYTHONPATH`：
 
 ```bash
-python -m twine check dist/*
-sha256sum dist/*
-```
-
-## 隔离生命周期 smoke
-
-在与宿主相同的干净环境安装 wheel 和 Extension Manager，确认发现后完成全部状态
-生命周期：
-
-```bash
-python -m pip install \
-  'vllm-hust-ext>=0.2.0.dev0,<0.3' \
-  dist/vllm_ascend_kvcompress_hust-0.3.0-py3-none-any.whl
-
+python -m pip install --no-deps \
+  dist/vllm_ascend_kvcompress_hust-0.4.0-py3-none-any.whl
 vllm-hust-ext extension validate org.vllm-hust.ascend-kvcompress
 vllm-hust-ext extension configure org.vllm-hust.ascend-kvcompress \
   --file /absolute/path/triattention.json
 vllm-hust-ext extension enable org.vllm-hust.ascend-kvcompress
-vllm-hust-ext extension status org.vllm-hust.ascend-kvcompress
+vllm-hust-ext extension check org.vllm-hust.ascend-kvcompress
+vllm-hust-ext run --dry-run -- python -c 'print("manager-run-ok")'
 vllm-hust-ext extension disable org.vllm-hust.ascend-kvcompress
 vllm-hust-ext extension forget org.vllm-hust.ascend-kvcompress
-python -m pip uninstall vllm-ascend-kvcompress-hust
+python -m pip uninstall -y vllm-ascend-kvcompress-hust
 ```
 
-卸载后，`extension list` 中不能再出现本扩展。无宿主环境可能把兼容性标记为
-unverified，并拒绝受信任进程内扩展的 `run --dry-run`；最终 render 和服务测试
-必须在精确宿主环境完成。
+确认 `extension list` 不再发现插件。然后重装、配置并启用将要发布的精确 wheel。
 
-## 发布与发布后验证
+## 上传与发布后验证
 
-使用保存在 CI Secret 中、仅授权本项目的 PyPI Token。必须在同一受保护 tag/commit
-完成构建、测试和上传，并显式列出本次 wheel 与 sdist：
+使用由 PyPI `intellistream` 组织/项目授权的项目级 token，不在命令行明文传递，也不
+提交到仓库：
 
 ```bash
-export UV_PUBLISH_TOKEN='<从密码库读取>'
+export UV_PUBLISH_TOKEN='<从密钥存储读取>'
 uv publish --check-url https://pypi.org/simple \
-  dist/vllm_ascend_kvcompress_hust-0.3.0-py3-none-any.whl \
-  dist/vllm_ascend_kvcompress_hust-0.3.0.tar.gz
+  dist/vllm_ascend_kvcompress_hust-0.4.0-py3-none-any.whl \
+  dist/vllm_ascend_kvcompress_hust-0.4.0.tar.gz
 unset UV_PUBLISH_TOKEN
 ```
 
-最后从正式 PyPI 无缓存安装精确版本，确认 Manager 可发现和启用，启动新的
-Manager 包装宿主进程，检查 `/health` 并复测一个代表性正确性用例。将正式发布
-文件哈希写入验收记录和 release notes。
+若受保护发布器使用 Twine，则从密钥存储设置 `TWINE_USERNAME=__token__` 和
+`TWINE_PASSWORD`，上传同样两个明确文件。最后从正式 PyPI 无缓存安装 0.4.0，
+核对哈希、Manager 发现/启用、`/health` 和一个正确性用例。

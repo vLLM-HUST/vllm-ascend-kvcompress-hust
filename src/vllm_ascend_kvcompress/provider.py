@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
+from vllm.logger import logger
 
 from .config import ASCEND_BLOCK_SIZE, ProviderSelection
 from .methods import create_method
@@ -134,6 +135,14 @@ class AscendKVCompressionProvider:
         )
         for block_table in runner.input_batch.block_table.block_tables:
             setattr(block_table, RUNNER_PROVIDER_ATTRIBUTE, self)
+        logger.info(
+            "Ascend KV compression cache bound method=%s layers=%d "
+            "threshold_tokens=%d target_tokens=%d",
+            self.method.name,
+            len(self.layer_caches),
+            self.runtime_spec.compression_threshold_tokens,
+            self.runtime_spec.max_physical_num_tokens,
+        )
 
     def before_update_states(self, scheduler_output: Any) -> None:
         """Commit the prior step after its synchronous model execution barrier."""
@@ -158,6 +167,14 @@ class AscendKVCompressionProvider:
                 self.runner.input_batch.block_table.add_row((mutable,), request_index)
             self.active[request_id] = ActiveCompression(
                 pending.semantic_anchor, pending.physical_anchor
+            )
+            logger.info(
+                "KV compression worker commit acknowledged request_id=%s "
+                "semantic_tokens=%d physical_tokens=%d destination_blocks=%d",
+                request_id,
+                pending.semantic_anchor,
+                pending.physical_anchor,
+                len(pending.block_ids),
             )
             self.pending.pop(request_id, None)
 

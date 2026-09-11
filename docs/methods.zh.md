@@ -4,7 +4,7 @@
 
 ## 运行时分层
 
-0.3 是自包含插件，不再使用已删除的 vLLM-HUST 压缩生命周期：
+0.4 是自包含插件，不再使用已删除的 vLLM-HUST 压缩生命周期：
 
 1. `plugin.py` 是显式启用的 `vllm.general_plugins` 入口。调度侧立即挂接，
    Ascend worker 在对应模块真正加载时才挂接，因此管理器和纯 API 进程不会

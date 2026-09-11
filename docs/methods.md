@@ -4,7 +4,7 @@ English | [简体中文](methods.zh.md)
 
 ## Runtime layers
 
-Version 0.3 is a self-contained plugin and does not use the removed
+Version 0.4 is a self-contained plugin and does not use the removed
 vLLM-HUST compression lifecycle:
 
 1. `plugin.py` is the opt-in `vllm.general_plugins` entry point. It patches
@@ -35,12 +35,12 @@ The manager stores one JSON object. `schema_version`, `provider`, `method`, and
   "method": "triattention",
   "method_config": {
     "stats_path": "/absolute/path/stats.pt",
-    "kv_budget": 2048,
-    "recompute_window": 128,
-    "protected_recent_window": 128,
+    "kv_budget": 4096,
+    "recompute_window": 1024,
+    "protected_recent_window": 512,
     "score_aggregation": "mean",
     "layer_aggregation": "mean",
-    "score_chunk_size": 512,
+    "score_chunk_size": 8192,
     "score_layer_stride": 4
   }
 }

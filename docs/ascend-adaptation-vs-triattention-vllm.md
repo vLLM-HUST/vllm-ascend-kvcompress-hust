@@ -27,10 +27,11 @@ copied here.
 ## Current host hooks
 
 The public discovery contract is `vllm.general_plugins`. Once enabled, version
-0.3 adapts the current internal host symbols:
+0.4 adapts the current internal host symbols:
 
 - `Scheduler` and `KVCacheManager.allocate_slots` for physical block ownership;
-- `BlockTable.compute_slot_mapping` for semantic-to-physical slot translation;
+- the concrete Ascend input-batch block table's `compute_slot_mapping` for
+  semantic-to-physical slot translation, resolved after KV initialization;
 - `NPUModelRunner.initialize_kv_cache`, `_update_states`,
   `_build_attention_metadata`, and `sample_tokens` for cache binding,
   transaction mirroring, attention lengths, and post-step materialization.
@@ -63,4 +64,4 @@ The fused aggregation and persistent workspaces reduce allocations and kernel
 launches in the compression hot path. `score_layer_stride` can sample scoring
 layers while materialization still copies all layers. These are implementation
 optimizations, not a performance guarantee. Only matched NPU measurements on
-the supported host snapshots may be reported as version 0.3 evidence.
+the supported host snapshots may be reported as version 0.4 evidence.

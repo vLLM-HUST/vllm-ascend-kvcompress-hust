@@ -24,10 +24,11 @@ vLLM Ascend 分页 KV cache 重新实现运行时，未复制上游 CUDA runtime
 
 ## 当前宿主挂接点
 
-公开发现契约是 `vllm.general_plugins`。显式启用后，0.3 适配当前内部符号：
+公开发现契约是 `vllm.general_plugins`。显式启用后，0.4 适配当前内部符号：
 
 - `Scheduler` 和 `KVCacheManager.allocate_slots`：管理物理 block；
-- `BlockTable.compute_slot_mapping`：完成语义位置到物理 slot 的转换；
+- KV 初始化后解析出的 Ascend input-batch 具体 block table 的
+  `compute_slot_mapping`：完成语义位置到物理 slot 的转换；
 - `NPUModelRunner.initialize_kv_cache`、`_update_states`、
   `_build_attention_metadata` 和 `sample_tokens`：绑定 cache、镜像事务、设置
   attention 长度并在单步结束后物化。
@@ -53,4 +54,4 @@ KV transfer、量化 KV、hybrid/MLA/local attention、分布式并行以及 Bid
 
 融合聚合和持久 workspace 用于降低压缩热路径的分配与 kernel launch；
 `score_layer_stride` 可以抽样评分层，但所有层仍会完成物化。这些属于实现优化，
-不是性能保证。只有在支持的宿主快照上完成匹配 NPU 测量后，才能作为 0.3 证据。
+不是性能保证。只有在支持的宿主快照上完成匹配 NPU 测量后，才能作为 0.4 证据。
