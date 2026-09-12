@@ -26,6 +26,7 @@ class TriAttentionConfig:
     layer_aggregation: LayerAggregation = "mean"
     score_chunk_size: int = 512
     score_layer_stride: int = 4
+    min_output_tokens_for_compression: int = 0
 
     @property
     def compression_threshold_tokens(self) -> int:
@@ -44,6 +45,7 @@ class TriAttentionConfig:
             "layer_aggregation",
             "score_chunk_size",
             "score_layer_stride",
+            "min_output_tokens_for_compression",
         }
         unknown = sorted(set(method_config) - known_options)
         if unknown:
@@ -84,6 +86,9 @@ class TriAttentionConfig:
             ),
             score_chunk_size=require_int(method_config, "score_chunk_size", 512),
             score_layer_stride=require_int(method_config, "score_layer_stride", 4),
+            min_output_tokens_for_compression=require_int(
+                method_config, "min_output_tokens_for_compression", 0
+            ),
         )
         config._validate()
         return config
@@ -110,3 +115,7 @@ class TriAttentionConfig:
             )
         if self.score_layer_stride <= 0:
             raise ValueError("method option 'score_layer_stride' must be positive")
+        if self.min_output_tokens_for_compression < 0:
+            raise ValueError(
+                "method option 'min_output_tokens_for_compression' must be non-negative"
+            )

@@ -25,6 +25,10 @@ Extension Manager 保存一个 JSON 对象，必须包含 `schema_version`、`pr
 [`examples/triattention.json`](../examples/triattention.json)。未知字段、未知方法、
 不满足 block 对齐的值及不存在的校准文件都会报错，不会被静默忽略。
 
+`min_output_tokens_for_compression` 是非负的请求输出门槛。当请求的最大生成长度低于
+该值时，scheduler 和 worker 都跳过事务。`0` 保持原有的始终可压缩行为；公开
+benchmark 推荐值为 `64`，可消除 32-token 检索负载上的无效压缩开销。
+
 ## 方法契约
 
 实现 `methods/base.py` 中的 `KVCompressionMethod`：

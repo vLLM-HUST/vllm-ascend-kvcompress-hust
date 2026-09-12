@@ -27,6 +27,22 @@ python scripts/kvcompress_long_context_run.py --help
 python scripts/kvcompress_acceptance_compare.py --help
 ```
 
+公开 A3 证据使用另一组工具：固定并校验 LongBench-v2、LongBench 下载文件的哈希，
+用准确模型 tokenizer 在不截断 prompt 的前提下预处理，通过 OpenAI 兼容服务执行，
+并按 benchmark 任务评分：
+
+```bash
+python scripts/kvcompress_benchmark_data.py download --help
+python scripts/kvcompress_benchmark_data.py prepare --help
+python scripts/kvcompress_benchmark_run.py --help
+python scripts/kvcompress_benchmark_score.py --help
+```
+
+具体任务、完整命令、上游 revision、许可边界和实测结果见
+[公开长上下文 Benchmark](public-long-context-benchmarks.zh.md)。8K KV 预算是通过
+公开质量门槛的默认值；4K 是激进的负载特定配置，并未通过 Qasper 质量门槛。运行
+还必须声明压缩是必需、可选还是禁止，以免把设计中的短输出绕过误判为插件未启用。
+
 随机数据、截断、复用 prompt 或仅重启热服务都不能替代正式流程。
 `kv-pressure-online` 仅是快速压力 smoke。正式 B0 必须使用规定的官方 vLLM 0.18
 及匹配官方 Ascend 基线；当前宿主中禁用插件/no-compression 的结果只能标记为工程

@@ -34,6 +34,26 @@ python scripts/kvcompress_long_context_run.py --help
 python scripts/kvcompress_acceptance_compare.py --help
 ```
 
+For public A3 evidence, the repository also pins and hash-verifies LongBench-v2
+and LongBench, prepares prompts with the exact model tokenizer without
+truncation, runs the OpenAI-compatible service, and applies benchmark-specific
+quality scorers:
+
+```bash
+python scripts/kvcompress_benchmark_data.py download --help
+python scripts/kvcompress_benchmark_data.py prepare --help
+python scripts/kvcompress_benchmark_run.py --help
+python scripts/kvcompress_benchmark_score.py --help
+```
+
+The selected tasks, complete commands, source revisions, license boundary, and
+measured results are in
+[Public long-context benchmarks](public-long-context-benchmarks.md). An 8K KV
+budget is the quality-qualified public-benchmark default; the 4K setting is an
+aggressive workload-specific option and failed the Qasper quality gate. Runs
+must also declare whether compression is required, optional, or forbidden so
+an intended short-output bypass cannot be confused with missing activation.
+
 Random data, truncation, prompt reuse, and a warm service restart are not valid
 substitutes. `kv-pressure-online` is a quick pressure smoke only. Formal B0 is
 the prescribed official vLLM 0.18 plus matching official Ascend baseline; a

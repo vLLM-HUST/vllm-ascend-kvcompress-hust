@@ -49,7 +49,7 @@ def _scheduler(*, scheduler_module="vllm.v1.core.sched.scheduler", balance=False
         block_pool=SimpleNamespace(free_blocks=lambda values: freed.extend(values)),
     )
     request = SimpleNamespace(
-        request_id="r", num_computed_tokens=300, num_prompt_tokens=300
+        request_id="r", num_computed_tokens=300, num_prompt_tokens=300, max_tokens=128
     )
     scheduler_name = (
         "BalanceScheduler" if "vllm_ascend" in scheduler_module else "Scheduler"
@@ -122,6 +122,34 @@ def test_finished_request_discards_pending_state() -> None:
     scheduler.finished_req_ids.add("r")
 
     state.before_schedule()
+
+    assert not state.pending
+
+
+def test_short_decode_request_is_not_armed_for_compression() -> None:
+    scheduler, _, _ = _scheduler()
+    selection = ProviderSelection.from_mapping(
+        {
+            "method": "triattention",
+            "method_config": {
+                "stats_path": "/tmp/stats.pt",
+                "kv_budget": 128,
+                "recompute_window": 128,
+                "score_chunk_size": 128,
+                "min_output_tokens_for_compression": 64,
+            },
+        }
+    )
+    scheduler.requests["r"].max_tokens = 32
+    state = SchedulerCompressionState(scheduler, selection)
+
+    state.after_schedule(
+        SimpleNamespace(
+            num_scheduled_tokens={"r": 44},
+            finished_req_ids=set(),
+            preempted_req_ids=set(),
+        )
+    )
 
     assert not state.pending
 

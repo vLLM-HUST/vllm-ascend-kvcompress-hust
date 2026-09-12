@@ -47,7 +47,9 @@ sha256sum dist/vllm_ascend_kvcompress_hust-0.4.0*
 The wheel must contain code, `LICENSE`, `NOTICE`, and
 `manifests/vllm-hust-extension-v0.2.json`; entry-point metadata must contain
 both `vllm.general_plugins` and `vllm_hust.extension_bundles`. Neither archive
-may contain `artifacts/*.pt`, raw data, or service logs.
+may contain `artifacts/*.pt`, raw data, service logs, or historical
+`docs/dev/results`. The sdist may include only the aggregate evidence summaries
+under `docs/evidence`.
 
 ## Isolated lifecycle
 

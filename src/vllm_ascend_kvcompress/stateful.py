@@ -54,15 +54,17 @@ class SchedulerCompressionState:
         self.scheduler = scheduler
         self.threshold = config.compression_threshold_tokens
         self.budget = config.kv_budget
+        self.min_output_tokens = config.min_output_tokens_for_compression
         self.pending: dict[str, SchedulerPendingCompression] = {}
         self.active: dict[str, SchedulerActiveCompression] = {}
         self._validate_host()
         setattr(scheduler.kv_cache_manager, _OFFSETS_ATTRIBUTE, self.active)
         logger.info(
             "Ascend KV compression scheduler bound threshold_tokens=%d "
-            "target_tokens=%d",
+            "target_tokens=%d min_output_tokens=%d",
             self.threshold,
             self.budget,
+            self.min_output_tokens,
         )
 
     def _validate_host(self) -> None:
@@ -177,6 +179,8 @@ class SchedulerCompressionState:
             request = self.scheduler.requests.get(request_id)
             if request is None:
                 continue
+            if _request_max_tokens(request) < self.min_output_tokens:
+                continue
             # The current host advances this value in ``_update_after_schedule``
             # before ``Scheduler.schedule`` returns. The worker receives the
             # pre-step value and separately adds its scheduled-token count.
@@ -201,6 +205,15 @@ class SchedulerCompressionState:
                 physical_anchor=self.budget,
                 block_ids=tuple(block.block_id for block in blocks[:keep]),
             )
+
+
+def _request_max_tokens(request: Any) -> int:
+    value = getattr(request, "max_tokens", None)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RuntimeError(
+            "current vLLM Request.max_tokens must be a non-negative integer"
+        )
+    return value
 
 
 def install_stateful_compression_hooks(

@@ -137,11 +137,12 @@ class AscendKVCompressionProvider:
             setattr(block_table, RUNNER_PROVIDER_ATTRIBUTE, self)
         logger.info(
             "Ascend KV compression cache bound method=%s layers=%d "
-            "threshold_tokens=%d target_tokens=%d",
+            "threshold_tokens=%d target_tokens=%d min_output_tokens=%d",
             self.method.name,
             len(self.layer_caches),
             self.runtime_spec.compression_threshold_tokens,
             self.runtime_spec.max_physical_num_tokens,
+            self.runtime_spec.min_output_tokens_for_compression,
         )
 
     def before_update_states(self, scheduler_output: Any) -> None:
@@ -192,6 +193,11 @@ class AscendKVCompressionProvider:
                 continue
             request = self.runner.requests.get(request_id)
             if request is None:
+                continue
+            if (
+                _request_max_tokens(request)
+                < self.runtime_spec.min_output_tokens_for_compression
+            ):
                 continue
             semantic = int(request.num_computed_tokens) + int(scheduled)
             active = self.active.get(request_id)
@@ -415,6 +421,25 @@ def _validate_method_runtime_spec(name: str, spec: MethodRuntimeSpec) -> None:
         raise ValueError(
             f"compression method {name!r} maximum must be below its threshold"
         )
+    minimum = spec.min_output_tokens_for_compression
+    if isinstance(minimum, bool) or not isinstance(minimum, int) or minimum < 0:
+        raise ValueError(
+            f"compression method {name!r} exposes an invalid output threshold"
+        )
+
+
+def _request_max_tokens(request: Any) -> int:
+    value = getattr(request, "max_tokens", None)
+    if value is None:
+        sampling_params = getattr(request, "sampling_params", None)
+        value = getattr(sampling_params, "max_tokens", None)
+    if value is None and getattr(request, "pooling_params", None) is not None:
+        value = 1
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RuntimeError(
+            "current vLLM worker request must expose a non-negative output limit"
+        )
+    return value
 
 
 def _blocks_for_tokens(num_tokens: int) -> int:

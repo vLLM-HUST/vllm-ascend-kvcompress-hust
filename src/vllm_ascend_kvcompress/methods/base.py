@@ -31,6 +31,7 @@ class MethodRuntimeSpec:
     compression_threshold_tokens: int
     required_recompute_tokens: int
     max_physical_num_tokens: int
+    min_output_tokens_for_compression: int = 0
 
 
 @dataclass(frozen=True)

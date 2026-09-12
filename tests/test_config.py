@@ -66,10 +66,12 @@ def test_triattention_config_accepts_documented_values() -> None:
             "layer_aggregation": "mean",
             "score_chunk_size": 512,
             "score_layer_stride": 4,
+            "min_output_tokens_for_compression": 64,
         }
     )
     assert config.stats_path == Path("/tmp/stats.pt")
     assert config.compression_threshold_tokens == 2176
+    assert config.min_output_tokens_for_compression == 64
 
 
 @pytest.mark.parametrize(
@@ -79,6 +81,7 @@ def test_triattention_config_accepts_documented_values() -> None:
         ("recompute_window", 0),
         ("score_chunk_size", 129),
         ("score_layer_stride", 0),
+        ("min_output_tokens_for_compression", -1),
         ("protected_recent_window", -1),
         ("score_aggregation", "median"),
     ],

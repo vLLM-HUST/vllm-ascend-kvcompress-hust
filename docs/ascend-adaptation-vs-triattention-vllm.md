@@ -30,15 +30,19 @@ The public discovery contract is `vllm.general_plugins`. Once enabled, version
 0.4 adapts the current internal host symbols:
 
 - `Scheduler` and `KVCacheManager.allocate_slots` for physical block ownership;
+- scheduler-side `Request.max_tokens` and worker-side
+  `CachedRequestState.sampling_params.max_tokens` for the symmetric
+  short-output bypass;
 - the concrete Ascend input-batch block table's `compute_slot_mapping` for
   semantic-to-physical slot translation, resolved after KV initialization;
 - `NPUModelRunner.initialize_kv_cache`, `_update_states`,
   `_build_attention_metadata`, and `sample_tokens` for cache binding,
   transaction mirroring, attention lengths, and post-step materialization.
 
-The NPU runner is hooked lazily. Exact class and method signatures are checked
-by tests and runtime validation, but these are not frozen upstream APIs. A host
-upgrade requires a new compatibility review and acceptance run.
+The NPU runner is hooked lazily. Missing or malformed requested-output fields
+fail closed instead of guessing. Exact class, attribute, and method contracts
+are checked by tests and runtime validation, but these are not frozen upstream
+APIs. A host upgrade requires a new compatibility review and acceptance run.
 
 ## Transaction invariant
 
@@ -62,6 +66,8 @@ each has a dedicated protocol and acceptance suite.
 
 The fused aggregation and persistent workspaces reduce allocations and kernel
 launches in the compression hot path. `score_layer_stride` can sample scoring
-layers while materialization still copies all layers. These are implementation
-optimizations, not a performance guarantee. Only matched NPU measurements on
-the supported host snapshots may be reported as version 0.4 evidence.
+layers while materialization still copies all layers. The requested-output gate
+avoids scoring and copy work when a short generation cannot amortize it. These
+are implementation optimizations, not a performance guarantee. Only matched
+NPU measurements on the supported host snapshots may be reported as version
+0.4 evidence.

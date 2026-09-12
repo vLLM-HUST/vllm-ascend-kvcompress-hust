@@ -36,6 +36,7 @@ packaging, tests, and documentation are licensed under Apache-2.0.
 | Model weights and tokenizer assets | No | No | Obtain under their upstream terms |
 | Calibration or benchmark input text | No | No | Operators must verify their right to use and redistribute it |
 | Raw service logs, prompts, generated output, profiler traces | No | No | Environment-owned; not granted for redistribution by this repository |
+| Public benchmark scripts and aggregate evidence summaries | Yes | No | Apache-2.0 project documentation/code; upstream benchmark text remains under each source dataset's terms |
 | Historical measurements in `docs/resuts*.md` | Yes | Documentation only | Apache-2.0 documentation, but not acceptance evidence for version 0.4 |
 
 Before distributing a calibration artifact, record at least its SHA-256,

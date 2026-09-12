@@ -75,6 +75,9 @@ class TriAttentionMethod(KVCompressionMethod):
             compression_threshold_tokens=self.config.compression_threshold_tokens,
             required_recompute_tokens=self.config.recompute_window,
             max_physical_num_tokens=self.config.kv_budget,
+            min_output_tokens_for_compression=(
+                self.config.min_output_tokens_for_compression
+            ),
         )
 
     def compatibility_reasons(self, worker: Any) -> tuple[str, ...]:

@@ -35,19 +35,26 @@ The manager stores one JSON object. `schema_version`, `provider`, `method`, and
   "method": "triattention",
   "method_config": {
     "stats_path": "/absolute/path/stats.pt",
-    "kv_budget": 4096,
+    "kv_budget": 8192,
     "recompute_window": 1024,
     "protected_recent_window": 512,
     "score_aggregation": "mean",
     "layer_aggregation": "mean",
     "score_chunk_size": 8192,
-    "score_layer_stride": 4
+    "score_layer_stride": 4,
+    "min_output_tokens_for_compression": 64
   }
 }
 ```
 
 Unknown keys, methods, incompatible block alignment, and unavailable
 calibration files are rejected rather than ignored.
+
+`min_output_tokens_for_compression` is a non-negative requested-output gate.
+When a request's maximum generation is below it, both scheduler and worker skip
+the transaction. `0` preserves the legacy always-eligible behavior; `64` is the
+quality-qualified public-benchmark default that removes overhead from the
+32-token retrieval workload.
 
 ## Method contract
 

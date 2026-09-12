@@ -7,9 +7,10 @@ upstream-aligned vLLM-HUST and vLLM-Ascend-HUST stacks. Version 0.4 adapts the
 current hosts and Extension Manager without changing either host repository.
 
 > Status: experimental release candidate. Package lifecycle, Ascend kernel
-> smoke, service correctness, and three cold 16K engineering-control pairs
-> pass. The full V4.6 official-baseline, model-matched calibration, quality, and
-> stability matrix remains a release gate. See [Validation](docs/validation.md).
+> smoke, three cold 16K engineering-control pairs, and bounded public
+> LongBench-v2/LongBench quality checks pass. The full V4.6 official baseline,
+> fully traced calibration, repeated public performance runs, and stability
+> matrix remain release gates. See [Validation](docs/validation.md).
 
 ## Ownership and maintenance
 
@@ -117,7 +118,10 @@ barrier.
 
 Version 0.4 uses direct paged-K scoring, persistent workspaces, fused NPU
 normalization/head/layer aggregation, dynamic JIT lengths, layer-stride
-sampling, device-resident offsets, and a tuned 4096-token physical budget.
+sampling, device-resident offsets, and a configurable requested-output gate
+that skips scoring/copy when generation is too short to amortize it. The public quality sweep rejected the
+aggressive 4,096-token budget and recommends an 8,192-token physical budget;
+4K remains only a workload-specific option requiring separate quality checks.
 The final 910B2 kernel benchmark measured 1.82x paged-copy, 2.81x direct-score,
 and 1.34x aggregate speedups against generic references; offset update was 0.83x
 and is not claimed as an improvement.
@@ -129,6 +133,17 @@ the expected output length. Compression retained 32/128 blocks per request
 tok/s (+26.7%); mean TPOT was 39.16 versus 52.43 ms (-25.3%); mean E2E was
 44.37 versus 57.81 s (-23.2%). This is engineering evidence against a
 same-host compatibility control, not the required official V4.6 B0 claim.
+
+A separate public A3 sweep used all eligible non-truncated cases from
+LongBench-v2 (116), LongBench `passage_retrieval_en` (200), and LongBench
+`qasper` (93). With an 8K budget, LongBench-v2 accuracy was unchanged and
+request throughput improved 2.13%; retrieval stayed at 100% and deliberately
+bypassed compression because its output cap is 32 tokens, with request
+throughput changing -0.04%; Qasper F1 changed by -0.48 percentage points and
+request throughput by -0.11%. B1 recorded 127/127 scheduler/worker commits and
+reduced physical blocks 60.67% over compressed cases. See the full
+[public benchmark record](docs/public-long-context-benchmarks.md), including
+the rejected 4K Qasper result and single-run limitations.
 
 ## Conflict matrix
 
@@ -147,13 +162,15 @@ same-host compatibility control, not the required official V4.6 B0 claim.
 
 ## Configuration and validation
 
-The example uses a 4096-token budget, 1024-token recompute window, 512-token
+The example uses an 8192-token budget, 1024-token recompute window, 512-token
 protected recent window, 8192-token scoring chunks, and every fourth scoring
-layer. Token counts must be positive multiples of block size 128.
+layer. It bypasses compression below 64 requested output tokens. KV-related
+token counts must be positive multiples of block size 128.
 
 - [Current validation record](docs/validation.md)
 - [V4.6-derived requirements](docs/kv-compress-test-requirements.md)
 - [Benchmark protocol](docs/benchmarking.md)
+- [Public long-context benchmarks](docs/public-long-context-benchmarks.md)
 - [Packaging and release](docs/packaging-and-release.md)
 - [Method extension API](docs/methods.md)
 - [Calibration artifacts](docs/calibration-artifacts.md)

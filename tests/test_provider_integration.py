@@ -75,6 +75,7 @@ def test_final_prefill_compresses_and_arms_worker_commit() -> None:
     request = SimpleNamespace(
         num_computed_tokens=256,
         num_prompt_tokens=300,
+        max_tokens=128,
         block_ids=([2, 0, 3],),
     )
     provider.runner = SimpleNamespace(
@@ -163,6 +164,7 @@ def test_repeated_compression_uses_current_physical_window() -> None:
     request = SimpleNamespace(
         num_computed_tokens=427,
         num_prompt_tokens=300,
+        max_tokens=128,
         block_ids=([5, 9],),
     )
     provider.runner = SimpleNamespace(
@@ -175,3 +177,45 @@ def test_repeated_compression_uses_current_physical_window() -> None:
     assert provider.pending["r"] == PendingCompression(428, 128, (5,))
     assert provider.method.last_request is not None
     assert provider.method.last_request.physical_num_tokens == 256
+
+
+def test_worker_skips_short_decode_request() -> None:
+    provider = _provider()
+    provider.runtime_spec = MethodRuntimeSpec(True, 256, 128, 128, 64)
+    request = SimpleNamespace(
+        num_computed_tokens=256,
+        num_prompt_tokens=300,
+        max_tokens=32,
+        block_ids=([2, 0, 3],),
+    )
+    provider.runner = SimpleNamespace(
+        device=torch.device("cpu"), requests={"r": request}
+    )
+
+    provider.compress_scheduled_requests(
+        SimpleNamespace(num_scheduled_tokens={"r": 44})
+    )
+
+    assert not provider.pending
+    assert provider.method.last_request is None
+
+
+def test_worker_reads_output_limit_from_cached_request_sampling_params() -> None:
+    provider = _provider()
+    provider.runtime_spec = MethodRuntimeSpec(True, 256, 128, 128, 64)
+    request = SimpleNamespace(
+        num_computed_tokens=256,
+        num_prompt_tokens=300,
+        sampling_params=SimpleNamespace(max_tokens=32),
+        pooling_params=None,
+        block_ids=([2, 0, 3],),
+    )
+    provider.runner = SimpleNamespace(
+        device=torch.device("cpu"), requests={"r": request}
+    )
+
+    provider.compress_scheduled_requests(
+        SimpleNamespace(num_scheduled_tokens={"r": 44})
+    )
+
+    assert not provider.pending

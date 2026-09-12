@@ -5,9 +5,10 @@
 面向与上游对齐的 vLLM-HUST、vLLM-Ascend-HUST 的独立 TriAttention KV-cache
 压缩插件。0.4 版本已适配当前宿主与 Extension Manager，且不修改两个宿主仓库。
 
-> 状态：实验性候选版本。插件包生命周期、Ascend 算子 smoke、服务正确性和三轮
-> 16K 冷启动工程对照均已通过；V4.6 要求的官方基线、模型匹配校准、质量与稳定性
-> 完整矩阵仍是发布门槛。详见[验收记录](docs/validation.zh.md)。
+> 状态：实验性候选版本。插件包生命周期、Ascend 算子 smoke、三轮 16K 冷启动
+> 工程对照，以及有边界的 LongBench-v2/LongBench 公开质量检查均已通过；V4.6
+> 官方基线、完整溯源校准、公开性能重复测量和稳定性矩阵仍是发布门槛。详见
+> [验收记录](docs/validation.zh.md)。
 
 ## 归属与维护
 
@@ -103,7 +104,9 @@ table 和 `NPUModelRunner`。压缩仅在同步模型步之后提交：语义 Ro
 物理 attention/slot 索引使用逐请求 offset，旧 block 在下一调度屏障释放。
 
 0.4 使用分页 K 直接评分、持久 workspace、NPU 归一化/head/layer 聚合融合、动态
-JIT 长度、分层抽样、设备端 offset，并将物理预算调优为 4096 token。910B2 算子
+JIT 长度、分层抽样、设备端 offset，以及可配置的请求输出门槛；输出太短、无法摊薄
+开销时跳过评分和 copy。公开质量测试淘汰了激进的 4,096-token 预算，
+推荐 8,192-token 物理预算；4K 仅作为需单独验证质量的特定负载选项。910B2 算子
 最终测试中，分页 copy、直接评分和聚合相对通用参考分别为 1.82x、2.81x、1.34x；
 offset 更新为 0.83x，不宣称该项优化有效。
 
@@ -112,6 +115,15 @@ Qwen2.5-14B 三轮冷启动工程对照均使用 4 个固定 16,384+1,024 请求
 减少 75%）。总吞吐中位数为 1431.3 对 1129.5 tok/s（+26.7%）；平均 TPOT
 39.16 对 52.43 ms（-25.3%）；平均端到端时延 44.37 对 57.81 s（-23.2%）。
 这是同宿主兼容性对照的工程证据，不等同于 V4.6 要求的官方 B0 结论。
+
+另一次公开 A3 测试使用 LongBench-v2（116 条）、LongBench
+`passage_retrieval_en`（200 条）和 LongBench `qasper`（93 条）的全部可接纳、未
+截断样本。8K 预算下，LongBench-v2 准确率不变且请求吞吐提升 2.13%；检索保持
+100% 得分，并因输出上限只有 32 token 而按设计绕过压缩，请求吞吐变化 -0.04%；
+Qasper F1 变化 -0.48 个百分点，请求吞吐变化 -0.11%。B1 记录 127/127 次
+scheduler/worker 提交确认，实际压缩样本物理 block 合计减少 60.67%。完整结果、
+4K Qasper 失败记录和单轮限制见
+[公开 benchmark 记录](docs/public-long-context-benchmarks.zh.md)。
 
 ## 冲突矩阵
 
@@ -130,12 +142,14 @@ Qwen2.5-14B 三轮冷启动工程对照均使用 4 个固定 16,384+1,024 请求
 
 ## 配置与验收
 
-示例配置采用 4096-token 预算、1024-token 重算窗口、512-token 最近保护窗口、
-8192-token 评分分块和每四层评分一次。相关 token 数必须为 block size 128 的正整数倍。
+示例配置采用 8192-token 预算、1024-token 重算窗口、512-token 最近保护窗口、
+8192-token 评分分块、每四层评分一次，并在请求输出少于 64 token 时绕过压缩。
+KV 相关 token 数必须为 block size 128 的正整数倍。
 
 - [当前验收记录](docs/validation.zh.md)
 - [从 V4.6 提取的测试要求](docs/kv-compress-test-requirements.zh.md)
 - [验收规程](docs/benchmarking.zh.md)
+- [公开长上下文 Benchmark](docs/public-long-context-benchmarks.zh.md)
 - [打包与发布](docs/packaging-and-release.zh.md)
 - [方法扩展 API](docs/methods.zh.md)
 - [校准产物](docs/calibration-artifacts.zh.md)
