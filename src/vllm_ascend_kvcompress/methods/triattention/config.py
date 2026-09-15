@@ -31,7 +31,7 @@ class TriAttentionConfig:
     score_aggregation: ScoreAggregation = "mean"
     layer_aggregation: LayerAggregation = "mean"
     score_chunk_size: int = 512
-    score_layer_stride: int = 4
+    score_layer_stride: int = 8
     min_output_tokens_for_compression: int = 0
 
     @property
@@ -132,7 +132,7 @@ class TriAttentionConfig:
                 ),
             ),
             score_chunk_size=require_int(method_config, "score_chunk_size", 512),
-            score_layer_stride=require_int(method_config, "score_layer_stride", 4),
+            score_layer_stride=require_int(method_config, "score_layer_stride", 8),
             min_output_tokens_for_compression=require_int(
                 method_config, "min_output_tokens_for_compression", 0
             ),

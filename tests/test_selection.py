@@ -150,3 +150,94 @@ def test_selection_does_not_add_unsampled_layers(monkeypatch) -> None:
     method._select_keep_indices(torch.tensor([0, 1]), 256, 256)
 
     assert scored_layers == 6
+
+
+def test_selection_prepares_phases_once_for_all_scoring_layers(monkeypatch) -> None:
+    method = object.__new__(TriAttentionMethod)
+    method.config = TriAttentionConfig(
+        stats_path=Path("unused.pt"),
+        kv_budget=128,
+        recompute_window=128,
+        protected_recent_window=0,
+        score_chunk_size=128,
+        score_layer_stride=2,
+    )
+    stats = SimpleNamespace(
+        q_mean_real=torch.zeros((1, 1, 1)),
+        q_mean_imag=torch.zeros((1, 1, 1)),
+        omega=torch.ones(1),
+        rope_style="half",
+    )
+    method.layer_caches = tuple(
+        TriAttentionLayerCache(
+            name=f"layer.{index}",
+            k_cache=torch.empty(0),
+            v_cache=torch.empty(0),
+            stats=stats,
+            frequency_scale=torch.ones((1, 1, 1)),
+            extra_coefficient=torch.zeros((1, 1, 1)),
+            offset_cos_mean=torch.ones(1),
+            offset_sin_mean=torch.zeros(1),
+        )
+        for index in range(6)
+    )
+    method.offsets = torch.tensor([1.0])
+    method.score_workspace = torch.empty((1, 1, 256), dtype=torch.float32)
+    method.aggregate_workspace = torch.empty(256, dtype=torch.float32)
+    method.scoring_omega = torch.ones((3, 1))
+    method.scoring_offset_cos = torch.ones((3, 1))
+    method.scoring_offset_sin = torch.zeros((3, 1))
+    method.phase_cos_workspace = torch.empty((3, 1))
+    method.phase_sin_workspace = torch.empty((3, 1))
+    phase_calls = 0
+    score_calls = 0
+
+    def fake_prepare(*args, **kwargs) -> bool:
+        nonlocal phase_calls
+        del args, kwargs
+        phase_calls += 1
+        return True
+
+    def fake_score(*args, output: torch.Tensor | None = None, **kwargs) -> bool:
+        nonlocal score_calls
+        del kwargs
+        score_calls += 1
+        target = output if output is not None else args[9]
+        target.zero_()
+        return True
+
+    def fake_aggregate(
+        _scores,
+        _mean,
+        _variance,
+        aggregate,
+        _num_tokens,
+        *,
+        layer_aggregation,
+        first_layer,
+    ) -> bool:
+        del layer_aggregation
+        if first_layer:
+            aggregate.zero_()
+        return True
+
+    monkeypatch.setattr(
+        triattention_method, "prepare_mean_phase_coefficients", fake_prepare
+    )
+    monkeypatch.setattr(
+        triattention_method, "score_paged_keys_mean_precomputed", fake_score
+    )
+    monkeypatch.setattr(
+        triattention_method, "aggregate_normalized_scores", fake_aggregate
+    )
+    monkeypatch.setattr(
+        triattention_method,
+        "gather_paged_range",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fallback used")),
+    )
+
+    keep = method._select_keep_indices(torch.tensor([0, 1]), 256, 256)
+
+    assert phase_calls == 1
+    assert score_calls == 3
+    assert keep.shape == (128,)

@@ -3,8 +3,8 @@
 [English](README.md) | 简体中文
 
 面向与上游对齐的 vLLM-HUST、vLLM-Ascend-HUST 的独立 TriAttention KV-cache
-压缩插件。0.5 版本由插件自身生成模型匹配的校准产物，并适配当前宿主与
-Extension Manager，且不修改两个宿主仓库。
+压缩插件。0.6 版本会跨抽样层预计算相位系数，并由插件自身生成模型匹配的校准产物，
+且不修改两个宿主仓库。
 
 > 状态：实验性候选版本。插件包生命周期、Ascend 算子 smoke、三轮 16K 冷启动
 > 工程对照，以及有边界的 LongBench-v2/LongBench 公开质量检查均已通过；V4.6
@@ -53,11 +53,25 @@ block size 128、稠密 BF16/FP16 K/V。其他组合在启动阶段拒绝。mani
 
 ## 独立安装、启用、禁用和卸载
 
-先安装宿主栈，再安装发布包：
+先安装成套锁定的宿主栈，再安装发布包。插件 wheel 特意不把 `vllm` 和
+`vllm-ascend` 声明为 Python 包依赖：这些硬件相关包必须作为一套经过验证的运行时
+统一部署；宿主兼容范围由 Extension Manager 清单和启动检查约束。这样安装插件时
+也不会让 pip 重新解析已经部署好的整套宿主环境。
+
+当前支持的 vLLM 0.28 / vLLM-Ascend 0.25 版本线不能混入 Triton-Ascend 3.2.2。
+旧 Triton wheel 锁定 NumPy 1.26.4，而当前 vLLM 要求
+`opencv-python-headless>=4.13`，其可用 wheel 要求 NumPy 2；把 OpenCV 降到
+4.9 又会违反 vLLM 的依赖约束。应使用宿主栈配套的 Triton-Ascend 3.6。
+
+宿主和 Extension Manager 就绪后，安装插件时不要改动宿主包：
 
 ```bash
-python -m pip install 'vllm-ascend-kvcompress-hust[manager]==0.5.0'
+python -m pip install --no-deps vllm-ascend-kvcompress-hust==0.6.0
 ```
+
+全新环境需先从项目组认可的软件源单独安装 `vllm-hust-ext`，再执行上述命令。
+源码/插件测试也应先准备锁定宿主栈，再执行
+`python -m pip install --no-deps .`。
 
 复制 [examples/triattention.json](examples/triattention.json)，将 `stats_path`
 改为产物保存位置。若文件不存在，启用后的插件会在 vLLM 加载服务权重前生成
@@ -107,12 +121,12 @@ vllm serve /path/to/model --block-size 128 --no-enable-prefix-caching
 table 和 `NPUModelRunner`。压缩仅在同步模型步之后提交：语义 RoPE 位置保持不变，
 物理 attention/slot 索引使用逐请求 offset，旧 block 在下一调度屏障释放。
 
-0.5 延续 0.4 的分页 K 直接评分、持久 workspace、NPU 归一化/head/layer 聚合融合、动态
-JIT 长度、分层抽样、设备端 offset，以及可配置的请求输出门槛；输出太短、无法摊薄
-开销时跳过评分和 copy。公开质量测试淘汰了激进的 4,096-token 预算，
-推荐 8,192-token 物理预算；4K 仅作为需单独验证质量的特定负载选项。910B2 算子
-最终测试中，分页 copy、直接评分和聚合相对通用参考分别为 1.82x、2.81x、1.34x；
-offset 更新为 0.83x，不宣称该项优化有效。
+0.6 将所有抽样层的 RoPE 相位系数一次性生成，并在分页 K 直接评分中复用。Ascend
+910B2 三进程中位数中，每个抽样层的摊销评分耗时从原相位内算路径的 0.460 ms 降至
+0.270 ms，降低 41.3%。已验证 stride 为 8，即 48 层中抽 6 层进行选择；全部 K/V
+层仍会物化。持久 workspace、融合聚合、设备端 offset、动态 JIT 长度与短输出绕过
+继续保留。曾实现并验证一个 Triton K/V 融合 copy 候选，但其耗时为 14.504 ms，
+而保留路径仅 0.334 ms，因此已撤回该负优化。
 
 Qwen2.5-14B 三轮冷启动工程对照均使用 4 个固定 16,384+1,024 请求、0.4 RPS、
 并发 4；24/24 请求均达到预期输出长度。压缩后每请求保留 32/128 block（物理 KV
@@ -122,16 +136,16 @@ Qwen2.5-14B 三轮冷启动工程对照均使用 4 个固定 16,384+1,024 请求
 
 另一次公开 A3 测试使用 LongBench-v2（116 条）、LongBench
 `passage_retrieval_en`（200 条）和 LongBench `qasper`（93 条）的全部可接纳、未
-截断样本。8K 预算下，LongBench-v2 准确率不变且请求吞吐提升 2.13%；检索保持
-100% 得分，并因输出上限只有 32 token 而按设计绕过压缩，请求吞吐变化 -0.04%；
-Qasper F1 变化 -0.48 个百分点，请求吞吐变化 -0.11%。B1 记录 127/127 次
+截断样本。8K/stride-8 下，LongBench-v2 准确率不变、请求吞吐提升 2.81%、平均
+E2E 降低 2.72%；Qasper F1 恢复至与 B0 完全一致，请求吞吐近似中性（+0.03%）。
+检索保持 100% 得分，并因输出上限只有 32 token 而按设计绕过压缩。B1 记录 127/127 次
 scheduler/worker 提交确认，实际压缩样本物理 block 合计减少 60.67%。完整结果、
 4K Qasper 失败记录和单轮限制见
 [公开 benchmark 记录](docs/public-long-context-benchmarks.zh.md)。
 
 ## 冲突矩阵
 
-| 功能 | 0.5 状态 | 行为 |
+| 功能 | 0.6 状态 | 行为 |
 | --- | --- | --- |
 | Prefix cache | 冲突 | 启动拒绝，必须禁用 |
 | Speculative decoding | 冲突 | 启动拒绝 |
@@ -147,7 +161,7 @@ scheduler/worker 提交确认，实际压缩样本物理 block 合计减少 60.6
 ## 配置与验收
 
 示例配置采用 8192-token 预算、1024-token 重算窗口、512-token 最近保护窗口、
-8192-token 评分分块、每四层评分一次，并在请求输出少于 64 token 时绕过压缩。
+8192-token 评分分块、每八层评分一次，并在请求输出少于 64 token 时绕过压缩。
 KV 相关 token 数必须为 block size 128 的正整数倍。
 
 - [当前验收记录](docs/validation.zh.md)

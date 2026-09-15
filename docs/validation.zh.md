@@ -1,9 +1,20 @@
-# 0.5 版本验收记录
+# 0.6 候选版本验收记录
 
 [English](validation.md) | 简体中文
 
 日期：2026-09-15。结论：**工程验收通过，但不是 V4.6 正式验收**。插件包及当前
 宿主适配可继续评估；下述缺口使其暂不能宣称生产可用或官方基线收益。
+
+## 0.6 评分路径优化
+
+0.6 将 RoPE 相位计算从每个 query-head/token 评分程序中移出。一次批量 Triton
+launch 为全部抽样层准备相位系数，分页 K 直接评分随后复用这些系数。已验证默认值
+`score_layer_stride=8`，即 48 层中抽取 6 层评分，但仍物化全部 K/V 层。
+
+Ascend 910B2 三个新进程的中位数为：预计算评分 0.253 ms，六层相位准备 0.102 ms，
+每抽样层摊销 0.270 ms；原相位内算路径为 0.460 ms，因此热路径降低 41.3%。NPU
+数值 smoke 通过。另一个 Triton K/V 融合 copy 候选虽然数值正确，但耗时 14.504
+ms，保留的 workspace 路径仅 0.334 ms，因此已作为负优化撤回。
 
 ## 0.5 校准能力验收
 
@@ -29,7 +40,7 @@ destination block。Ascend 算子数值 smoke 也通过。
 
 | 组件 | 已验证值 |
 | --- | --- |
-| 插件 | 0.5.0，工作树基于 `7c0d21144d` |
+| 插件 | 0.6.0 发布候选，基于 `1f78d51af7` |
 | vLLM-HUST | `6cdc0304a8`，`0.28.1.post1.dev260` |
 | vLLM-Ascend-HUST | `5901bedbb7`，`0.25.1rc2.dev232+hust.20260903.4.g5901bedbb` |
 | Extension Manager | `cf1ea71e3e`，`0.2.0.dev0` |
@@ -44,7 +55,7 @@ destination block。Ascend 算子数值 smoke 也通过。
 
 ## 插件包与 Extension Manager 生命周期
 
-0.5.0 wheel 在不把源码目录加入 `PYTHONPATH` 的条件下安装。插件发现、manifest
+最终本地 0.6.0 wheel 在不把源码目录加入 `PYTHONPATH` 的条件下安装。插件发现、manifest
 解析、兼容性检查、配置、校验、启用、status/check/plan/env 渲染和
 `run --dry-run` 均通过，渲染环境包含：
 
@@ -53,27 +64,27 @@ VLLM_ASCEND_KVCOMPRESS_ENABLED=1
 VLLMHUST_EXT_ENABLED_BUNDLES=org.vllm-hust.ascend-kvcompress
 ```
 
-0.5 生命周期覆盖禁用、卸载、从 `extension list` 消失、重装、重新发现、check 和
-重新启用，并保留此前配置；更早的 0.4 检查还覆盖了 `forget`。
-禁用状态下导入保持惰性。当前 Manager 判定宿主未提供原生扩展 API，因此 manifest
-不声明虚假的 `api_range`，而以精确包版本范围和运行时契约测试约束适配。
+0.6 生命周期覆盖禁用、卸载、从 `extension list` 消失、从最终 wheel 重装、重新
+发现、使用已验证 8K/stride-8 文件配置、check、dry-run 渲染和重新启用。此前检查
+还覆盖了 `forget` 与禁用导入惰性。当前 Manager 判定宿主未提供原生扩展 API，
+因此 manifest 不声明虚假的 `api_range`，而以精确包版本范围和运行时契约测试约束适配。
 
 ## 自动化与 NPU 检查
 
 最终候选应复现：
 
-- `pytest`：77 passed、1 skipped；
+- `pytest`：78 passed、1 skipped；
 - Ruff 检查和格式检查：通过；
 - 包 metadata 与 wheel/sdist 内容检查：通过；
 - Ascend 算子数值 smoke：通过；
-- 下列 NPU 算子比值继承自运行时 kernel 未变化的 0.4 版本，本次 0.5 未重新测量：
+- 下列数值为三个全新 0.6 benchmark 进程的中位数：
 
 | 算子路径 | 优化实现 | 通用参考 | 比值 |
 | --- | ---: | ---: | ---: |
-| 分页 K/V copy | 0.592 ms | 0.325 ms | 1.82x |
-| 分页直接评分 | 1.306 ms | 0.464 ms | 2.81x |
-| 融合聚合 | 0.158 ms | 0.118 ms | 1.34x |
-| Offset 更新 | 0.048 ms | 0.058 ms | 0.83x |
+| 分页 K/V copy | 0.562 ms | 0.339 ms | 1.66x |
+| 预计算相位直接评分（摊销） | 1.247 ms | 0.270 ms | 4.62x |
+| 融合聚合 | 0.150 ms | 0.113 ms | 1.33x |
+| Offset 更新 | 0.044 ms | 0.053 ms | 0.83x |
 
 比值为通用参考耗时除以优化实现耗时。Offset 更新存在负收益，不宣称该项优化有效。
 
@@ -110,29 +121,30 @@ KV block 使用峰值约为压缩组 16.5%、对照组 56%。因此这里只宣�
 
 ## 公开 A3 长上下文质量测试
 
-为补足合成数据，本次在本地 Qwen2.5-Coder-14B-Instruct FP16 上，让三个公开场景
-依次运行于一个冷启动 B0 和一个冷启动 B1 服务生命周期。B0 在相同宿主与插件下
-使用 32,768-token 无压缩预算；B1 使用推荐的 8,192-token 预算。所有接纳的 prompt
+为补足合成数据，本次在本地 Qwen2.5-Coder-14B-Instruct FP16 上运行三个公开场景。
+因宿主、模型、tokenizer、数据集和服务参数未变，0.6 候选复用冻结的同宿主 B0。
+B0 使用 32,768-token 无压缩预算；B1 使用推荐的 8,192-token 预算和 stride 8。所有接纳的 prompt
 均精确 token 化且不截断，超限输入单独登记为 unsupported。
 
 | 全部可接纳样本 | 质量 B0 → B1 | 请求吞吐 | 平均 TTFT | 平均 TPOT | 物理 block |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| LongBench-v2，116 条（10K–32K） | 34.48 → 34.48 accuracy | +2.13% | -3.84% | -7.80% | -61.96% |
-| LongBench 段落检索，200 条（10K–16K） | 100.00 → 100.00 | -0.04% | -0.28% | +0.27% | 绕过（0 次提交） |
-| LongBench Qasper，93 条（5K–22K） | 42.51 → 42.03 F1（-0.48 pp） | -0.11% | -2.89% | +11.31% | 11 条触发样本 -38.73% |
+| LongBench-v2，116 条（10K–32K） | 34.48 → 34.48 accuracy | +2.81% | -3.29% | -13.22% | -61.96% |
+| LongBench 段落检索，200 条（10K–16K） | 100.00 → 100.00 | +0.09% | +3.06% | -2.52% | 绕过（0 次提交） |
+| LongBench Qasper，93 条（5K–22K） | 42.51 → 42.51 F1（0.00 pp） | +0.03% | +6.81% | -2.40% | 11 条触发样本 -38.73% |
 
 两组共 818 个请求全部完成，静默截断为 0。B1 记录 127 次 scheduler 提交和 127
 次 worker 回执；触发压缩样本的物理 block 从 20,666 降至 8,128（-60.67%）。
-LongBench-v2 动态 KV 峰值从 B0 的 90.4% 降至 39.8%；因启动时预留池，两组设备
-HBM 仍均为 87%。
+LongBench-v2 动态 KV 峰值从 B0 的 90.4% 降至 46.7%；候选与 B0 的设备 HBM
+峰值分别为 88% 和 87%，因为启动时会预留 KV 池。
 
-4,096-token 调参候选因 Qasper F1 下降 4.71 个百分点而被淘汰。8K 结果满足 1 pp
-质量容差，但性能与负载相关：LongBench-v2 有收益；优化后的 64-token 请求输出门槛
+4,096-token 调参候选因 Qasper F1 下降 4.71 个百分点而被淘汰。8K 下 stride-4
+仍下降 0.48 pp，stride-8 则恢复准确 B0 分数。8K/stride-8 满足质量容差，但性能与
+负载相关：LongBench-v2 有收益；优化后的 64-token 请求输出门槛
 会为 32-token 检索负载绕过压缩，将原有额外开销降至近似中性。
 由于每组只有一次运行，这些性能数值是方向性工程证据，不是重复测量统计。数据固定
 版本、许可、命令、评分器、完整指标、负结果和哈希见
 [公开长上下文 Benchmark](public-long-context-benchmarks.zh.md)及其
-[机器可读证据](evidence/kvcompress-v0.4.0-public-long-context-summary.json)。
+[机器可读证据](evidence/kvcompress-v0.6.0-performance-summary.json)。
 
 ## V4.6 缺口与可发布结论
 

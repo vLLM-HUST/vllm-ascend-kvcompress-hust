@@ -16,7 +16,9 @@ from vllm_ascend_kvcompress.methods.triattention.cache import (
 )
 from vllm_ascend_kvcompress.methods.triattention.kernels import (
     aggregate_normalized_scores,
+    prepare_mean_phase_coefficients,
     score_paged_keys_mean,
+    score_paged_keys_mean_precomputed,
     shift_positions,
 )
 from vllm_ascend_kvcompress.methods.triattention.scoring import score_post_rope_keys
@@ -157,6 +159,58 @@ def main() -> None:
     generic_score_ms = elapsed_ms(generic_score, 2, 5)
     kernel_score_ms = elapsed_ms(kernel_score, 2, 5)
 
+    # Qwen2.5-14B has 48 attention layers; the validated default stride of 8
+    # scores six uniformly sampled layers per compression transaction.
+    sampled_layers = 6
+    layer_omega = omega.unsqueeze(0).expand(sampled_layers, -1).contiguous()
+    layer_offset_cos = (
+        torch.cos(offsets.unsqueeze(1) * omega)
+        .mean(dim=0)
+        .unsqueeze(0)
+        .expand(sampled_layers, -1)
+        .contiguous()
+    )
+    layer_offset_sin = (
+        torch.sin(offsets.unsqueeze(1) * omega)
+        .mean(dim=0)
+        .unsqueeze(0)
+        .expand(sampled_layers, -1)
+        .contiguous()
+    )
+    layer_phase_cos = torch.empty_like(layer_omega)
+    layer_phase_sin = torch.empty_like(layer_omega)
+
+    def phase_prepare() -> None:
+        prepare_mean_phase_coefficients(
+            layer_omega,
+            layer_offset_cos,
+            layer_offset_sin,
+            8192,
+            layer_phase_cos,
+            layer_phase_sin,
+        )
+
+    phase_prepare()
+
+    def precomputed_score() -> None:
+        score_paged_keys_mean_precomputed(
+            k_cache,
+            source,
+            q_real,
+            q_imag,
+            frequency_scale,
+            extra_coefficient,
+            layer_phase_cos[0],
+            layer_phase_sin[0],
+            num_tokens,
+            output,
+            block_size,
+            "half",
+        )
+
+    phase_prepare_ms = elapsed_ms(phase_prepare, 5, 50)
+    precomputed_score_ms = elapsed_ms(precomputed_score, 2, 10)
+
     head_mean = output.mean(dim=-1)
     head_variance = output.var(dim=-1, correction=0)
     aggregate = torch.empty(num_tokens, device=device, dtype=torch.float32)
@@ -211,6 +265,11 @@ def main() -> None:
     print(
         f"score generic={generic_score_ms:.3f}ms kernel={kernel_score_ms:.3f}ms "
         f"speedup={generic_score_ms / kernel_score_ms:.2f}x"
+    )
+    print(
+        f"score precomputed={precomputed_score_ms:.3f}ms "
+        f"phase6={phase_prepare_ms:.3f}ms "
+        f"amortized={precomputed_score_ms + phase_prepare_ms / sampled_layers:.3f}ms"
     )
     print(
         f"aggregate generic={generic_aggregate_ms:.3f}ms "

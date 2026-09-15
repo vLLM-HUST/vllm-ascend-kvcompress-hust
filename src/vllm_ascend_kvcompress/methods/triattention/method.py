@@ -20,7 +20,11 @@ from ..base import (
 )
 from .cache import gather_paged_range, materialize_token_slots, token_slots
 from .config import TriAttentionConfig
-from .kernels import aggregate_normalized_scores, score_paged_keys_mean
+from .kernels import (
+    aggregate_normalized_scores,
+    prepare_mean_phase_coefficients,
+    score_paged_keys_mean_precomputed,
+)
 from .scoring import (
     build_geometric_offsets,
     normalize_head_scores,
@@ -63,6 +67,11 @@ class TriAttentionMethod(KVCompressionMethod):
         self.score_workspace: torch.Tensor | None = None
         self.aggregate_workspace: torch.Tensor | None = None
         self.dense_indices: torch.Tensor | None = None
+        self.scoring_omega: torch.Tensor | None = None
+        self.scoring_offset_cos: torch.Tensor | None = None
+        self.scoring_offset_sin: torch.Tensor | None = None
+        self.phase_cos_workspace: torch.Tensor | None = None
+        self.phase_sin_workspace: torch.Tensor | None = None
 
     @property
     def name(self) -> str:
@@ -130,6 +139,23 @@ class TriAttentionMethod(KVCompressionMethod):
                 )
             )
         self.layer_caches = tuple(bound)
+        scoring_layers = self.layer_caches[:: self.config.score_layer_stride]
+        if any(
+            layer.offset_cos_mean is None or layer.offset_sin_mean is None
+            for layer in scoring_layers
+        ):
+            raise RuntimeError("TriAttention phase coefficients are not initialized")
+        self.scoring_omega = torch.stack(
+            [layer.stats.omega for layer in scoring_layers]
+        ).contiguous()
+        self.scoring_offset_cos = torch.stack(
+            [layer.offset_cos_mean for layer in scoring_layers]
+        ).contiguous()
+        self.scoring_offset_sin = torch.stack(
+            [layer.offset_sin_mean for layer in scoring_layers]
+        ).contiguous()
+        self.phase_cos_workspace = torch.empty_like(self.scoring_omega)
+        self.phase_sin_workspace = torch.empty_like(self.scoring_omega)
         cache = self.layer_caches[0].k_cache
         workspace_shape = (
             self.config.kv_budget,
@@ -214,6 +240,23 @@ class TriAttentionMethod(KVCompressionMethod):
         # materializing the selected KV tokens for every cache layer.
         scoring_layers = self.layer_caches[:: self.config.score_layer_stride]
         layer_count = len(scoring_layers)
+        phase_inputs = (
+            getattr(self, "scoring_omega", None),
+            getattr(self, "scoring_offset_cos", None),
+            getattr(self, "scoring_offset_sin", None),
+            getattr(self, "phase_cos_workspace", None),
+            getattr(self, "phase_sin_workspace", None),
+        )
+        phases_prepared = all(value is not None for value in phase_inputs) and (
+            prepare_mean_phase_coefficients(
+                self.scoring_omega,
+                self.scoring_offset_cos,
+                self.scoring_offset_sin,
+                round_start,
+                self.phase_cos_workspace,
+                self.phase_sin_workspace,
+            )
+        )
         for layer_index, layer in enumerate(scoring_layers):
             score_workspace = self.score_workspace
             kernel_inputs = (
@@ -222,21 +265,21 @@ class TriAttentionMethod(KVCompressionMethod):
                 layer.offset_cos_mean,
                 layer.offset_sin_mean,
             )
-            if self.config.score_aggregation == "mean" and all(
-                value is not None for value in kernel_inputs
+            if (
+                self.config.score_aggregation == "mean"
+                and phases_prepared
+                and all(value is not None for value in kernel_inputs)
             ):
                 raw_scores = score_workspace[:, :, :physical_num_tokens]
-                used_kernel = score_paged_keys_mean(
+                used_kernel = score_paged_keys_mean_precomputed(
                     layer.k_cache,
                     source_block_ids,
                     layer.stats.q_mean_real,
                     layer.stats.q_mean_imag,
                     layer.frequency_scale,
                     layer.extra_coefficient,
-                    layer.stats.omega,
-                    layer.offset_cos_mean,
-                    layer.offset_sin_mean,
-                    round_start,
+                    self.phase_cos_workspace[layer_index],
+                    self.phase_sin_workspace[layer_index],
                     physical_num_tokens,
                     raw_scores,
                     ASCEND_BLOCK_SIZE,

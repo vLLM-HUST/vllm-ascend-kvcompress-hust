@@ -4,7 +4,7 @@ English | [简体中文](methods.zh.md)
 
 ## Runtime layers
 
-Version 0.5 is a self-contained plugin and does not use the removed
+Version 0.6 is a self-contained plugin and does not use the removed
 vLLM-HUST compression lifecycle:
 
 1. `plugin.py` is the opt-in `vllm.general_plugins` entry point. It patches
@@ -46,7 +46,7 @@ The manager stores one JSON object. `schema_version`, `provider`, `method`, and
     "score_aggregation": "mean",
     "layer_aggregation": "mean",
     "score_chunk_size": 8192,
-    "score_layer_stride": 4,
+    "score_layer_stride": 8,
     "min_output_tokens_for_compression": 64
   }
 }
@@ -61,6 +61,11 @@ When a request's maximum generation is below it, both scheduler and worker skip
 the transaction. `0` preserves the legacy always-eligible behavior; `64` is the
 quality-qualified public-benchmark default that removes overhead from the
 32-token retrieval workload.
+
+`score_layer_stride=8` uniformly samples six of the 48 calibrated layers for
+selection while all 48 K/V layers are still materialized. On the frozen public
+Qasper and LongBench-v2 sets this setting preserved baseline quality and
+improved the matched end-to-end result compared with the former value `4`.
 
 ## Method contract
 

@@ -1,4 +1,4 @@
-# Version 0.5 Acceptance Protocol
+# Version 0.6 Candidate Acceptance Protocol
 
 English | [简体中文](benchmarking.zh.md)
 
@@ -49,8 +49,9 @@ python scripts/kvcompress_benchmark_score.py --help
 The selected tasks, complete commands, source revisions, license boundary, and
 measured results are in
 [Public long-context benchmarks](public-long-context-benchmarks.md). An 8K KV
-budget is the quality-qualified public-benchmark default; the 4K setting is an
-aggressive workload-specific option and failed the Qasper quality gate. Runs
+budget with `score_layer_stride=8` is the quality-qualified public-benchmark
+default; the 4K setting is an aggressive workload-specific option and failed
+the Qasper quality gate. Runs
 must also declare whether compression is required, optional, or forbidden so
 an intended short-output bypass cannot be confused with missing activation.
 

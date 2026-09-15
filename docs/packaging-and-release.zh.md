@@ -12,7 +12,7 @@ Extension Manager ID 为 `org.vllm-hust.ascend-kvcompress`。
 生命周期及声明的服务测试；冻结宿主、模型、校准、数据来源；审核完整 diff。PyPI
 文件不可覆盖，任何代码变更都必须提升版本。
 
-0.5.0 是实验性候选版本。当前验收仅支持有边界的工程性能结论，不支持 V4.6 正式
+0.6.0 是实验性发布版本。当前验收仅支持有边界的工程性能结论，不支持 V4.6 正式
 通过或生产可用声明。
 
 ## 构建与检查
@@ -33,11 +33,11 @@ python -m build --no-isolation --outdir dist
 
 ```bash
 python -m zipfile -l \
-  dist/vllm_ascend_kvcompress_hust-0.5.0-py3-none-any.whl
+  dist/vllm_ascend_kvcompress_hust-0.6.0-py3-none-any.whl
 python -m twine check \
-  dist/vllm_ascend_kvcompress_hust-0.5.0-py3-none-any.whl \
-  dist/vllm_ascend_kvcompress_hust-0.5.0.tar.gz
-sha256sum dist/vllm_ascend_kvcompress_hust-0.5.0*
+  dist/vllm_ascend_kvcompress_hust-0.6.0-py3-none-any.whl \
+  dist/vllm_ascend_kvcompress_hust-0.6.0.tar.gz
+sha256sum dist/vllm_ascend_kvcompress_hust-0.6.0*
 ```
 
 wheel 必须包含代码、`LICENSE`、`NOTICE` 和
@@ -53,7 +53,7 @@ wheel 必须包含代码、`LICENSE`、`NOTICE` 和
 
 ```bash
 python -m pip install --no-deps \
-  dist/vllm_ascend_kvcompress_hust-0.5.0-py3-none-any.whl
+  dist/vllm_ascend_kvcompress_hust-0.6.0-py3-none-any.whl
 vllm-hust-ext extension validate org.vllm-hust.ascend-kvcompress
 vllm-hust-ext extension configure org.vllm-hust.ascend-kvcompress \
   --file /absolute/path/triattention.json
@@ -65,6 +65,12 @@ vllm-hust-ext extension forget org.vllm-hust.ascend-kvcompress
 python -m pip uninstall -y vllm-ascend-kvcompress-hust
 ```
 
+wheel 的核心 `Requires-Dist` 必须为空，尤其不得把 `vllm`、`vllm-ascend`、
+Triton-Ascend、NumPy 或 OpenCV 加入插件核心依赖。加速器宿主由另一套经过验证的
+锁定清单部署，扩展清单负责声明兼容宿主范围。安装插件时重新解析宿主，可能把
+仅支持 NumPy 1 的 Triton-Ascend 3.2.2 与当前 vLLM 中仅支持 NumPy 2 的 OpenCV
+约束混在一起。
+
 确认 `extension list` 不再发现插件。然后重装、配置并启用将要发布的精确 wheel。
 
 ## 上传与发布后验证
@@ -75,11 +81,11 @@ python -m pip uninstall -y vllm-ascend-kvcompress-hust
 ```bash
 export UV_PUBLISH_TOKEN='<从密钥存储读取>'
 uv publish --check-url https://pypi.org/simple \
-  dist/vllm_ascend_kvcompress_hust-0.5.0-py3-none-any.whl \
-  dist/vllm_ascend_kvcompress_hust-0.5.0.tar.gz
+  dist/vllm_ascend_kvcompress_hust-0.6.0-py3-none-any.whl \
+  dist/vllm_ascend_kvcompress_hust-0.6.0.tar.gz
 unset UV_PUBLISH_TOKEN
 ```
 
 若受保护发布器使用 Twine，则从密钥存储设置 `TWINE_USERNAME=__token__` 和
-`TWINE_PASSWORD`，上传同样两个明确文件。最后从正式 PyPI 无缓存安装 0.5.0，
+`TWINE_PASSWORD`，上传同样两个明确文件。最后从正式 PyPI 无缓存安装 0.6.0，
 核对哈希、Manager 发现/启用、`/health` 和一个正确性用例。

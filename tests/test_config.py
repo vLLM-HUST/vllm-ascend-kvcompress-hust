@@ -65,7 +65,7 @@ def test_triattention_config_accepts_documented_values() -> None:
             "score_aggregation": "max",
             "layer_aggregation": "mean",
             "score_chunk_size": 512,
-            "score_layer_stride": 4,
+            "score_layer_stride": 8,
             "min_output_tokens_for_compression": 64,
             "auto_calibrate": True,
             "calibration_input_path": "/tmp/calibration.txt",

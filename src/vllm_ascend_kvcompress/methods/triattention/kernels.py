@@ -47,7 +47,82 @@ def shift_positions(
     return output
 
 
-@triton.jit(do_not_specialize=["round_start", "num_tokens"])
+@triton.jit(do_not_specialize=["round_start", "num_values"])
+def _prepare_mean_phase_kernel(
+    omega_ptr,
+    offset_cos_mean_ptr,
+    offset_sin_mean_ptr,
+    phase_cos_ptr,
+    phase_sin_ptr,
+    round_start,
+    num_values,
+    BLOCK: tl.constexpr,
+):
+    offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    mask = offsets < num_values
+    omega = tl.load(omega_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+    offset_cos = tl.load(offset_cos_mean_ptr + offsets, mask=mask, other=0.0).to(
+        tl.float32
+    )
+    offset_sin = tl.load(offset_sin_mean_ptr + offsets, mask=mask, other=0.0).to(
+        tl.float32
+    )
+    phase = round_start * omega
+    round_cos = tl.cos(phase)
+    round_sin = tl.sin(phase)
+    tl.store(
+        phase_cos_ptr + offsets,
+        round_cos * offset_cos - round_sin * offset_sin,
+        mask=mask,
+    )
+    tl.store(
+        phase_sin_ptr + offsets,
+        round_sin * offset_cos + round_cos * offset_sin,
+        mask=mask,
+    )
+
+
+def prepare_mean_phase_coefficients(
+    omega: torch.Tensor,
+    offset_cos_mean: torch.Tensor,
+    offset_sin_mean: torch.Tensor,
+    round_start: int,
+    phase_cos: torch.Tensor,
+    phase_sin: torch.Tensor,
+) -> bool:
+    """Prepare one mean-offset RoPE coefficient per layer and frequency.
+
+    The scoring grid has one program for every query head and token tile. Doing
+    trigonometry there repeats identical work thousands of times. This compact
+    kernel computes it once for each sampled layer/frequency pair instead.
+    """
+    if omega.device.type != "npu":
+        return False
+    if not _triton_available():
+        raise RuntimeError("triton-ascend is unavailable or failed to import")
+    if not (
+        omega.shape
+        == offset_cos_mean.shape
+        == offset_sin_mean.shape
+        == phase_cos.shape
+        == phase_sin.shape
+    ):
+        raise ValueError("phase coefficient tensors must have matching shapes")
+    num_values = omega.numel()
+    _prepare_mean_phase_kernel[(triton.cdiv(num_values, 256),)](
+        omega,
+        offset_cos_mean,
+        offset_sin_mean,
+        phase_cos,
+        phase_sin,
+        round_start,
+        num_values,
+        BLOCK=256,
+    )
+    return True
+
+
+@triton.jit(do_not_specialize=["num_tokens"])
 def _score_paged_keys_mean_kernel(
     k_cache_ptr,
     source_block_ids_ptr,
@@ -55,11 +130,9 @@ def _score_paged_keys_mean_kernel(
     q_imag_ptr,
     frequency_scale_ptr,
     extra_coefficient_ptr,
-    omega_ptr,
-    offset_cos_mean_ptr,
-    offset_sin_mean_ptr,
+    phase_cos_ptr,
+    phase_sin_ptr,
     output_ptr,
-    round_start,
     num_tokens,
     queries_per_kv,
     frequency_count,
@@ -100,24 +173,16 @@ def _score_paged_keys_mean_kernel(
         mask=frequency_mask,
         other=0.0,
     ).to(tl.float32)
-    omega = tl.load(omega_ptr + frequency_offsets, mask=frequency_mask, other=0.0).to(
-        tl.float32
-    )
-    offset_cos = tl.load(
-        offset_cos_mean_ptr + frequency_offsets,
+    cosine = tl.load(
+        phase_cos_ptr + frequency_offsets,
         mask=frequency_mask,
         other=0.0,
     ).to(tl.float32)
-    offset_sin = tl.load(
-        offset_sin_mean_ptr + frequency_offsets,
+    sine = tl.load(
+        phase_sin_ptr + frequency_offsets,
         mask=frequency_mask,
         other=0.0,
     ).to(tl.float32)
-    round_phase = round_start * omega
-    round_cos = tl.cos(round_phase)
-    round_sin = tl.sin(round_phase)
-    cosine = round_cos * offset_cos - round_sin * offset_sin
-    sine = round_sin * offset_cos + round_cos * offset_sin
 
     block_offsets = token_offsets // BLOCK_SIZE
     within_blocks = token_offsets - block_offsets * BLOCK_SIZE
@@ -160,6 +225,54 @@ def _score_paged_keys_mean_kernel(
     )
 
 
+def score_paged_keys_mean_precomputed(
+    k_cache: torch.Tensor,
+    source_block_ids: torch.Tensor,
+    q_real: torch.Tensor,
+    q_imag: torch.Tensor,
+    frequency_scale: torch.Tensor,
+    extra_coefficient: torch.Tensor,
+    phase_cos: torch.Tensor,
+    phase_sin: torch.Tensor,
+    num_tokens: int,
+    output: torch.Tensor,
+    block_size: int,
+    rope_style: str,
+) -> bool:
+    """Score paged post-RoPE keys using precomputed future-query phases."""
+    if k_cache.device.type != "npu":
+        return False
+    if not _triton_available():
+        raise RuntimeError("triton-ascend is unavailable or failed to import")
+    kv_heads, queries_per_kv, frequency_count = q_real.shape
+    block_frequency = triton.next_power_of_2(frequency_count)
+    _score_paged_keys_mean_kernel[
+        (kv_heads * queries_per_kv, triton.cdiv(num_tokens, 16))
+    ](
+        k_cache,
+        source_block_ids,
+        q_real,
+        q_imag,
+        frequency_scale,
+        extra_coefficient,
+        phase_cos,
+        phase_sin,
+        output,
+        num_tokens,
+        queries_per_kv,
+        frequency_count,
+        k_cache.stride(0),
+        k_cache.stride(1),
+        k_cache.stride(2),
+        output.stride(1),
+        BLOCK_SIZE=block_size,
+        ROPE_STYLE=0 if rope_style == "interleaved" else 1,
+        BLOCK_N=16,
+        BLOCK_F=block_frequency,
+    )
+    return True
+
+
 def score_paged_keys_mean(
     k_cache: torch.Tensor,
     source_block_ids: torch.Tensor,
@@ -176,40 +289,28 @@ def score_paged_keys_mean(
     block_size: int,
     rope_style: str,
 ) -> bool:
-    """Score paged post-RoPE keys without first gathering them."""
+    """Compatibility wrapper that prepares phases for one scoring layer."""
     if k_cache.device.type != "npu":
         return False
-    if not _triton_available():
-        raise RuntimeError("triton-ascend is unavailable or failed to import")
-    kv_heads, queries_per_kv, frequency_count = q_real.shape
-    block_frequency = triton.next_power_of_2(frequency_count)
-    _score_paged_keys_mean_kernel[
-        (kv_heads * queries_per_kv, triton.cdiv(num_tokens, 16))
-    ](
+    phase = omega * float(round_start)
+    round_cos = torch.cos(phase)
+    round_sin = torch.sin(phase)
+    phase_cos = round_cos * offset_cos_mean - round_sin * offset_sin_mean
+    phase_sin = round_sin * offset_cos_mean + round_cos * offset_sin_mean
+    return score_paged_keys_mean_precomputed(
         k_cache,
         source_block_ids,
         q_real,
         q_imag,
         frequency_scale,
         extra_coefficient,
-        omega,
-        offset_cos_mean,
-        offset_sin_mean,
-        output,
-        round_start,
+        phase_cos,
+        phase_sin,
         num_tokens,
-        queries_per_kv,
-        frequency_count,
-        k_cache.stride(0),
-        k_cache.stride(1),
-        k_cache.stride(2),
-        output.stride(1),
-        BLOCK_SIZE=block_size,
-        ROPE_STYLE=0 if rope_style == "interleaved" else 1,
-        BLOCK_N=16,
-        BLOCK_F=block_frequency,
+        output,
+        block_size,
+        rope_style,
     )
-    return True
 
 
 @triton.jit(do_not_specialize=["num_tokens"])

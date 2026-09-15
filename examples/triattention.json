@@ -16,7 +16,7 @@
     "score_aggregation": "mean",
     "layer_aggregation": "mean",
     "score_chunk_size": 8192,
-    "score_layer_stride": 4,
+    "score_layer_stride": 8,
     "min_output_tokens_for_compression": 64
   }
 }

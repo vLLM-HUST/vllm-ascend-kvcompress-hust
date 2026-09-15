@@ -7,7 +7,7 @@ English | [简体中文](resuts.zh.md)
 > They must not be presented as performance, quality, correctness, or HBM
 > results for the current independently packaged plugin. Current acceptance
 > status is tracked in [Validation](validation.md), and new measurements must
-> follow the [version 0.3 protocol](benchmarking.md).
+> follow the [current acceptance protocol](benchmarking.md).
 
 ## Status
 

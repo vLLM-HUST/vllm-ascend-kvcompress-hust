@@ -2,6 +2,23 @@
 
 [English](environment-installation.md) | 简体中文
 
+## 宿主栈依赖边界
+
+插件安装到预先部署好的宿主环境中，不负责解析宿主的 Python 依赖图。因此插件
+wheel 的核心 `Requires-Dist` 为空；支持的 `vllm-ascend` 范围仍由 Extension
+Manager 清单声明。
+
+不要把当前支持的 vLLM 0.28 / vLLM-Ascend 0.25 快照与 Triton-Ascend 3.2.2
+混装。这里并不是缺少 NumPy 分发包：Triton-Ascend 3.2.2 要求
+`numpy==1.26.4`，而 vLLM 0.28 要求 `opencv-python-headless>=4.13`，这些可用
+OpenCV wheel 又要求 `numpy>=2`，不存在同时满足二者的 NumPy 版本。固定 OpenCV
+4.9 也不成立，因为它不满足 vLLM 的 `>=4.13` 约束。应先部署配套的
+Triton-Ascend 3.6 / NumPy 2 宿主锁，再用 `--no-deps` 安装本插件。
+
+如果 pip 同时列出不带版本和精确版本的 `vllm` / `vllm-ascend`，不带版本的条目
+来自旧插件元数据，并非有意重复安装宿主。请构建并测试核心依赖列表为空的当前
+wheel。
+
 本文记录 2026-09-11 源码快照执行 dev-hub `quickstart.sh` 选项五后实际遇到的
 安装问题。处理过程不修改 dev-hub、vLLM-HUST、vLLM-Ascend-HUST 或
 Triton-Ascend 仓库源码。

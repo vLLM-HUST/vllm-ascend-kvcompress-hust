@@ -1,10 +1,26 @@
-# Version 0.5 Validation Record
+# Version 0.6 Candidate Validation Record
 
 English | [简体中文](validation.zh.md)
 
 Date: 2026-09-15. Verdict: **engineering PASS, not formal V4.6 acceptance**.
 The package and current-host integration are usable for continued evaluation;
 the limitations below prohibit a production or official-baseline claim.
+
+## Version 0.6 scoring optimization
+
+The 0.6 candidate moves RoPE phase computation out of each query-head/token
+scoring program. One batched Triton launch prepares phase coefficients for all
+sampled layers, after which direct paged-K scoring consumes the coefficients.
+The validated default samples six of 48 layers (`score_layer_stride=8`) while
+still materializing K/V for every layer.
+
+Across three fresh benchmark processes on Ascend 910B2, the median
+precomputed score was 0.253 ms and the six-layer phase preparation was 0.102
+ms, or 0.270 ms amortized per sampled layer. The prior in-kernel phase path was
+0.460 ms, so this hot path fell 41.3%. Numerical NPU smoke passed. A fused
+Triton K/V copy experiment also passed correctness but measured 14.504 ms
+versus 0.334 ms for the retained workspace path; it was removed as a negative
+optimization result.
 
 ## Version 0.5 calibration acceptance
 
@@ -35,7 +51,7 @@ format check pass.
 
 | Component | Validated value |
 | --- | --- |
-| Plugin | 0.5.0, working tree based on `7c0d21144d` |
+| Plugin | 0.6.0 release candidate, based on `1f78d51af7` |
 | vLLM-HUST | `6cdc0304a8`, `0.28.1.post1.dev260` |
 | vLLM-Ascend-HUST | `5901bedbb7`, `0.25.1rc2.dev232+hust.20260903.4.g5901bedbb` |
 | Extension Manager | `cf1ea71e3e`, `0.2.0.dev0` |
@@ -52,8 +68,8 @@ directory and reinstalled. The source and recovery procedure are documented in
 
 ## Package and Extension Manager lifecycle
 
-The 0.5.0 wheel was installed without a source checkout on `PYTHONPATH`.
-Discovery, manifest parsing, compatibility, configuration, validation,
+The final local 0.6.0 wheel was installed without a source checkout on
+`PYTHONPATH`. Discovery, manifest parsing, compatibility, configuration, validation,
 enablement, status/check/plan/env rendering, and `run --dry-run` passed. The
 rendered environment contained both:
 
@@ -62,30 +78,29 @@ VLLM_ASCEND_KVCOMPRESS_ENABLED=1
 VLLMHUST_EXT_ENABLED_BUNDLES=org.vllm-hust.ascend-kvcompress
 ```
 
-The 0.5 check covered disable, uninstall, disappearance from `extension list`,
-reinstall, rediscovery, check, and re-enable while preserving the prior
-configuration. The earlier 0.4 check also covered `forget`. Disabled imports
-remain inert. The current manager reports no native extension API for this
-host, so the manifest deliberately declares no `api_range` and relies on the
-exact package range plus runtime contract checks.
+The 0.6 check covered disable, uninstall, disappearance from `extension list`,
+reinstall from the final wheel, rediscovery, configure with the validated
+8K/stride-8 file, check, dry-run rendering, and re-enable. The earlier checks
+also covered `forget` and disabled-import inertness. The current manager reports
+no native extension API for this host, so the manifest deliberately declares no
+`api_range` and relies on the exact package range plus runtime contract checks.
 
 ## Automated and NPU checks
 
 The final candidate is required to reproduce:
 
-- `pytest`: 77 passed and 1 skipped;
+- `pytest`: 78 passed and 1 skipped;
 - Ruff check and format check: pass;
 - package metadata and wheel/sdist inspection: pass;
 - Ascend numerical kernel smoke: pass;
-- the following NPU kernel benchmark ratios are inherited from the unchanged
-  version 0.4 runtime kernels and were not remeasured for 0.5:
+- the following values are medians of three fresh 0.6 benchmark processes:
 
 | Kernel path | Optimized | Reference | Ratio |
 | --- | ---: | ---: | ---: |
-| Paged K/V copy | 0.592 ms | 0.325 ms | 1.82x |
-| Direct paged scoring | 1.306 ms | 0.464 ms | 2.81x |
-| Fused aggregation | 0.158 ms | 0.118 ms | 1.34x |
-| Offset update | 0.048 ms | 0.058 ms | 0.83x |
+| Paged K/V copy | 0.562 ms | 0.339 ms | 1.66x |
+| Direct score with precomputed phase (amortized) | 1.247 ms | 0.270 ms | 4.62x |
+| Fused aggregation | 0.150 ms | 0.113 ms | 1.33x |
+| Offset update | 0.044 ms | 0.053 ms | 0.83x |
 
 The ratio is reference time divided by optimized time. Offset update regressed
 and is not represented as an improvement.
@@ -128,26 +143,28 @@ three-run matrix.
 ## Public A3 long-context quality sweep
 
 To supplement the synthetic fixture, three public workloads were run
-sequentially in one cold B0 and one cold B1 service lifecycle on local
-Qwen2.5-Coder-14B-Instruct FP16. B0 used the same host and plugin with a
-32,768-token no-compression budget. B1 used the recommended 8,192-token budget.
+on local Qwen2.5-Coder-14B-Instruct FP16. The 0.6 candidate reuses the frozen
+same-host B0 because host, model, tokenizer, datasets, and service flags are
+unchanged. B0 used a 32,768-token no-compression budget; B1 used the recommended
+8,192-token budget and layer stride 8.
 Every accepted prompt was tokenized without truncation; over-limit inputs were
 recorded as unsupported.
 
 | All eligible cases | Quality B0 → B1 | Request throughput | Mean TTFT | Mean TPOT | Physical blocks |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| LongBench-v2, 116 cases (10K–32K) | 34.48 → 34.48 accuracy | +2.13% | -3.84% | -7.80% | -61.96% |
-| LongBench passage retrieval, 200 cases (10K–16K) | 100.00 → 100.00 | -0.04% | -0.28% | +0.27% | bypassed (0 commits) |
-| LongBench Qasper, 93 cases (5K–22K) | 42.51 → 42.03 F1 (-0.48 pp) | -0.11% | -2.89% | +11.31% | -38.73% on 11 compressed cases |
+| LongBench-v2, 116 cases (10K–32K) | 34.48 → 34.48 accuracy | +2.81% | -3.29% | -13.22% | -61.96% |
+| LongBench passage retrieval, 200 cases (10K–16K) | 100.00 → 100.00 | +0.09% | +3.06% | -2.52% | bypassed (0 commits) |
+| LongBench Qasper, 93 cases (5K–22K) | 42.51 → 42.51 F1 (0.00 pp) | +0.03% | +6.81% | -2.40% | -38.73% on 11 compressed cases |
 
 All 818 arm-requests completed with zero silent truncations. B1 recorded 127
 scheduler commits and 127 acknowledgements; physical blocks across compressed
 cases fell from 20,666 to 8,128 (-60.67%). LongBench-v2 dynamic KV use peaked
-at 39.8%, versus 90.4% for B0, while device HBM remained 87% because the pool
-is reserved at startup.
+at 46.7%, versus 90.4% for B0. Candidate and B0 HBM peaked at 88% and 87%;
+the pool is reserved at startup.
 
 The 4,096-token tuning candidate was rejected after Qasper F1 fell 4.71 pp.
-The 8K results meet the one-percentage-point quality tolerance, but performance
+At 8K, stride 4 lost 0.48 pp on Qasper, while stride 8 restored the exact B0
+score. The 8K/stride-8 results meet the quality tolerance, but performance
 is workload-dependent: compression improved LongBench-v2, while the optimized
 64-token requested-output gate bypassed compression for the 32-token retrieval
 workload and reduced its prior overhead to effectively neutral. As one run per arm, these numbers
@@ -155,7 +172,7 @@ are directional engineering evidence rather than repeated-run performance
 statistics. Dataset pins, licenses, commands, scorers, exact metrics, negative
 result, and hashes are in
 [Public long-context benchmarks](public-long-context-benchmarks.md) and its
-[machine-readable evidence](evidence/kvcompress-v0.4.0-public-long-context-summary.json).
+[machine-readable evidence](evidence/kvcompress-v0.6.0-performance-summary.json).
 
 ## V4.6 gaps and publication boundary
 

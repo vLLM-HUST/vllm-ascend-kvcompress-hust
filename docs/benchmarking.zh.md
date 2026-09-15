@@ -1,4 +1,4 @@
-# 0.5 版本验收规程
+# 0.6 候选版本验收规程
 
 [English](benchmarking.md) | 简体中文
 
@@ -39,8 +39,9 @@ python scripts/kvcompress_benchmark_score.py --help
 ```
 
 具体任务、完整命令、上游 revision、许可边界和实测结果见
-[公开长上下文 Benchmark](public-long-context-benchmarks.zh.md)。8K KV 预算是通过
-公开质量门槛的默认值；4K 是激进的负载特定配置，并未通过 Qasper 质量门槛。运行
+[公开长上下文 Benchmark](public-long-context-benchmarks.zh.md)。8K KV 预算与
+`score_layer_stride=8` 是通过公开质量门槛的默认值；4K 是激进的负载特定配置，
+并未通过 Qasper 质量门槛。运行
 还必须声明压缩是必需、可选还是禁止，以免把设计中的短输出绕过误判为插件未启用。
 
 随机数据、截断、复用 prompt 或仅重启热服务都不能替代正式流程。

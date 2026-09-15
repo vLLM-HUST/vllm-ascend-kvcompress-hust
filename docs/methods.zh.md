@@ -4,7 +4,7 @@
 
 ## 运行时分层
 
-0.5 是自包含插件，不再使用已删除的 vLLM-HUST 压缩生命周期：
+0.6 是自包含插件，不再使用已删除的 vLLM-HUST 压缩生命周期：
 
 1. `plugin.py` 是显式启用的 `vllm.general_plugins` 入口。调度侧立即挂接，
    Ascend worker 在对应模块真正加载时才挂接，因此管理器和纯 API 进程不会
@@ -31,6 +31,10 @@ Extension Manager 保存一个 JSON 对象，必须包含 `schema_version`、`pr
 `min_output_tokens_for_compression` 是非负的请求输出门槛。当请求的最大生成长度低于
 该值时，scheduler 和 worker 都跳过事务。`0` 保持原有的始终可压缩行为；公开
 benchmark 推荐值为 `64`，可消除 32-token 检索负载上的无效压缩开销。
+
+`score_layer_stride=8` 会从 48 个已校准层中均匀抽取 6 层用于选择，但仍会物化
+全部 48 层 K/V。在冻结的公开 Qasper 与 LongBench-v2 集合上，该配置保持了基线
+质量，并比原值 `4` 获得更好的同机端到端结果。
 
 ## 方法契约
 

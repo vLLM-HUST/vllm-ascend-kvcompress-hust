@@ -3,9 +3,9 @@
 English | [简体中文](README.zh.md)
 
 An independently packaged TriAttention KV-cache compression plugin for the
-upstream-aligned vLLM-HUST and vLLM-Ascend-HUST stacks. Version 0.5 generates
-model-matched calibration artifacts itself and adapts the current hosts and
-Extension Manager without changing either host repository.
+upstream-aligned vLLM-HUST and vLLM-Ascend-HUST stacks. Version 0.6 precomputes
+phase coefficients across sampled layers and generates model-matched calibration
+artifacts itself, without changing either host repository.
 
 > Status: experimental release candidate. Package lifecycle, Ascend kernel
 > smoke, three cold 16K engineering-control pairs, and bounded public
@@ -61,11 +61,29 @@ contract tests intentionally guard the internal integration seams.
 
 ## Install, enable, disable, and uninstall
 
-Install the host stack first, then the released wheel:
+Install the matched host stack first, then the released wheel. The plugin wheel
+deliberately does not declare `vllm` or `vllm-ascend` as Python package
+dependencies: those hardware-specific packages must be provisioned as one
+tested runtime lock, while host compatibility is enforced by the Extension
+Manager manifest and startup checks. This also prevents plugin installation
+from asking pip to re-resolve an already provisioned host environment.
+
+For the currently supported vLLM 0.28 / vLLM-Ascend 0.25 line, do not mix in
+Triton-Ascend 3.2.2. That older wheel pins NumPy 1.26.4, whereas the supported
+vLLM line requires `opencv-python-headless>=4.13`, whose available wheels
+require NumPy 2. Downgrading OpenCV to 4.9 violates the vLLM requirement. Use
+the matched Triton-Ascend 3.6 host stack instead.
+
+After the host and Extension Manager are present, install the plugin without
+changing host packages:
 
 ```bash
-python -m pip install 'vllm-ascend-kvcompress-hust[manager]==0.5.0'
+python -m pip install --no-deps vllm-ascend-kvcompress-hust==0.6.0
 ```
+
+For a fresh environment, install `vllm-hust-ext` separately from its approved
+index before the command above. Source/plugin-test installs should likewise use
+`python -m pip install --no-deps .` after provisioning the locked host stack.
 
 Copy [examples/triattention.json](examples/triattention.json) and set
 `stats_path` to the artifact location. If it does not exist, the enabled plugin
@@ -121,15 +139,14 @@ step: semantic RoPE positions stay unchanged, physical attention/slot indices
 use a per-request offset, and old blocks are released at the next scheduler
 barrier.
 
-Version 0.5 retains the version 0.4 direct paged-K scoring, persistent workspaces, fused NPU
-normalization/head/layer aggregation, dynamic JIT lengths, layer-stride
-sampling, device-resident offsets, and a configurable requested-output gate
-that skips scoring/copy when generation is too short to amortize it. The public quality sweep rejected the
-aggressive 4,096-token budget and recommends an 8,192-token physical budget;
-4K remains only a workload-specific option requiring separate quality checks.
-The final 910B2 kernel benchmark measured 1.82x paged-copy, 2.81x direct-score,
-and 1.34x aggregate speedups against generic references; offset update was 0.83x
-and is not claimed as an improvement.
+Version 0.6 prepares RoPE phase coefficients once for all sampled layers and
+reuses them in direct paged-K scoring. On Ascend 910B2, the median amortized
+scoring cost was 0.270 ms per sampled layer versus 0.460 ms for the former
+in-kernel phase path, a 41.3% reduction. The validated stride is 8 (six of 48
+layers for selection); every K/V layer is still materialized. Persistent copy,
+fused aggregation, device-resident offsets, dynamic JIT lengths, and the
+short-output bypass remain. A fused Triton K/V copy experiment was removed
+after measuring 14.504 ms versus 0.334 ms for the retained workspace path.
 
 In three cold engineering-control pairs on Qwen2.5-14B, each with four fixed
 16,384+1,024 requests at 0.4 RPS/concurrency 4, all 24 requests completed with
@@ -141,18 +158,18 @@ same-host compatibility control, not the required official V4.6 B0 claim.
 
 A separate public A3 sweep used all eligible non-truncated cases from
 LongBench-v2 (116), LongBench `passage_retrieval_en` (200), and LongBench
-`qasper` (93). With an 8K budget, LongBench-v2 accuracy was unchanged and
-request throughput improved 2.13%; retrieval stayed at 100% and deliberately
-bypassed compression because its output cap is 32 tokens, with request
-throughput changing -0.04%; Qasper F1 changed by -0.48 percentage points and
-request throughput by -0.11%. B1 recorded 127/127 scheduler/worker commits and
+`qasper` (93). With the 8K/stride-8 candidate, LongBench-v2 accuracy was
+unchanged, request throughput improved 2.81%, and mean E2E fell 2.72%; Qasper
+F1 returned to the exact B0 value and throughput was neutral (+0.03%).
+Retrieval stayed at 100% and deliberately bypassed compression because its
+output cap is 32 tokens. B1 recorded 127/127 scheduler/worker commits and
 reduced physical blocks 60.67% over compressed cases. See the full
 [public benchmark record](docs/public-long-context-benchmarks.md), including
 the rejected 4K Qasper result and single-run limitations.
 
 ## Conflict matrix
 
-| Feature | 0.5 status | Behavior |
+| Feature | 0.6 status | Behavior |
 | --- | --- | --- |
 | Prefix cache | Conflict | Rejected; must be disabled |
 | Speculative decoding | Conflict | Rejected |
@@ -168,7 +185,7 @@ the rejected 4K Qasper result and single-run limitations.
 ## Configuration and validation
 
 The example uses an 8192-token budget, 1024-token recompute window, 512-token
-protected recent window, 8192-token scoring chunks, and every fourth scoring
+protected recent window, 8192-token scoring chunks, and every eighth scoring
 layer. It bypasses compression below 64 requested output tokens. KV-related
 token counts must be positive multiples of block size 128.
 

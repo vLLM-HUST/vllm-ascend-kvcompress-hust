@@ -2,6 +2,25 @@
 
 English | [简体中文](environment-installation.zh.md)
 
+## Host stack dependency boundary
+
+The plugin is installed into a pre-provisioned host and does not own the host's
+Python dependency graph. Its wheel therefore has no core `Requires-Dist`; the
+supported `vllm-ascend` range remains in the Extension Manager manifest.
+
+Do not combine the supported vLLM 0.28 / vLLM-Ascend 0.25 snapshots with
+Triton-Ascend 3.2.2. The conflict is not a missing NumPy distribution:
+Triton-Ascend 3.2.2 requires `numpy==1.26.4`, while vLLM 0.28 requires
+`opencv-python-headless>=4.13` and those available OpenCV wheels require
+`numpy>=2`. No NumPy version satisfies both. Pinning OpenCV 4.9 is also invalid
+because it fails vLLM's `>=4.13` constraint. Provision the matched
+Triton-Ascend 3.6/NumPy 2 host lock, then install this plugin with `--no-deps`.
+
+If pip reports both an unversioned and an exact `vllm`/`vllm-ascend`
+requirement, the unversioned entry came from older plugin metadata rather than
+an intentional duplicate host install. Build and test the current wheel, whose
+core dependency list is empty.
+
 This note records the installation issue observed after running dev-hub
 `quickstart.sh` option 5 on the 2026-09-11 snapshots. It does not modify the
 dev-hub, vLLM-HUST, vLLM-Ascend-HUST, or Triton-Ascend repositories.

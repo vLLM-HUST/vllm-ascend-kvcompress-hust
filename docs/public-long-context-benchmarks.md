@@ -2,7 +2,7 @@
 
 English | [简体中文](public-long-context-benchmarks.zh.md)
 
-Date: 2026-09-12. This record supplements the synthetic commissioning test
+Updated: 2026-09-15. This record supplements the synthetic commissioning test
 with three public A3 long-context/KV scenarios. It is a same-host engineering
 comparison, not the formal V4.6 official baseline.
 
@@ -58,11 +58,12 @@ python scripts/kvcompress_benchmark_data.py prepare \
   --output .benchmarks/public/longbench-qasper.jsonl
 ```
 
-Start one cold service per arm with the settings below. B0 is the same plugin
-and host with a 32,768-token budget/32,896-token threshold, so no request can
-compress. B1 uses [the example configuration](../examples/triattention.json):
+The frozen B0 is the same plugin and host with a 32,768-token
+budget/32,896-token threshold, so no request can compress. The 0.6 candidate
+reuses that B0 because the host, model, tokenizer, datasets, and service flags
+are unchanged. B1 uses [the example configuration](../examples/triattention.json):
 8,192-token budget, 1,024-token recompute window, 512 recent protected tokens,
-8,192-token scoring chunks, layer stride 4, and a 64-token minimum requested
+8,192-token scoring chunks, layer stride 8, and a 64-token minimum requested
 output before compression is worthwhile.
 
 ```bash
@@ -122,15 +123,16 @@ the same-host no-compression engineering control described above.
 
 | Scenario | B0 → B1 quality | Requests / compression | Request throughput | Mean TTFT | Mean TPOT | Mean E2E | Physical blocks |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| LongBench-v2 | 34.48 → 34.48 accuracy (0.00 pp) | 116 / 116 | **+2.13%** | **−3.84%** | **−7.80%** | **−2.17%** | −61.96% |
-| Passage retrieval | 100.00 → 100.00 (0.00 pp) | 200 / 0 (bypassed) | −0.04% | **−0.28%** | +0.27% | +0.01% | n/a |
-| Qasper | 42.51 → 42.03 F1 (−0.48 pp) | 93 / 11 | −0.11% | **−2.89%** | +11.31% | +0.41% | −38.73% on compressed cases |
+| LongBench-v2 | 34.48 → 34.48 accuracy (0.00 pp) | 116 / 116 | **+2.81%** | **−3.29%** | **−13.22%** | **−2.72%** | −61.96% |
+| Passage retrieval | 100.00 → 100.00 (0.00 pp) | 200 / 0 (bypassed) | +0.09% | +3.06% | **−2.52%** | **−0.10%** | n/a |
+| Qasper | 42.51 → 42.51 F1 (0.00 pp) | 93 / 11 | +0.03% | +6.81% | **−2.40%** | +0.43% | −38.73% on compressed cases |
 
 All 818 arm-requests completed with zero silent truncations. B1 produced 127
 scheduler commits and 127 worker acknowledgements. Across compressed cases,
 20,666 source blocks became 8,128 destination blocks, a 60.67% reduction.
-LongBench-v2 dynamic KV use peaked at 39.8% versus B0's 90.4%. Device HBM
-still peaked at 87% in both arms because vLLM reserves the KV pool at startup.
+LongBench-v2 dynamic KV use peaked at 46.7% versus B0's 90.4%. Device HBM
+peaked at 88% for the candidate and 87% for B0 because vLLM reserves the KV
+pool at startup; no smaller reserved-pool claim is made.
 
 The workload boundary is material: compression improves the broad,
 10K–32K-input LongBench-v2 run. The 10K–16K retrieval task requests at most 32
@@ -138,16 +140,18 @@ output tokens, so the optimized 64-token gate bypasses scoring and copy work;
 all 200 runs show zero scheduler commits/worker acknowledgements and effectively
 neutral performance. Qasper is mostly below the 9,216-token B1 threshold, so
 only 11 cases compress and aggregate performance is also effectively neutral.
+Qasper mean TTFT and E2E remain slightly worse even though TPOT improves.
 These single runs support directional engineering conclusions, not a confidence
 interval for throughput.
 
 The initial 4,096-token candidate is retained as a negative tuning result: it
-dropped Qasper F1 by 4.71 pp and therefore failed the 1 pp quality gate. The
-8,192-token budget is the recommended public-benchmark setting; the earlier
-4K synthetic result remains useful only for its stated fixed workload.
+dropped Qasper F1 by 4.71 pp and therefore failed the 1 pp quality gate. At 8K,
+stride 4 still lost 0.48 pp on Qasper; stride 8 restored the exact B0 score and
+improved the complete LongBench-v2 result, so 8K/stride-8 is the recommended
+public-benchmark setting.
 
 Machine-readable evidence is in
-[kvcompress-v0.4.0-public-long-context-summary.json](evidence/kvcompress-v0.4.0-public-long-context-summary.json).
+[kvcompress-v0.6.0-performance-summary.json](evidence/kvcompress-v0.6.0-performance-summary.json).
 
 ## Remaining limits
 

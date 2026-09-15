@@ -2,7 +2,7 @@
 
 [English](public-long-context-benchmarks.md) | 简体中文
 
-日期：2026-09-12。本记录在原合成 commissioning 测试之外，新增三个公开 A3
+更新日期：2026-09-15。本记录在原合成 commissioning 测试之外，新增三个公开 A3
 长上下文/KV 场景。它是同宿主工程对照，不是 V4.6 官方基线正式验收。
 
 ## 场景与冻结输入
@@ -54,10 +54,11 @@ python scripts/kvcompress_benchmark_data.py prepare \
   --output .benchmarks/public/longbench-qasper.jsonl
 ```
 
-两组各使用一个冷服务生命周期。B0 在相同宿主与插件下设 32,768-token 预算和
-32,896-token 阈值，所有请求均不发生压缩；B1 使用[示例配置](../examples/triattention.json)：
+冻结 B0 在相同宿主与插件下设 32,768-token 预算和 32,896-token 阈值，所有请求
+均不发生压缩。0.6 候选复用该 B0，因为宿主、模型、tokenizer、数据集和服务参数均
+未变化。B1 使用[示例配置](../examples/triattention.json)：
 8,192-token 预算、1,024-token 重算窗口、512-token 最近保护、8,192-token 评分
-分块、每四层评分一次，并要求请求至少生成 64 token 才值得进入压缩路径。
+分块、每八层评分一次，并要求请求至少生成 64 token 才值得进入压缩路径。
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=6
@@ -111,27 +112,29 @@ worker 回执缺失或质量下降超过 1 个百分点，B1 会被判失败。�
 
 | 场景 | B0 → B1 质量 | 请求数 / 压缩数 | 请求吞吐 | 平均 TTFT | 平均 TPOT | 平均 E2E | 物理 block |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| LongBench-v2 | 34.48 → 34.48 accuracy（0.00 pp） | 116 / 116 | **+2.13%** | **−3.84%** | **−7.80%** | **−2.17%** | −61.96% |
-| 段落检索 | 100.00 → 100.00（0.00 pp） | 200 / 0（绕过） | −0.04% | **−0.28%** | +0.27% | +0.01% | 不适用 |
-| Qasper | 42.51 → 42.03 F1（−0.48 pp） | 93 / 11 | −0.11% | **−2.89%** | +11.31% | +0.41% | 触发样本 −38.73% |
+| LongBench-v2 | 34.48 → 34.48 accuracy（0.00 pp） | 116 / 116 | **+2.81%** | **−3.29%** | **−13.22%** | **−2.72%** | −61.96% |
+| 段落检索 | 100.00 → 100.00（0.00 pp） | 200 / 0（绕过） | +0.09% | +3.06% | **−2.52%** | **−0.10%** | 不适用 |
+| Qasper | 42.51 → 42.51 F1（0.00 pp） | 93 / 11 | +0.03% | +6.81% | **−2.40%** | +0.43% | 触发样本 −38.73% |
 
 两组共 818 个请求全部完成，静默截断为 0。B1 有 127 次 scheduler 提交和 127 次
 worker 回执。实际触发压缩的样本合计从 20,666 个源 block 降至 8,128 个目标
-block，减少 60.67%。LongBench-v2 动态 KV 使用峰值为 39.8%，B0 为 90.4%。
-由于 vLLM 启动时预留 KV 池，两组设备 HBM 峰值仍均为 87%。
+block，减少 60.67%。LongBench-v2 动态 KV 使用峰值为 46.7%，B0 为 90.4%。
+由于 vLLM 启动时预留 KV 池，候选与 B0 的设备 HBM 峰值分别为 88% 和 87%；
+这里不宣称预留池缩小。
 
 工作负载边界很明显：插件在输入 10K–32K、输出较丰富的 LongBench-v2 上提升
 吞吐。10K–16K 输入的检索任务最多只请求 32 个输出 token，因此优化后的 64-token
 门槛会跳过评分和 copy；200 条均无 scheduler 提交/worker 回执，性能近似持平。
 Qasper 大部分请求低于 B1 的 9,216-token 阈值，仅 11 条压缩，因此总体性能也近似
-持平。每组只有一次运行，性能数值仅支持有方向性的工程结论，不代表吞吐置信区间。
+持平；其平均 TTFT 与 E2E 仍略差，但 TPOT 改善。每组只有一次运行，性能数值仅支持
+有方向性的工程结论，不代表吞吐置信区间。
 
 调参过程中的 4,096-token 候选作为负结果保留：Qasper F1 下降 4.71 个百分点，未
-通过 1 pp 质量门槛。因此公开 benchmark 推荐 8,192-token 预算；此前 4K 合成结果
-只在其固定工作负载边界内有效。
+通过 1 pp 质量门槛。8K/stride-4 仍下降 0.48 pp；stride-8 恢复至准确 B0 分数，
+并改善完整 LongBench-v2 结果，因此公开 benchmark 推荐 8K/stride-8。
 
 机器可读证据见
-[kvcompress-v0.4.0-public-long-context-summary.json](evidence/kvcompress-v0.4.0-public-long-context-summary.json)。
+[kvcompress-v0.6.0-performance-summary.json](evidence/kvcompress-v0.6.0-performance-summary.json)。
 
 ## 尚存限制
 

@@ -13,7 +13,9 @@ from vllm_ascend_kvcompress.methods.triattention.cache import (
 )
 from vllm_ascend_kvcompress.methods.triattention.kernels import (
     aggregate_normalized_scores,
+    prepare_mean_phase_coefficients,
     score_paged_keys_mean,
+    score_paged_keys_mean_precomputed,
     shift_positions,
 )
 from vllm_ascend_kvcompress.methods.triattention.scoring import score_post_rope_keys
@@ -133,6 +135,42 @@ def main() -> None:
     torch.npu.synchronize()
     torch.testing.assert_close(
         output.cpu(), expected_scores.cpu(), rtol=2e-3, atol=2e-3
+    )
+
+    layer_count = 3
+    layer_omega = omega.unsqueeze(0).expand(layer_count, -1).contiguous()
+    offset_cos = torch.cos(future_offsets.unsqueeze(1) * omega).mean(dim=0)
+    offset_sin = torch.sin(future_offsets.unsqueeze(1) * omega).mean(dim=0)
+    layer_offset_cos = offset_cos.unsqueeze(0).expand(layer_count, -1).contiguous()
+    layer_offset_sin = offset_sin.unsqueeze(0).expand(layer_count, -1).contiguous()
+    phase_cos = torch.empty_like(layer_omega)
+    phase_sin = torch.empty_like(layer_omega)
+    assert prepare_mean_phase_coefficients(
+        layer_omega,
+        layer_offset_cos,
+        layer_offset_sin,
+        300,
+        phase_cos,
+        phase_sin,
+    )
+    precomputed_output = torch.empty_like(output)
+    assert score_paged_keys_mean_precomputed(
+        score_cache,
+        score_source,
+        q_real,
+        q_imag,
+        frequency_scale,
+        extra_coefficient,
+        phase_cos[1],
+        phase_sin[1],
+        256,
+        precomputed_output,
+        block_size,
+        "half",
+    )
+    torch.npu.synchronize()
+    torch.testing.assert_close(
+        precomputed_output.cpu(), expected_scores.cpu(), rtol=2e-3, atol=2e-3
     )
 
     head_mean = output.mean(dim=-1)

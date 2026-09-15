@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vllm-ascend-kvcompress-hust"
-version = "0.5.0"
+version = "0.6.0"
 description = "TriAttention KV-cache compression plugin for vLLM Ascend"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
@@ -30,10 +30,12 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = [
-    "vllm>=0.28.1.post1.dev0,<0.29",
-    "vllm-ascend>=0.25.1rc2.dev0,<0.26",
-]
+# The host runtime is a separately provisioned, hardware-specific stack. Do not
+# ask pip to re-resolve it when installing this in-process plugin: mixing a
+# current vLLM wheel with an older Triton-Ascend wheel produces mutually
+# exclusive NumPy/OpenCV requirements. Supported host ranges remain in the
+# Extension Manager manifest and are checked at activation/runtime boundaries.
+dependencies = []
 
 [project.optional-dependencies]
 test = [
