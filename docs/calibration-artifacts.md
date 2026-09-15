@@ -2,225 +2,182 @@
 
 English | [简体中文](calibration-artifacts.zh.md)
 
-TriAttention requires model-specific query statistics before it can score and
-select cached keys. The `.pt` files under `artifacts/` contain those statistics.
-They are generated offline, selected at service startup through `stats_path`,
-and treated as read-only for the lifetime of the service.
+TriAttention needs model-specific query statistics to score cached keys.
+Version 0.5 generates the structured `.pt` artifact inside this plugin; an
+external TriAttention checkout is no longer required.
 
-Two legacy calibration files are committed for development and historical
-reproducibility, but they are excluded from the Python wheel. Their generation
-provenance is incomplete. Operators must generate or securely distribute a
-fully traced artifact for the exact model revision they serve and must not
-infer model/dataset redistribution rights from this repository's license.
+## Automatic generation during service startup
 
-## Committed Legacy Artifacts
+`auto_calibrate` defaults to `true`. When `stats_path` is missing, the Ascend
+worker performs this sequence:
 
-The repository contains these two Qwen2.5-Coder-14B-Instruct artifacts:
+1. acquire an exclusive lock beside `stats_path` and check the path again;
+2. load the same model, tokenizer, revision, dtype, and trust policy selected
+   by vLLM through Hugging Face Transformers;
+3. run one calibration forward pass and reduce each layer's unrotated
+   `q_proj` output directly into per-head frequency statistics;
+4. validate the complete payload, flush a temporary file, and atomically
+   rename it to `stats_path`;
+5. release the temporary model and device cache; and
+6. let the original `NPUModelRunner.load_model()` load the serving weights.
 
-| File | Intended use | Size | SHA-256 |
-| --- | --- | ---: | --- |
-| `artifacts/qwen2.5-coder-14b-stats.pt` | Validated serving and benchmark artifact | 3,285,943 bytes | `d1f43bf5de3ab7d464a0a906060bbc15b828b872af79795bf5d26a7266c8a47a` |
-| `artifacts/qwen2.5-coder-14b-stats-smoke.pt` | Fast startup/integration smoke artifact; not a quality reference | 3,320,539 bytes | `016965e5d638f467fbb1b2ccc458becab1cc3129e3e30b040b131252d7ea9ab3` |
+The calibration and serving copies of the model are therefore not resident at
+the same time. Direct online reduction also avoids retaining full query
+sequences for every layer. If another worker created the file while this worker
+was waiting, the completed artifact is reused. Partial files are never exposed
+at `stats_path`.
 
-Both files use the flat payload format emitted by the reference TriAttention
-calibration script. Each contains 48 layers x 40 query heads, with 64 frequency
-components for a head dimension of 128. At runtime, the 40 query-head rows are
-grouped into eight KV heads for the model's GQA layout.
+The minimum configuration is:
 
-The `-smoke` suffix is only a file-naming convention. The loader does not assign
-it different semantics and never selects it automatically. Whichever file is
-passed as `stats_path` becomes the active scoring artifact.
-
-The full artifact above is the one identified by the SHA-256 recorded in the
-current benchmark evidence. The existing payloads do not record the model
-revision, calibration-input hash, or actual token count, so their complete
-generation provenance cannot be reconstructed from the `.pt` files alone.
-
-## What the Artifact Does
-
-Calibration summarizes unrotated query vectors in the complex frequency domain
-for every transformer layer and query head:
-
-| Field | Meaning | Runtime use |
-| --- | --- | --- |
-| `q_mean_real` | Real part of the mean complex query at each RoPE frequency | Estimates alignment between a cached post-RoPE key and future queries |
-| `q_mean_imag` | Imaginary part of the same mean | Completes the phase-sensitive trigonometric score |
-| `q_abs_mean` | Mean magnitude of the complex query | Supplies the magnitude-regression correction term |
-| `freq_scale_sq` | Optional squared frequency scale | Required for scaled RoPE and used as a positive score multiplier |
-| `inv_freq` | Optional exact inverse RoPE frequencies | Required per layer for scaled or non-default RoPE |
-| `metadata` | Shape, RoPE, and generation descriptors | Used for fail-closed compatibility checks when fields are present |
-
-The artifact does not contain model weights, a KV cache, prompts, generated
-tokens, or request state. It contains aggregate floating-point statistics
-derived from calibration text. It is small enough to load on CPU at startup and
-is then converted to FP32 device tensors.
-
-During cache binding, the implementation:
-
-1. loads the payload on CPU with `torch.load(..., weights_only=True)`;
-2. validates layer coverage, head shape, head dimension, supported model type,
-   RoPE style, RoPE theta, and required scaled-RoPE fields;
-3. groups query-head rows according to the model's GQA ratio;
-4. transfers statistics to the NPU as FP32;
-5. derives frequency scales and the magnitude-correction coefficient; and
-6. precomputes future-offset cosine/sine means used by the Ascend scoring
-   kernel.
-
-At each compression transaction, those fixed tensors score the request's
-current post-RoPE K cache. The artifact influences which tokens survive; it
-does not change the scheduler budget, write KV data itself, or alter semantic
-RoPE positions.
-
-## Generation Source
-
-This plugin consumes calibration artifacts but does not duplicate the model
-instrumentation used to generate them. Generate the flat format with
-`scripts/calibrate.py` from a matching checkout of the
-[reference TriAttention repository](https://github.com/WeianMao/triattention).
-
-Keep the generator revision with the artifact provenance. The current files
-match the payload schema produced by that script: it loads the Hugging Face
-model, runs one forward pass over plain text, captures every attention layer's
-query projection, inverts RoPE, converts pairs to complex values, reduces over
-the token dimension, and saves `metadata` plus `stats`.
-
-## Calibration Input
-
-Use a UTF-8 plain-text file containing natural, coherent text:
-
-- provide enough text to approach the chosen `--max-length`;
-- include representative language and structure, but keep calibration data
-  separate from benchmark/evaluation prompts;
-- avoid corrupted text, empty input, and long mechanically repeated loops; and
-- record the input SHA-256 and the tokenizer used to produce the token stream.
-
-Calibration is normally domain-tolerant, but it is not quality-free. A new
-artifact must pass the target model's quality guardrail before production use.
-
-The generator holds model weights and captured query tensors during one forward
-pass. Start with a short smoke run to confirm compatibility, then run the
-production length on a device with sufficient memory.
-
-## Generate a Smoke Artifact
-
-From this plugin repository, point `TRIATTENTION_CHECKOUT` at the reference
-checkout and select an idle NPU:
-
-```bash
-export TRIATTENTION_CHECKOUT=/path/to/triattention
-export MODEL=/path/to/Qwen2.5-Coder-14B-Instruct
-export CALIBRATION_TEXT=/path/to/calibration.txt
-export ASCEND_RT_VISIBLE_DEVICES=5
-
-python "$TRIATTENTION_CHECKOUT/scripts/calibrate.py" \
-  --model "$MODEL" \
-  --input "$CALIBRATION_TEXT" \
-  --output artifacts/qwen2.5-coder-14b-stats-smoke.pt \
-  --max-length 2048 \
-  --device npu \
-  --attn-implementation eager
-```
-
-The 2048-token limit is a recommended smoke convention, not a property encoded
-in the output file. Confirm the script reports the expected tokenized length
-and all expected layer/head entries before using the artifact.
-
-## Generate a Production Artifact
-
-Use the same model, tokenizer, generator revision, attention implementation,
-and device software stack. Supply a longer independent calibration text:
-
-```bash
-python "$TRIATTENTION_CHECKOUT/scripts/calibrate.py" \
-  --model "$MODEL" \
-  --input "$CALIBRATION_TEXT" \
-  --output artifacts/qwen2.5-coder-14b-stats.pt \
-  --max-length 32768 \
-  --device npu \
-  --attn-implementation eager
-```
-
-The script truncates to `--max-length`; it does not pad a shorter input. Treat
-the output as a candidate until structural validation, service startup, matched
-A/B capacity/performance tests, and the model-specific quality check pass.
-
-Do not overwrite the last validated artifact before the candidate has passed.
-Write to a temporary artifact name, record hashes, validate it, and then update
-the deployed `stats_path` atomically.
-
-## Default and Scaled RoPE
-
-The two current Qwen2.5 artifacts declare `rope_style=half` and
-`rope_type=default`. They omit `freq_scale_sq` and exact `inv_freq`, so the
-loader uses a unit frequency scale and derives standard inverse frequencies
-from the serving model's `rope_theta=1000000`.
-
-The reference flat generator shown above is not sufficient for YaRN, LongRoPE,
-or another scaled/non-default RoPE configuration. For those models, the
-artifact must use the structured `layer_stats` format and include exact
-per-layer `inv_freq` and positive `freq_scale_sq`. The provider deliberately
-rejects a scaled-RoPE artifact when either value is missing; do not substitute
-values from a different model or silently fall back to the default formula.
-
-## Accepted Payload Schemas
-
-### Flat reference format
-
-```python
+```json
 {
-    "metadata": {
-        "head_dim": 128,
-        "rope_style": "half",
-        "rope_type": "default",
-        # Additional provenance and model-shape fields are recommended.
-    },
-    "stats": {
-        "layer00_head00": {
-            "q_mean_real": Tensor[64],
-            "q_mean_imag": Tensor[64],
-            "q_abs_mean": Tensor[64],
-        },
-        # Every head of every layer must be present and contiguous.
-    },
+  "method_config": {
+    "stats_path": "/srv/vllm/calibration/qwen-stats.pt",
+    "auto_calibrate": true
+  }
 }
 ```
 
-### Structured format
+The output directory must exist or be creatable by the service account and
+must have enough space for the artifact. The plugin manifest declares
+`filesystem_read`, `filesystem_write`, `device_access`, and `network_egress`;
+use `calibration_local_files_only=true` when all model files are local and
+network access is forbidden.
+
+An existing artifact is never overwritten during service startup. It is loaded
+with `torch.load(..., weights_only=True)` and checked before model loading. New
+plugin-generated artifacts also bind to the configured model identifier,
+revision, and a local checkpoint-manifest fingerprint. A corrupt, structurally
+incompatible, or differently bound artifact fails startup. Set
+`auto_calibrate=false` to retain the earlier strictly pre-generated workflow.
+
+## Calibration options
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `stats_path` | required | Artifact destination and later runtime input |
+| `auto_calibrate` | `true` | Generate only when `stats_path` is absent |
+| `calibration_input_path` | built-in corpus | Licensed UTF-8 calibration text |
+| `calibration_max_length` | `4096` | Tokenizer truncation limit; minimum 128 |
+| `calibration_device` | `auto` | Worker device, or an explicit value such as `npu:0` |
+| `calibration_attn_implementation` | `eager` | Transformers backend: `eager`, `sdpa`, or `flash_attention_2` |
+| `calibration_local_files_only` | `false` | Forbid model/tokenizer downloads |
+
+The bundled multilingual systems text makes first startup self-contained and
+is suitable for bootstrap and integration validation. Production operators
+should provide an independent, licensed, representative corpus, record its
+hash, and run the workload's quality gate. Calibration is generally
+domain-tolerant, but it is not quality-free.
+
+## Generate before service startup
+
+The installed wheel exposes the same generator as a CLI. This is useful when
+startup time must be predictable or the service account may not write the
+artifact directory:
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=6
+
+vllm-ascend-kvcompress-calibrate \
+  --model /path/to/Qwen2.5-Coder-14B-Instruct \
+  --input /path/to/licensed-calibration.txt \
+  --output /srv/vllm/calibration/qwen-stats.pt \
+  --max-length 32768 \
+  --device npu:0 \
+  --dtype bfloat16 \
+  --attn-implementation eager \
+  --local-files-only
+```
+
+Omit `--input` to use the bundled corpus. The command reuses an existing valid
+payload. `--force` is deliberately CLI-only and atomically replaces it; use
+that flag only when creating a candidate at a controlled path. Prefer a new
+filename until correctness and long-context quality checks pass.
+
+## Generation algorithm
+
+For each supported decoder layer, the generator hooks the Hugging Face
+attention module's `q_proj`. The projection output is reshaped to
+`[tokens, query_heads, head_dim]`. With the verified half-split RoPE layout,
+the first and second halves form the real and imaginary frequency components.
+The generator accumulates:
+
+- mean real query value;
+- mean imaginary query value; and
+- mean complex magnitude.
+
+Reduction happens immediately on the device and only the small sums move to
+CPU. Applying RoPE and then numerically inverting it is unnecessary because
+`q_proj` already exposes the required unrotated query. For default RoPE, exact
+inverse frequencies are read from the model when available or derived from
+`rope_theta`. For scaled/non-default RoPE, the model must expose exact
+`inv_freq` and attention scaling; otherwise generation fails closed.
+
+The currently validated shape families are Llama, Mistral, Qwen2/Qwen2-MoE,
+and Qwen3/Qwen3-MoE with the half-split layout. Fused/custom attention modules
+without a separate `q_proj` are rejected instead of guessed.
+
+## Structured payload
+
+Version 0.5 writes schema 2:
 
 ```python
 {
     "metadata": {
+        "schema_version": 2,
+        "generator": "vllm-ascend-kvcompress-hust",
+        "generator_version": "0.5.0",
+        "model": "/path/or/hf-id",
+        "model_revision": "default",
+        "model_source_fingerprint": "local-manifest:...",
+        "model_config_sha256": "...",
+        "input_source": "/path/to/calibration.txt",
+        "input_sha256": "...",
+        "token_count": 4096,
         "model_type": "qwen2",
         "num_layers": 48,
         "num_attention_heads": 40,
         "num_kv_heads": 8,
         "head_dim": 128,
+        "rope_theta": 1000000.0,
         "rope_style": "half",
         "rope_type": "default",
-        "rope_theta": 1000000.0,
     },
     "layer_stats": {
-        0: {
+        "0": {
             "q_mean_real": Tensor[40, 64],
             "q_mean_imag": Tensor[40, 64],
             "q_abs_mean": Tensor[40, 64],
-            "freq_scale_sq": Tensor[40, 64],  # scaled RoPE when applicable
-            "inv_freq": Tensor[64],  # exact per-layer values
+            "freq_scale_sq": Tensor[1, 64],
+            "inv_freq": Tensor[64],
         },
-        # Every model layer must be present.
+        # Every layer is present.
     },
 }
 ```
 
-Query statistics may have either `num_attention_heads` or `num_kv_heads` rows.
-The latter is expanded across each GQA query group. Complex query means may also
-be supplied as `q_mean_complex`, either as a complex tensor or a real tensor
-whose final dimension is two.
+The loader remains backward compatible with the original flat TriAttention
+`stats` mapping and structured payloads that use integer layer keys. Legacy
+payloads cannot provide the stronger model-source binding because those fields
+were never recorded.
 
-## Inspect and Validate an Artifact
+## Legacy repository artifacts
 
-Never inspect an untrusted artifact with unrestricted pickle loading. Use
-`weights_only=True`:
+The two files under `artifacts/` are retained for development and historical
+reproducibility and are excluded from wheels and sdists:
+
+| File | Intended use | SHA-256 |
+| --- | --- | --- |
+| `qwen2.5-coder-14b-stats.pt` | Historical benchmark artifact | `d1f43bf5de3ab7d464a0a906060bbc15b828b872af79795bf5d26a7266c8a47a` |
+| `qwen2.5-coder-14b-stats-smoke.pt` | Historical startup smoke | `016965e5d638f467fbb1b2ccc458becab1cc3129e3e30b040b131252d7ea9ab3` |
+
+Their model revision, calibration-input hash, and actual token count are
+incomplete. Do not infer model/dataset redistribution rights from this
+repository's Apache-2.0 license.
+
+## Inspect and accept an artifact
+
+Never use unrestricted pickle loading for an untrusted `.pt` file:
 
 ```bash
 python - <<'PY'
@@ -228,76 +185,21 @@ from pathlib import Path
 import hashlib
 import torch
 
-path = Path("artifacts/qwen2.5-coder-14b-stats.pt")
+path = Path("/srv/vllm/calibration/qwen-stats.pt")
 payload = torch.load(path, map_location="cpu", weights_only=True)
-stats = payload.get("stats", {})
 print("sha256:", hashlib.sha256(path.read_bytes()).hexdigest())
 print("metadata:", payload.get("metadata", {}))
-print("flat entries:", len(stats))
-print("first keys:", list(stats)[:3])
+print("layers:", len(payload.get("layer_stats", {})))
 PY
 ```
 
-For the current Qwen2.5-Coder-14B shape, run the plugin's full loader and
-compatibility validation:
+Structural validation is necessary but insufficient. Before production, keep
+the generator/package version, model and tokenizer revisions, checkpoint and
+input fingerprints, CANN/PyTorch/torch-npu/Transformers versions, command line,
+artifact hash and size, and the matched correctness, long-context quality,
+throughput, latency, and HBM evidence. Regenerate when weights, tokenizer,
+query shape, RoPE parameters, corpus, or generator algorithm changes.
 
-```bash
-python - <<'PY'
-from pathlib import Path
-from vllm_ascend_kvcompress.methods.base import ModelShape
-from vllm_ascend_kvcompress.methods.triattention.stats import CalibrationStats
-
-path = Path("artifacts/qwen2.5-coder-14b-stats.pt")
-model = ModelShape(
-    model_type="qwen2",
-    num_layers=48,
-    num_attention_heads=40,
-    num_kv_heads=8,
-    head_dim=128,
-    rope_theta=1_000_000.0,
-    has_rope_scaling=False,
-)
-reasons = CalibrationStats.load(path).validate(model)
-if reasons:
-    raise SystemExit("\n".join(reasons))
-print("calibration artifact is structurally compatible")
-PY
-```
-
-Structural compatibility is necessary but does not prove that an artifact was
-generated from the intended weights or that its token selection preserves
-quality. The final check is a real service startup followed by matched quality
-and capacity tests.
-
-## Provenance Checklist
-
-Store a dated manifest under `docs/dev/` next to development evidence. Record:
-
-- model path or repository ID, immutable revision, and model-config hash;
-- tokenizer revision and `tokenizer.json` hash;
-- reference TriAttention generator revision and local patch state;
-- calibration-input source, license, SHA-256, and actual token count;
-- device type, PyTorch, torch-npu, Transformers, dtype, attention
-  implementation, and command line;
-- artifact filename, byte size, SHA-256, schema, layer/head/frequency counts;
-- structural-validation output and the quality/benchmark evidence that approved
-  it.
-
-The `.pt` file remains under `artifacts/`; the dated provenance and experimental
-logs remain under `docs/dev/`. If an artifact is distributed outside the local
-workspace, distribute its manifest and checksum with it.
-
-## When to Regenerate
-
-Generate and revalidate a new artifact when any of these changes:
-
-- model weights, fine-tune, merge, quantized model implementation, or revision;
-- tokenizer or prompt-processing policy used for calibration;
-- number of layers, query/KV heads, head dimension, RoPE style/theta/scaling;
-- calibration corpus or generation algorithm; or
-- a quality regression suggests the current statistics are not representative.
-
-Changing only `kv_budget`, `recompute_window`, `protected_recent_window`,
-`score_chunk_size`, or `score_layer_stride` does not mechanically require new
-statistics, but every new policy still requires quality and performance
-validation.
+Changing only the KV budget or runtime score/copy chunk sizes does not
+mechanically require regeneration, but the changed policy still requires its
+own quality and performance acceptance.

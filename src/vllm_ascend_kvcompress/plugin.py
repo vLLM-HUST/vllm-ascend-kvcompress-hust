@@ -106,9 +106,21 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
     if not hasattr(runner_cls, "uses_xdrope_dim"):
         runner_cls.uses_xdrope_dim = 0
     original_initialize = runner_cls.initialize_kv_cache
+    original_load_model = runner_cls.load_model
     original_update = runner_cls._update_states
     original_metadata = runner_cls._build_attention_metadata
     original_sample = runner_cls.sample_tokens
+
+    def load_model(runner: Any) -> Any:
+        from .calibration import ensure_calibration_for_runner
+
+        generated = ensure_calibration_for_runner(runner, selection)
+        if generated:
+            logger.info(
+                "Generated model-matched TriAttention calibration artifact "
+                "before loading serving weights"
+            )
+        return original_load_model(runner)
 
     def initialize_kv_cache(runner: Any, kv_cache_config: Any) -> Any:
         provider = AscendKVCompressionProvider(runner.vllm_config, selection)
@@ -146,9 +158,11 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
         return output
 
     setattr(runner_cls, f"{_PATCH_MARKER}_original_initialize", original_initialize)
+    setattr(runner_cls, f"{_PATCH_MARKER}_original_load_model", original_load_model)
     setattr(runner_cls, f"{_PATCH_MARKER}_original_update", original_update)
     setattr(runner_cls, f"{_PATCH_MARKER}_original_metadata", original_metadata)
     setattr(runner_cls, f"{_PATCH_MARKER}_original_sample", original_sample)
+    runner_cls.load_model = load_model
     runner_cls.initialize_kv_cache = initialize_kv_cache
     runner_cls._update_states = update_states
     runner_cls._build_attention_metadata = build_attention_metadata

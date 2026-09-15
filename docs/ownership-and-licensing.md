@@ -32,9 +32,11 @@ packaging, tests, and documentation are licensed under Apache-2.0.
 | --- | --- | --- | --- |
 | Plugin source, tests, examples, documentation | Yes | Source and manifest only | Apache-2.0; preserve `LICENSE` and `NOTICE` |
 | Extension Manager manifest | Yes | Yes | Apache-2.0 |
-| Committed `.pt` calibration statistics | Yes | No | Aggregate model-derived data; provenance is incomplete, so repository licensing alone is not a model/dataset redistribution grant |
+| Committed legacy `.pt` statistics | Yes | No | Aggregate model-derived data; provenance is incomplete, so repository licensing alone is not a model/dataset redistribution grant |
 | Model weights and tokenizer assets | No | No | Obtain under their upstream terms |
-| Calibration or benchmark input text | No | No | Operators must verify their right to use and redistribute it |
+| Built-in bootstrap calibration text | In generator source | Yes | Original Apache-2.0 project text; not a production-quality guarantee |
+| Operator calibration or benchmark input | No | No | Operators must verify their right to use and redistribute it |
+| Newly generated `.pt` statistics | No | No | Environment-owned model-derived data; distribution needs the model/data terms and recorded provenance |
 | Raw service logs, prompts, generated output, profiler traces | No | No | Environment-owned; not granted for redistribution by this repository |
 | Public benchmark scripts and aggregate evidence summaries | Yes | No | Apache-2.0 project documentation/code; upstream benchmark text remains under each source dataset's terms |
 | Historical measurements in `docs/resuts*.md` | Yes | Documentation only | Apache-2.0 documentation, but not acceptance evidence for version 0.4 |

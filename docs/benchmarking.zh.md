@@ -1,4 +1,4 @@
-# 0.4 版本验收规程
+# 0.5 版本验收规程
 
 [English](benchmarking.md) | 简体中文
 

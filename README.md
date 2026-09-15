@@ -3,13 +3,14 @@
 English | [简体中文](README.zh.md)
 
 An independently packaged TriAttention KV-cache compression plugin for the
-upstream-aligned vLLM-HUST and vLLM-Ascend-HUST stacks. Version 0.4 adapts the
-current hosts and Extension Manager without changing either host repository.
+upstream-aligned vLLM-HUST and vLLM-Ascend-HUST stacks. Version 0.5 generates
+model-matched calibration artifacts itself and adapts the current hosts and
+Extension Manager without changing either host repository.
 
 > Status: experimental release candidate. Package lifecycle, Ascend kernel
 > smoke, three cold 16K engineering-control pairs, and bounded public
 > LongBench-v2/LongBench quality checks pass. The full V4.6 official baseline,
-> fully traced calibration, repeated public performance runs, and stability
+> production-corpus calibration, repeated public performance runs, and stability
 > matrix remain release gates. See [Validation](docs/validation.md).
 
 ## Ownership and maintenance
@@ -63,11 +64,15 @@ contract tests intentionally guard the internal integration seams.
 Install the host stack first, then the released wheel:
 
 ```bash
-python -m pip install 'vllm-ascend-kvcompress-hust[manager]==0.4.0'
+python -m pip install 'vllm-ascend-kvcompress-hust[manager]==0.5.0'
 ```
 
-Copy [examples/triattention.json](examples/triattention.json), set
-`stats_path` to model- and revision-matched statistics, then run:
+Copy [examples/triattention.json](examples/triattention.json) and set
+`stats_path` to the artifact location. If it does not exist, the enabled plugin
+generates model-matched statistics before vLLM loads its serving weights,
+atomically saves them, releases the temporary model, and continues startup.
+For production, set `calibration_input_path` to a licensed representative
+UTF-8 corpus; the bundled text is a bootstrap default. Then run:
 
 ```bash
 vllm-hust-ext extension validate org.vllm-hust.ascend-kvcompress
@@ -116,7 +121,7 @@ step: semantic RoPE positions stay unchanged, physical attention/slot indices
 use a per-request offset, and old blocks are released at the next scheduler
 barrier.
 
-Version 0.4 uses direct paged-K scoring, persistent workspaces, fused NPU
+Version 0.5 retains the version 0.4 direct paged-K scoring, persistent workspaces, fused NPU
 normalization/head/layer aggregation, dynamic JIT lengths, layer-stride
 sampling, device-resident offsets, and a configurable requested-output gate
 that skips scoring/copy when generation is too short to amortize it. The public quality sweep rejected the
@@ -147,7 +152,7 @@ the rejected 4K Qasper result and single-run limitations.
 
 ## Conflict matrix
 
-| Feature | 0.4 status | Behavior |
+| Feature | 0.5 status | Behavior |
 | --- | --- | --- |
 | Prefix cache | Conflict | Rejected; must be disabled |
 | Speculative decoding | Conflict | Rejected |

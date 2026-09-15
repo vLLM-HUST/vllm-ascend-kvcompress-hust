@@ -1,16 +1,41 @@
-# Version 0.4 Validation Record
+# Version 0.5 Validation Record
 
 English | [简体中文](validation.zh.md)
 
-Date: 2026-09-12. Verdict: **engineering PASS, not formal V4.6 acceptance**.
+Date: 2026-09-15. Verdict: **engineering PASS, not formal V4.6 acceptance**.
 The package and current-host integration are usable for continued evaluation;
 the limitations below prohibit a production or official-baseline claim.
+
+## Version 0.5 calibration acceptance
+
+Version 0.5 adds in-package calibration generation. On physical NPU 6, the
+final generator loaded local Qwen2.5-Coder-14B-Instruct and produced all 48 x
+40 query-head statistics at the default 4,096-token length. The 1,565,471-byte
+schema-2 artifact passed model shape, RoPE, finite-value, source identifier,
+revision, and checkpoint-manifest fingerprint checks. Its SHA-256 is
+`f53898b153fe8b3177b7e10e3c0f979eb6b470a9e5fc335a3f0ed3258f42846b`.
+
+A clean service startup with a missing `stats_path` demonstrated that
+calibration finished before the original serving-weight load, after which the
+temporary model was released, 48 KV layers were bound, `/health` returned 200,
+and a completion succeeded. A second service used the newly generated 4,096
+artifact for one exact 3,072-token retrieval case: it was correct, recorded one
+scheduler commit and one worker acknowledgement, and compacted 24 source
+blocks to 16 destination blocks. Ascend numerical kernel smoke also passed.
+
+The built-in corpus is a bootstrap default. This single use case does not
+replace the prior repeated performance and public-quality evidence below;
+production operators must generate from a representative licensed corpus and
+rerun their quality/performance/HBM matrix. The machine-readable record is
+[kvcompress-v0.5.0-auto-calibration-summary.json](evidence/kvcompress-v0.5.0-auto-calibration-summary.json).
+The final automated suite reports 77 passed and 1 skipped; Ruff check and
+format check pass.
 
 ## Frozen environment
 
 | Component | Validated value |
 | --- | --- |
-| Plugin | 0.4.0, working tree based on `305fd7b7fe` |
+| Plugin | 0.5.0, working tree based on `7c0d21144d` |
 | vLLM-HUST | `6cdc0304a8`, `0.28.1.post1.dev260` |
 | vLLM-Ascend-HUST | `5901bedbb7`, `0.25.1rc2.dev232+hust.20260903.4.g5901bedbb` |
 | Extension Manager | `cf1ea71e3e`, `0.2.0.dev0` |
@@ -27,7 +52,7 @@ directory and reinstalled. The source and recovery procedure are documented in
 
 ## Package and Extension Manager lifecycle
 
-The 0.4.0 wheel was installed without a source checkout on `PYTHONPATH`.
+The 0.5.0 wheel was installed without a source checkout on `PYTHONPATH`.
 Discovery, manifest parsing, compatibility, configuration, validation,
 enablement, status/check/plan/env rendering, and `run --dry-run` passed. The
 rendered environment contained both:
@@ -37,8 +62,9 @@ VLLM_ASCEND_KVCOMPRESS_ENABLED=1
 VLLMHUST_EXT_ENABLED_BUNDLES=org.vllm-hust.ascend-kvcompress
 ```
 
-Disable, forget, uninstall, disappearance from `extension list`, reinstall,
-and re-enable are included in the release lifecycle check. Disabled imports
+The 0.5 check covered disable, uninstall, disappearance from `extension list`,
+reinstall, rediscovery, check, and re-enable while preserving the prior
+configuration. The earlier 0.4 check also covered `forget`. Disabled imports
 remain inert. The current manager reports no native extension API for this
 host, so the manifest deliberately declares no `api_range` and relies on the
 exact package range plus runtime contract checks.
@@ -47,11 +73,12 @@ exact package range plus runtime contract checks.
 
 The final candidate is required to reproduce:
 
-- `pytest`: 68 passed on physical NPU 6;
+- `pytest`: 77 passed and 1 skipped;
 - Ruff check and format check: pass;
 - package metadata and wheel/sdist inspection: pass;
 - Ascend numerical kernel smoke: pass;
-- NPU kernel benchmark versus generic references:
+- the following NPU kernel benchmark ratios are inherited from the unchanged
+  version 0.4 runtime kernels and were not remeasured for 0.5:
 
 | Kernel path | Optimized | Reference | Ratio |
 | --- | ---: | ---: | ---: |

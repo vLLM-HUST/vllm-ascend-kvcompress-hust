@@ -4,6 +4,12 @@
   "method": "triattention",
   "method_config": {
     "stats_path": "/absolute/path/to/model-matched-stats.pt",
+    "auto_calibrate": true,
+    "calibration_input_path": "/absolute/path/to/licensed-calibration.txt",
+    "calibration_max_length": 4096,
+    "calibration_device": "auto",
+    "calibration_attn_implementation": "eager",
+    "calibration_local_files_only": true,
     "kv_budget": 8192,
     "recompute_window": 1024,
     "protected_recent_window": 512,

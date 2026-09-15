@@ -5,4 +5,4 @@ from .config import PROVIDER_NAME
 from .methods import available_methods, register_method
 
 __all__ = ["PROVIDER_NAME", "available_methods", "register_method"]
-__version__ = "0.4.0"
+__version__ = "0.5.0"

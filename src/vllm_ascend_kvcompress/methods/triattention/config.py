@@ -19,6 +19,12 @@ class TriAttentionConfig:
     """Validated options owned exclusively by the TriAttention method."""
 
     stats_path: Path
+    auto_calibrate: bool = True
+    calibration_input_path: Path | None = None
+    calibration_max_length: int = 4096
+    calibration_device: str = "auto"
+    calibration_attn_implementation: str = "eager"
+    calibration_local_files_only: bool = False
     kv_budget: int = 2048
     recompute_window: int = ASCEND_BLOCK_SIZE
     protected_recent_window: int = ASCEND_BLOCK_SIZE
@@ -38,6 +44,12 @@ class TriAttentionConfig:
     ) -> TriAttentionConfig:
         known_options = {
             "stats_path",
+            "auto_calibrate",
+            "calibration_input_path",
+            "calibration_max_length",
+            "calibration_device",
+            "calibration_attn_implementation",
+            "calibration_local_files_only",
             "kv_budget",
             "recompute_window",
             "protected_recent_window",
@@ -57,8 +69,43 @@ class TriAttentionConfig:
         if not isinstance(stats_path_raw, str) or not stats_path_raw.strip():
             raise ValueError("method option 'stats_path' must be a non-empty string")
 
+        input_path_raw = method_config.get("calibration_input_path")
+        if input_path_raw is not None and (
+            not isinstance(input_path_raw, str) or not input_path_raw.strip()
+        ):
+            raise ValueError(
+                "method option 'calibration_input_path' must be a non-empty string"
+            )
+        calibration_device = method_config.get("calibration_device", "auto")
+        if not isinstance(calibration_device, str) or not calibration_device.strip():
+            raise ValueError(
+                "method option 'calibration_device' must be a non-empty string"
+            )
+
         config = cls(
             stats_path=Path(stats_path_raw).expanduser(),
+            auto_calibrate=_require_bool(method_config, "auto_calibrate", True),
+            calibration_input_path=(
+                Path(input_path_raw).expanduser()
+                if isinstance(input_path_raw, str)
+                else None
+            ),
+            calibration_max_length=require_int(
+                method_config, "calibration_max_length", 4096
+            ),
+            calibration_device=calibration_device.strip(),
+            calibration_attn_implementation=cast(
+                str,
+                require_choice(
+                    method_config,
+                    "calibration_attn_implementation",
+                    "eager",
+                    {"eager", "sdpa", "flash_attention_2"},
+                ),
+            ),
+            calibration_local_files_only=_require_bool(
+                method_config, "calibration_local_files_only", False
+            ),
             kv_budget=require_int(method_config, "kv_budget", 2048),
             recompute_window=require_int(
                 method_config, "recompute_window", ASCEND_BLOCK_SIZE
@@ -119,3 +166,14 @@ class TriAttentionConfig:
             raise ValueError(
                 "method option 'min_output_tokens_for_compression' must be non-negative"
             )
+        if self.calibration_max_length < 128:
+            raise ValueError(
+                "method option 'calibration_max_length' must be at least 128"
+            )
+
+
+def _require_bool(options: Mapping[str, JsonScalar], name: str, default: bool) -> bool:
+    value = options.get(name, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"method option {name!r} must be a boolean")
+    return value

@@ -3,11 +3,12 @@
 [English](README.md) | 简体中文
 
 面向与上游对齐的 vLLM-HUST、vLLM-Ascend-HUST 的独立 TriAttention KV-cache
-压缩插件。0.4 版本已适配当前宿主与 Extension Manager，且不修改两个宿主仓库。
+压缩插件。0.5 版本由插件自身生成模型匹配的校准产物，并适配当前宿主与
+Extension Manager，且不修改两个宿主仓库。
 
 > 状态：实验性候选版本。插件包生命周期、Ascend 算子 smoke、三轮 16K 冷启动
 > 工程对照，以及有边界的 LongBench-v2/LongBench 公开质量检查均已通过；V4.6
-> 官方基线、完整溯源校准、公开性能重复测量和稳定性矩阵仍是发布门槛。详见
+> 官方基线、生产语料校准、公开性能重复测量和稳定性矩阵仍是发布门槛。详见
 > [验收记录](docs/validation.zh.md)。
 
 ## 归属与维护
@@ -55,11 +56,14 @@ block size 128、稠密 BF16/FP16 K/V。其他组合在启动阶段拒绝。mani
 先安装宿主栈，再安装发布包：
 
 ```bash
-python -m pip install 'vllm-ascend-kvcompress-hust[manager]==0.4.0'
+python -m pip install 'vllm-ascend-kvcompress-hust[manager]==0.5.0'
 ```
 
 复制 [examples/triattention.json](examples/triattention.json)，将 `stats_path`
-改为与模型及 revision 严格匹配的统计文件，然后执行：
+改为产物保存位置。若文件不存在，启用后的插件会在 vLLM 加载服务权重前生成
+模型匹配的统计，原子保存并释放临时模型，然后继续启动。生产环境应设置
+`calibration_input_path`，指向许可清晰、具有代表性的 UTF-8 语料；内置文本仅用于
+bootstrap。然后执行：
 
 ```bash
 vllm-hust-ext extension validate org.vllm-hust.ascend-kvcompress
@@ -103,7 +107,7 @@ vllm serve /path/to/model --block-size 128 --no-enable-prefix-caching
 table 和 `NPUModelRunner`。压缩仅在同步模型步之后提交：语义 RoPE 位置保持不变，
 物理 attention/slot 索引使用逐请求 offset，旧 block 在下一调度屏障释放。
 
-0.4 使用分页 K 直接评分、持久 workspace、NPU 归一化/head/layer 聚合融合、动态
+0.5 延续 0.4 的分页 K 直接评分、持久 workspace、NPU 归一化/head/layer 聚合融合、动态
 JIT 长度、分层抽样、设备端 offset，以及可配置的请求输出门槛；输出太短、无法摊薄
 开销时跳过评分和 copy。公开质量测试淘汰了激进的 4,096-token 预算，
 推荐 8,192-token 物理预算；4K 仅作为需单独验证质量的特定负载选项。910B2 算子
@@ -127,7 +131,7 @@ scheduler/worker 提交确认，实际压缩样本物理 block 合计减少 60.6
 
 ## 冲突矩阵
 
-| 功能 | 0.4 状态 | 行为 |
+| 功能 | 0.5 状态 | 行为 |
 | --- | --- | --- |
 | Prefix cache | 冲突 | 启动拒绝，必须禁用 |
 | Speculative decoding | 冲突 | 启动拒绝 |

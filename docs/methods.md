@@ -4,19 +4,21 @@ English | [简体中文](methods.zh.md)
 
 ## Runtime layers
 
-Version 0.4 is a self-contained plugin and does not use the removed
+Version 0.5 is a self-contained plugin and does not use the removed
 vLLM-HUST compression lifecycle:
 
 1. `plugin.py` is the opt-in `vllm.general_plugins` entry point. It patches
    scheduler-side symbols immediately and installs the Ascend worker hook
    lazily, so manager and API-only processes do not import the NPU runner.
-2. `stateful.py` owns scheduler/KV-manager state. It commits a completed
+2. `calibration.py` generates a missing model-bound artifact before serving
+   weights load, or exposes the same generator through a console command.
+3. `stateful.py` owns scheduler/KV-manager state. It commits a completed
    compression at the next synchronous scheduling barrier and frees the old
    block-table tail.
-3. `provider.py` validates current host objects, mirrors transactions in the
+4. `provider.py` validates current host objects, mirrors transactions in the
    worker, translates semantic positions to physical slots, and delegates
    selection/materialization to a method.
-4. `methods/<name>/` owns an algorithm's options, compatibility checks,
+5. `methods/<name>/` owns an algorithm's options, compatibility checks,
    scoring, calibration, and KV materialization.
 
 The current adapter deliberately depends on the internal host symbols listed
@@ -35,6 +37,9 @@ The manager stores one JSON object. `schema_version`, `provider`, `method`, and
   "method": "triattention",
   "method_config": {
     "stats_path": "/absolute/path/stats.pt",
+    "auto_calibrate": true,
+    "calibration_input_path": "/absolute/path/calibration.txt",
+    "calibration_max_length": 4096,
     "kv_budget": 8192,
     "recompute_window": 1024,
     "protected_recent_window": 512,
@@ -47,8 +52,9 @@ The manager stores one JSON object. `schema_version`, `provider`, `method`, and
 }
 ```
 
-Unknown keys, methods, incompatible block alignment, and unavailable
-calibration files are rejected rather than ignored.
+Unknown keys, methods, incompatible block alignment, and invalid calibration
+files are rejected rather than ignored. A missing file is generated only when
+`auto_calibrate` is enabled; see the calibration artifact guide.
 
 `min_output_tokens_for_compression` is a non-negative requested-output gate.
 When a request's maximum generation is below it, both scheduler and worker skip

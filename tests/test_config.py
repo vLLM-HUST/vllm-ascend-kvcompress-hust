@@ -67,11 +67,20 @@ def test_triattention_config_accepts_documented_values() -> None:
             "score_chunk_size": 512,
             "score_layer_stride": 4,
             "min_output_tokens_for_compression": 64,
+            "auto_calibrate": True,
+            "calibration_input_path": "/tmp/calibration.txt",
+            "calibration_max_length": 8192,
+            "calibration_device": "npu:0",
+            "calibration_attn_implementation": "eager",
+            "calibration_local_files_only": True,
         }
     )
     assert config.stats_path == Path("/tmp/stats.pt")
     assert config.compression_threshold_tokens == 2176
     assert config.min_output_tokens_for_compression == 64
+    assert config.auto_calibrate
+    assert config.calibration_input_path == Path("/tmp/calibration.txt")
+    assert config.calibration_max_length == 8192
 
 
 @pytest.mark.parametrize(
@@ -84,6 +93,9 @@ def test_triattention_config_accepts_documented_values() -> None:
         ("min_output_tokens_for_compression", -1),
         ("protected_recent_window", -1),
         ("score_aggregation", "median"),
+        ("auto_calibrate", 1),
+        ("calibration_max_length", 127),
+        ("calibration_attn_implementation", "unknown"),
     ],
 )
 def test_triattention_config_rejects_invalid_values(option: str, value: object) -> None:

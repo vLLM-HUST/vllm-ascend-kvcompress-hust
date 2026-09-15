@@ -1,4 +1,4 @@
-# Version 0.4 Acceptance Protocol
+# Version 0.5 Acceptance Protocol
 
 English | [简体中文](benchmarking.zh.md)
 

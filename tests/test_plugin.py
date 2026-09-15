@@ -16,6 +16,9 @@ from vllm_ascend_kvcompress.plugin import (
 
 
 class _Runner:
+    def load_model(self):
+        return "loaded"
+
     def initialize_kv_cache(self, config):
         return config
 
@@ -56,6 +59,9 @@ def test_runner_hook_installation_is_idempotent() -> None:
 
 def test_runner_hook_supplies_removed_xdrope_compatibility_attribute() -> None:
     class Runner:
+        def load_model(self):
+            return "loaded"
+
         def initialize_kv_cache(self, config):
             return config
 
@@ -172,6 +178,9 @@ def test_runner_binds_the_normalized_ascend_cache_plan(monkeypatch) -> None:
     class Runner:
         vllm_config = object()
 
+        def load_model(self):
+            return "loaded"
+
         def initialize_kv_cache(self, incoming):
             self.kv_cache_config = "normalized-cache-plan"
             concrete = _BlockTable()
@@ -198,3 +207,36 @@ def test_runner_binds_the_normalized_ascend_cache_plan(monkeypatch) -> None:
     assert Runner().initialize_kv_cache("incoming-plan") == "incoming-plan"
     assert events[-1][0] == "bind"
     assert events[-1][2] == "normalized-cache-plan"
+
+
+def test_runner_generates_calibration_before_loading_model(monkeypatch) -> None:
+    events = []
+
+    class Runner:
+        def load_model(self):
+            events.append("load")
+
+        def initialize_kv_cache(self, config):
+            return config
+
+        def _update_states(self, output):
+            return output
+
+        def _build_attention_metadata(self, *args, **kwargs):
+            return args, kwargs
+
+        def sample_tokens(self, grammar):
+            return grammar
+
+    import vllm_ascend_kvcompress.calibration as calibration
+
+    monkeypatch.setattr(
+        calibration,
+        "ensure_calibration_for_runner",
+        lambda runner, selection: events.append("calibrate") or True,
+    )
+    _install_runner_hooks(Runner, object())
+
+    Runner().load_model()
+
+    assert events == ["calibrate", "load"]

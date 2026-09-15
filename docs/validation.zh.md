@@ -1,15 +1,35 @@
-# 0.4 版本验收记录
+# 0.5 版本验收记录
 
 [English](validation.md) | 简体中文
 
-日期：2026-09-12。结论：**工程验收通过，但不是 V4.6 正式验收**。插件包及当前
+日期：2026-09-15。结论：**工程验收通过，但不是 V4.6 正式验收**。插件包及当前
 宿主适配可继续评估；下述缺口使其暂不能宣称生产可用或官方基线收益。
+
+## 0.5 校准能力验收
+
+0.5 新增插件内校准生成。在物理 NPU 6 上，最终生成器加载本地
+Qwen2.5-Coder-14B-Instruct，以默认 4,096-token 长度生成全部 48 x 40 个查询 head
+统计。schema-2 产物为 1,565,471 字节，通过模型形状、RoPE、有限值、模型标识、
+revision 和 checkpoint manifest 指纹校验，SHA-256 为
+`f53898b153fe8b3177b7e10e3c0f979eb6b470a9e5fc335a3f0ed3258f42846b`。
+
+一次 `stats_path` 缺失的干净服务启动确认：校准在原始服务权重加载之前完成，临时
+模型随后释放，48 层 KV 成功绑定，`/health` 返回 200，短 completion 成功。第二次
+服务使用新生成的 4,096 产物完成一个精确 3,072-token 检索用例：答案正确，记录一次
+scheduler commit 和一次 worker 回执，并将 24 个 source block 压至 16 个
+destination block。Ascend 算子数值 smoke 也通过。
+
+内置语料只是 bootstrap 默认值。单个使用用例不能替代下文已有的重复性能与公开质量
+证据；生产环境必须使用具有代表性、许可清晰的语料生成，并重新执行质量、性能和 HBM
+矩阵。机器可读记录见
+[kvcompress-v0.5.0-auto-calibration-summary.json](evidence/kvcompress-v0.5.0-auto-calibration-summary.json)。
+最终自动化套件为 77 passed、1 skipped；Ruff 检查与格式检查通过。
 
 ## 冻结环境
 
 | 组件 | 已验证值 |
 | --- | --- |
-| 插件 | 0.4.0，工作树基于 `305fd7b7fe` |
+| 插件 | 0.5.0，工作树基于 `7c0d21144d` |
 | vLLM-HUST | `6cdc0304a8`，`0.28.1.post1.dev260` |
 | vLLM-Ascend-HUST | `5901bedbb7`，`0.25.1rc2.dev232+hust.20260903.4.g5901bedbb` |
 | Extension Manager | `cf1ea71e3e`，`0.2.0.dev0` |
@@ -24,7 +44,7 @@
 
 ## 插件包与 Extension Manager 生命周期
 
-0.4.0 wheel 在不把源码目录加入 `PYTHONPATH` 的条件下安装。插件发现、manifest
+0.5.0 wheel 在不把源码目录加入 `PYTHONPATH` 的条件下安装。插件发现、manifest
 解析、兼容性检查、配置、校验、启用、status/check/plan/env 渲染和
 `run --dry-run` 均通过，渲染环境包含：
 
@@ -33,7 +53,8 @@ VLLM_ASCEND_KVCOMPRESS_ENABLED=1
 VLLMHUST_EXT_ENABLED_BUNDLES=org.vllm-hust.ascend-kvcompress
 ```
 
-发布生命周期还覆盖禁用、forget、卸载、从 `extension list` 消失、重装和重新启用；
+0.5 生命周期覆盖禁用、卸载、从 `extension list` 消失、重装、重新发现、check 和
+重新启用，并保留此前配置；更早的 0.4 检查还覆盖了 `forget`。
 禁用状态下导入保持惰性。当前 Manager 判定宿主未提供原生扩展 API，因此 manifest
 不声明虚假的 `api_range`，而以精确包版本范围和运行时契约测试约束适配。
 
@@ -41,11 +62,11 @@ VLLMHUST_EXT_ENABLED_BUNDLES=org.vllm-hust.ascend-kvcompress
 
 最终候选应复现：
 
-- `pytest`：在物理 NPU 6 上 68 passed；
+- `pytest`：77 passed、1 skipped；
 - Ruff 检查和格式检查：通过；
 - 包 metadata 与 wheel/sdist 内容检查：通过；
 - Ascend 算子数值 smoke：通过；
-- NPU 算子相对通用参考测试：
+- 下列 NPU 算子比值继承自运行时 kernel 未变化的 0.4 版本，本次 0.5 未重新测量：
 
 | 算子路径 | 优化实现 | 通用参考 | 比值 |
 | --- | ---: | ---: | ---: |

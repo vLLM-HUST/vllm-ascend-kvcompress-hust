@@ -4,16 +4,18 @@
 
 ## 运行时分层
 
-0.4 是自包含插件，不再使用已删除的 vLLM-HUST 压缩生命周期：
+0.5 是自包含插件，不再使用已删除的 vLLM-HUST 压缩生命周期：
 
 1. `plugin.py` 是显式启用的 `vllm.general_plugins` 入口。调度侧立即挂接，
    Ascend worker 在对应模块真正加载时才挂接，因此管理器和纯 API 进程不会
    提前导入 NPU runner。
-2. `stateful.py` 管理 scheduler/KV manager 状态。在同步调度边界提交已完成的
+2. `calibration.py` 在服务权重加载前生成缺失的模型绑定产物，也提供相同生成器的
+   命令行入口。
+3. `stateful.py` 管理 scheduler/KV manager 状态。在同步调度边界提交已完成的
    压缩，并释放旧 block table 尾部。
-3. `provider.py` 校验当前宿主对象、在 worker 镜像事务、把语义位置转换为物理
+4. `provider.py` 校验当前宿主对象、在 worker 镜像事务、把语义位置转换为物理
    slot，并把选择和物化委托给具体方法。
-4. `methods/<name>/` 负责算法选项、兼容性检查、评分、校准和 KV 物化。
+5. `methods/<name>/` 负责算法选项、兼容性检查、评分、校准和 KV 物化。
 
 适配层明确依赖主 README 列出的宿主内部符号。这些接口尚未冻结，所以只能在
 已测试版本线上提供支持；接口变化时必须拒绝启动并重新验收。
@@ -23,7 +25,8 @@
 Extension Manager 保存一个 JSON 对象，必须包含 `schema_version`、`provider`、
 `method` 和 `method_config`。完整示例见
 [`examples/triattention.json`](../examples/triattention.json)。未知字段、未知方法、
-不满足 block 对齐的值及不存在的校准文件都会报错，不会被静默忽略。
+不满足 block 对齐的值及无效校准文件都会报错，不会被静默忽略。仅在
+`auto_calibrate` 启用时生成缺失文件，详见校准产物文档。
 
 `min_output_tokens_for_compression` 是非负的请求输出门槛。当请求的最大生成长度低于
 该值时，scheduler 和 worker 都跳过事务。`0` 保持原有的始终可压缩行为；公开
