@@ -108,6 +108,54 @@ all-reduce maximum synchronizes per-layer scores before selection. TP size must
 divide the model's KV heads. Other hybrid layouts, Mamba modes other than
 `none`, and PP/DP/DCP/PCP remain rejected.
 
+## V@O (experimental)
+
+Select `method: "vato"` with [examples/vato.json](../examples/vato.json).
+It needs no calibration artifact. This adaptation follows
+`triattention/methods/v_at_o.py` at commit
+`abdf5d7145e7a286b4a1ff387e4c2f348e080fa4`.
+
+Each full-attention layer captures its output **before `o_proj`**, averages the
+most recent `window_size` observations, and sums query heads within each local
+GQA group. Cached values are scored against that output direction. Each layer
+and KV head selects its own tokens, preserving `sink_size` leading tokens and
+the last `window_size` tokens. Sorted K/V pairs are copied together through
+temporary buffers, including when source and destination blocks overlap.
+All heads retain the same physical length; TP ranks can select independently.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `kv_budget` | 2048 | Retained tokens per head; positive multiple of 128 |
+| `recompute_window` | 128 | Compress at budget plus this many physical tokens; positive multiple of 128 |
+| `window_size` | 32 | Positive output observation window and protected recent-token count |
+| `sink_size` | 4 | Non-negative protected prefix count; sink plus window must be smaller than budget |
+| `variant` | `dot` | `dot`, `abs`, `cosine`, `centered`, or `centered_norm` |
+| `kernel_size` | 1 | Positive odd max-pool width over middle-token scores |
+| `score_chunk_size` | 512 | Maximum gathered V tokens per scoring chunk; positive multiple of 128 |
+| `min_output_tokens_for_compression` | 0 | Skip requests with a smaller maximum output length |
+
+`cosine` matches the reference's division by the value norm only.
+`centered` subtracts the full-cache value centroid contribution;
+`centered_norm` additionally multiplies by the value norm and retains signed
+scores, matching the reference code. Gram solving is not implemented and
+`variant: "gram"` is rejected.
+
+Launch with `--enforce-eager --no-enable-prefix-caching --no-async-scheduling`.
+Python output hooks require eager execution; DBO microbatching is rejected.
+The common model/cache compatibility restrictions still apply. Observations
+follow request IDs and CPU query boundaries across reordered and chunked batches.
+Finished, preempted, and resumed requests discard their windows. Missing or
+stale observations fail before cache writes. Observation storage is bounded by
+`active requests × full-attention layers × window_size × local KV heads × head_dim`
+float32 elements.
+
+The shared lifecycle compresses at final prefill and repeats during decoding
+when the physical threshold is reached. This is not restricted to prefill;
+the reference wrapper's `prefill_only` option is not exposed. CPU numerical and
+lifecycle tests do not establish NPU kernel support, quality, or performance.
+V@O still requires matched compression-off/on validation on Ascend; existing
+TriAttention benchmark results do not apply to it.
+
 ## Method contract
 
 Implement `KVCompressionMethod` from `methods/base.py`:
@@ -120,6 +168,8 @@ Implement `KVCompressionMethod` from `methods/base.py`:
   validation.
 - `compress(request)`: synchronously materialize one transaction and return
   the new physical length, plus optional per-layer lengths.
+- `reset_requests(request_ids)`: optional cleanup of per-request observations;
+  the base implementation is a no-op.
 
 Methods receive validated cache bindings. They must not mutate scheduler-owned
 request objects or block tables. Returned lengths must be positive, no larger
@@ -133,7 +183,7 @@ In-process registration:
 ```python
 from vllm_ascend_kvcompress import register_method
 
-register_method("my_method", create_method)
+register_method("my_method", create_method, runtime_spec_factory=parse_runtime_spec)
 ```
 
 External packages may declare:
@@ -142,6 +192,13 @@ External packages may declare:
 [project.entry-points."vllm_ascend_kvcompress.methods"]
 my_method = "my_package.method:create_method"
 ```
+
+`parse_runtime_spec(options)` must return the same `MethodRuntimeSpec` as the
+worker method without loading model weights, calibration files, or devices.
+For entry-point registration, attach this callable as
+`create_method.runtime_spec_factory`. The scheduler rejects methods that omit
+this callback. Existing two-argument registration remains valid for worker-only
+construction.
 
 Names are lowercase letters, digits, hyphens, or underscores. Duplicate names,
 bad factories, and name mismatches fail closed.

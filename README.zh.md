@@ -39,6 +39,12 @@ wheel/sdist。仓库中仅供开发使用的统计产物缺少完整模型/数�
 
 ## 兼容范围
 
+新增实验性 V@O：使用 `method: "vato"` 和
+[examples/vato.json](examples/vato.json)，基于 attention output 评分，无需校准，
+须带 `--enforce-eager`。选项和限制见[方法说明](docs/methods.zh.md#vo实验性)。
+下文已有 Ascend benchmark 证据均针对 TriAttention；V@O 尚未完成 NPU 正确性、
+质量和性能验收。
+
 | 组件 | 支持版本 | 已验证快照 |
 | --- | --- | --- |
 | vLLM-HUST / `vllm` | `>=0.28.1.post1.dev0,<0.29` | `6cdc0304a8`（`0.28.1.post1.dev260`） |

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "provider": "ascend_kvcompress",
+  "method": "vato",
+  "method_config": {
+    "kv_budget": 8192,
+    "recompute_window": 1024,
+    "window_size": 32,
+    "sink_size": 4,
+    "variant": "dot",
+    "kernel_size": 1,
+    "score_chunk_size": 8192,
+    "min_output_tokens_for_compression": 64
+  }
+}

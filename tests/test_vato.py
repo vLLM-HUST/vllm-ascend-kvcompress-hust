@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -33,10 +34,11 @@ def _method(**options):
     )
 
 
-def _bound_method():
+def _bound_method(*, dtype=torch.float32, tp=1):
     method = _method()
+    method.vllm_config.parallel_config.tensor_parallel_size = tp
     # Source logical order is blocks 2, 0. Destination overlaps block 2.
-    keys = torch.zeros(4, 128, 2, 2)
+    keys = torch.zeros(4, 128, 2, 2, dtype=dtype)
     values = torch.zeros_like(keys)
     positions = torch.arange(256, dtype=torch.float32)
     for block, part in zip((2, 0), positions.split(128), strict=True):
@@ -44,6 +46,9 @@ def _bound_method():
         keys[block, :, :, 1] = part[:, None] + 1000
         values[block, :, 0, 0] = part
         values[block, :, 1, 0] = -part
+    if tp == 2:
+        keys = keys[:, :, :1].contiguous()
+        values = values[:, :, :1].contiguous()
     layer = LayerCache("layer", 0, keys, values)
     runner = SimpleNamespace(
         device=torch.device("cpu"),
@@ -185,9 +190,10 @@ def test_output_windows_follow_request_order_and_semantic_continuity():
         observer.mean("layer", "b", 24)
 
 
-def test_vato_materializes_each_head_with_overlapping_source_and_destination():
-    method, runner, layer = _bound_method()
-    method.observer.observe("layer", torch.ones(4, 8))
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+def test_vato_materializes_each_head_with_overlapping_source_and_destination(dtype):
+    method, runner, layer = _bound_method(dtype=dtype)
+    method.observer.observe("layer", torch.ones(4, 8, dtype=dtype))
     result = method.compress(_request())
     assert result.physical_num_tokens == 128
     assert result.per_layer_physical_num_tokens == (("layer", 128),)
@@ -196,7 +202,7 @@ def test_vato_materializes_each_head_with_overlapping_source_and_destination():
             list(range(4)) + list(range(132, 256)),
             list(range(124)) + list(range(252, 256)),
         ],
-        dtype=torch.float32,
+        dtype=dtype,
     ).T
     torch.testing.assert_close(layer.k_cache[2, :, :, 0], expected)
     torch.testing.assert_close(layer.v_cache[2, :, 0, 0], expected[:, 0])
@@ -212,3 +218,74 @@ def test_missing_or_stale_observation_fails_before_cache_write():
     with pytest.raises(RuntimeError, match="observation"):
         method.compress(_request(semantic=257))
     torch.testing.assert_close(layer.k_cache, before)
+
+
+def test_bound_forward_hook_captures_output_and_skips_dummy_runs(monkeypatch):
+    method, runner, layer = _bound_method()
+    context = SimpleNamespace(attn_metadata=None)
+    module = ModuleType("vllm.forward_context")
+    module.get_forward_context = lambda: context
+    monkeypatch.setitem(sys.modules, "vllm.forward_context", module)
+    attention = runner.compilation_config.static_forward_context["layer"]
+    output = torch.ones(4, 8)
+    assert attention(output) is output
+    with pytest.raises(RuntimeError, match="observation"):
+        method.compress(_request())
+    context.attn_metadata = {"layer": object()}
+    assert attention(output) is output
+    assert method.compress(_request()).physical_num_tokens == 128
+    method.reset_requests({"r"})
+    with pytest.raises(RuntimeError, match="observation"):
+        method.compress(_request())
+
+
+def test_repeated_compression_uses_semantic_observations_and_physical_cache():
+    method, runner, layer = _bound_method()
+    method.observer.observe("layer", torch.ones(4, 8))
+    method.compress(_request())
+    positions = torch.arange(256.0, 384.0)
+    layer.k_cache[0, :, :, 0] = positions[:, None]
+    layer.v_cache[0, :, 0, 0] = positions
+    layer.v_cache[0, :, 1, 0] = -positions
+    runner.requests["r"].num_computed_tokens = 256
+    runner.query_start_loc.cpu = torch.tensor([0, 128])
+    method.observer.observe("layer", torch.ones(128, 8))
+    result = method.compress(_request(semantic=384, physical=256))
+    assert result.physical_num_tokens == 128
+    expected = torch.tensor(
+        [
+            list(range(4)) + list(range(260, 384)),
+            list(range(124)) + list(range(380, 384)),
+        ],
+        dtype=torch.float32,
+    ).T
+    torch.testing.assert_close(layer.k_cache[2, :, :, 0], expected)
+
+
+def test_tensor_parallel_uses_local_gqa_heads_without_merging_selections():
+    method, runner, layer = _bound_method(tp=2)
+    method.observer.observe("layer", torch.ones(4, 4))
+    method.compress(_request())
+    expected = torch.tensor(list(range(4)) + list(range(132, 256)), dtype=torch.float32)
+    torch.testing.assert_close(layer.k_cache[2, :, 0, 0], expected)
+
+
+def test_output_window_drops_discontinuous_history():
+    method, runner, layer = _bound_method()
+    method.observer.observe("layer", torch.ones(4, 8))
+    runner.requests["r"].num_computed_tokens = 500
+    runner.query_start_loc.cpu = torch.tensor([0, 1])
+    method.observer.observe("layer", torch.full((1, 8), 7.0))
+    torch.testing.assert_close(
+        method.observer.mean("layer", "r", 501), torch.full((2, 2), 14.0)
+    )
+
+
+def test_selection_pools_middle_without_protected_token_leakage():
+    from vllm_ascend_kvcompress.methods.vato.scoring import select_keep_indices
+
+    scores = torch.tensor([[100.0, 0.0, 9.0, 0.0, 0.0, 8.0, 0.0, 100.0]])
+    keep = select_keep_indices(
+        scores, budget=5, sink_size=1, window_size=1, kernel_size=3
+    )
+    assert keep.tolist() == [[0, 1, 2, 3, 7]]

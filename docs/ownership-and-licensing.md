@@ -26,6 +26,11 @@ paper. This repository reimplements the runtime for Ascend paged KV storage;
 it does not copy the upstream CUDA runtime kernels. Local implementation,
 packaging, tests, and documentation are licensed under Apache-2.0.
 
+The experimental V@O method adapts `triattention/methods/v_at_o.py` from the
+same repository at `abdf5d7145e7a286b4a1ff387e4c2f348e080fa4`, separately
+recorded in `NOTICE`. Its paged-cache and output-observation integration is
+implemented locally.
+
 ## Redistribution boundary
 
 | Material | Included in source repository | Included in Python wheel | Redistribution statement |

@@ -68,6 +68,45 @@ Qwen3.5-35B-A3B 的 40 个文本层由 10 组“3 个 Gated-DeltaNet 层 + 1 个
 保证各 rank 选择相同位置。TP 大小必须整除 KV 头数。其他混合布局、`none` 之外的
 Mamba mode 以及 PP/DP/DCP/PCP 仍会拒绝启动。
 
+## V@O（实验性）
+
+使用 `method: "vato"` 和 [examples/vato.json](../examples/vato.json)，无需校准产物。
+实现参考 `triattention/methods/v_at_o.py`，对应提交
+`abdf5d7145e7a286b4a1ff387e4c2f348e080fa4`。
+
+每个全注意力层采集 **`o_proj` 之前**的 attention output，对最近 `window_size`
+个位置求平均，并在本地 GQA 组内对 query heads 求和。缓存 V 与该输出方向计算
+分数，各层、各 KV head 独立选留，同时保护开头 `sink_size` 个 token 和末尾
+`window_size` 个 token。选留位置按原顺序排列，K/V 经临时缓冲一起搬移，支持源与
+目标 block 重叠。各 head 保留相同物理长度，因此 TP 各 rank 可独立选择。
+
+| 选项 | 默认值 | 含义 |
+| --- | --- | --- |
+| `kv_budget` | 2048 | 每个 head 的保留 token 数，须为 128 的正整数倍 |
+| `recompute_window` | 128 | 物理长度达到预算加该窗口时压缩，须为 128 的正整数倍 |
+| `window_size` | 32 | 正整数，既是输出观察窗口，也是最近 token 保护数 |
+| `sink_size` | 4 | 非负前缀保护数，与 window 之和必须小于预算 |
+| `variant` | `dot` | `dot`、`abs`、`cosine`、`centered` 或 `centered_norm` |
+| `kernel_size` | 1 | 中间区间分数的 max-pool 宽度，须为正奇数 |
+| `score_chunk_size` | 512 | 单次评分收集的 V token 上限，须为 128 的正整数倍 |
+| `min_output_tokens_for_compression` | 0 | 最大输出长度低于此值的请求跳过压缩 |
+
+`cosine` 与参考实现一致，只除以 V 的范数；`centered` 减去全缓存 V 均值的贡献；
+`centered_norm` 再乘 V 范数，并按参考代码保留有符号分数。暂未实现 Gram 求解，
+`variant: "gram"` 会报错。
+
+启动须带 `--enforce-eager --no-enable-prefix-caching --no-async-scheduling`。
+Python 输出 hook 要求 eager 执行，DBO microbatching 会被拒绝；通用模型和缓存
+兼容限制仍然有效。观察窗口按 request ID 和 CPU query 边界跟踪请求，支持 batch
+重排与分块 prefill；完成、抢占和恢复的请求会清理旧窗口。缺失或过期观察会在写
+缓存前报错。观察存储上限为 `活跃请求数 × 全注意力层数 × window_size × 本地
+KV heads × head_dim` 个 float32 元素。
+
+公共生命周期在最终 prefill 后压缩，并在 decode 物理长度再次达到阈值时重复压缩，
+并非只压缩 prefill；不开放参考包装类的 `prefill_only` 选项。CPU 数值与生命周期
+测试不代表 NPU 算子、质量或性能验收；仍需在 Ascend 上做压缩开关对照。现有
+TriAttention benchmark 结果不能套用于 V@O。
+
 ## 方法契约
 
 实现 `methods/base.py` 中的 `KVCompressionMethod`：
@@ -78,6 +117,7 @@ Mamba mode 以及 PP/DP/DCP/PCP 仍会拒绝启动。
 - `compatibility_reasons(worker)`：无副作用的算法兼容检查；
 - `bind_model_runner(runner, layer_caches)`：公共缓存校验后分配状态；
 - `compress(request)`：同步完成一次物化并返回新物理长度，以及可选的逐层长度。
+- `reset_requests(request_ids)`：可选的逐请求观察清理，基类默认不做处理。
 
 方法只能使用已校验的 cache binding，不能修改 scheduler 拥有的 request 或
 block table。返回长度必须为正、不超过声明上限；使用逐层长度时必须覆盖全部层。
@@ -89,7 +129,7 @@ block table。返回长度必须为正、不超过声明上限；使用逐层长
 ```python
 from vllm_ascend_kvcompress import register_method
 
-register_method("my_method", create_method)
+register_method("my_method", create_method, runtime_spec_factory=parse_runtime_spec)
 ```
 
 外部包可声明：
@@ -98,6 +138,11 @@ register_method("my_method", create_method)
 [project.entry-points."vllm_ascend_kvcompress.methods"]
 my_method = "my_package.method:create_method"
 ```
+
+`parse_runtime_spec(options)` 必须返回与 worker 方法相同的 `MethodRuntimeSpec`，
+且不加载模型权重、校准文件或设备。通过 entry point 注册时，将该回调赋给
+`create_method.runtime_spec_factory`。缺少此回调的方法会被 scheduler 拒绝；原有
+两个参数的注册调用仍可用于仅构造 worker 方法的场景。
 
 名称只允许小写字母、数字、连字符和下划线；重复名称、非法 factory 或名称不匹配
 都会失败关闭。

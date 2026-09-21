@@ -157,6 +157,19 @@ def test_worker_commit_truncates_tables_and_activates_offsets() -> None:
     assert provider.active["r"] == ActiveCompression(300, 128)
 
 
+def test_worker_resets_observations_for_finished_preempted_and_resumed_requests():
+    provider = _provider()
+    provider.runner = SimpleNamespace(requests={})
+    provider.before_update_states(
+        SimpleNamespace(
+            finished_req_ids={"finished"},
+            preempted_req_ids={"preempted"},
+            scheduled_cached_reqs=SimpleNamespace(resumed_req_ids={"resumed"}),
+        )
+    )
+    assert provider.method.reset_ids == {"finished", "preempted", "resumed"}
+
+
 def test_worker_commit_preserves_non_attention_group_tables() -> None:
     provider = _provider()
     provider.attention_group_index = 1

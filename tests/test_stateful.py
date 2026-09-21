@@ -31,6 +31,24 @@ def _selection() -> ProviderSelection:
     )
 
 
+def test_vato_scheduler_uses_registered_limits_without_calibration() -> None:
+    scheduler, _, _ = _scheduler()
+    selection = ProviderSelection.from_mapping(
+        {
+            "method": "vato",
+            "method_config": {
+                "kv_budget": 128,
+                "recompute_window": 256,
+                "min_output_tokens_for_compression": 64,
+            },
+        }
+    )
+    state = SchedulerCompressionState(scheduler, selection)
+    assert state.threshold == 384
+    assert state.budget == 128
+    assert state.min_output_tokens == 64
+
+
 def _scheduler(
     *,
     scheduler_module="vllm.v1.core.sched.scheduler",

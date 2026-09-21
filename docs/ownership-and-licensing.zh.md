@@ -24,6 +24,11 @@
 本仓库针对 Ascend 分页 KV 存储重新实现运行时，没有复制上游 CUDA runtime
 kernel。本地实现、打包、测试和文档均采用 Apache-2.0。
 
+实验性 V@O 方法另参考同一仓库提交
+`abdf5d7145e7a286b4a1ff387e4c2f348e080fa4` 的
+`triattention/methods/v_at_o.py`，已单独记录在 `NOTICE`；分页缓存和输出采集接入
+由本项目实现。
+
 ## 可再分发边界
 
 | 材料 | 源码仓包含 | Python wheel 包含 | 再分发说明 |

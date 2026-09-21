@@ -6,7 +6,11 @@ Licensed under the Apache License, Version 2.0.
 Source snapshot used for the adaptation:
 https://github.com/WeianMao/triattention/tree/a4bc3c8f709db60f016ef42c3feb290fd0c00c1b
 
+The V@O scoring and selection adaptation additionally references
+triattention/methods/v_at_o.py from:
+https://github.com/WeianMao/triattention/tree/abdf5d7145e7a286b4a1ff387e4c2f348e080fa4
+Copyright its contributors; licensed under the Apache License, Version 2.0.
+
 The implementation uses the provider-neutral KV-cache compression contracts
 from vLLM-HUST and the out-of-tree platform conventions from
 vLLM-Ascend-HUST. It does not copy the CUDA or Triton runtime kernels.
-

@@ -47,6 +47,13 @@ and [calibration artifacts](docs/calibration-artifacts.md).
 
 ## Compatibility
 
+Experimental V@O is also available as `method: "vato"` with
+[examples/vato.json](examples/vato.json). It uses attention outputs without
+calibration and requires `--enforce-eager`. See the
+[method guide](docs/methods.md#vo-experimental) for options and limits.
+The existing Ascend benchmark evidence below concerns TriAttention; V@O has
+not yet completed NPU correctness, quality, or performance validation.
+
 | Component | Supported line | Validated snapshot |
 | --- | --- | --- |
 | vLLM-HUST / `vllm` | `>=0.28.1.post1.dev0,<0.29` | `6cdc0304a8` (`0.28.1.post1.dev260`) |
