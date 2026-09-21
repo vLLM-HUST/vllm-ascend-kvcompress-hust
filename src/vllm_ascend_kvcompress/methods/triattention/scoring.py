@@ -45,19 +45,23 @@ def score_post_rope_keys(
     token_count, kv_heads, head_dim = keys.shape
     if head_dim % 2:
         raise ValueError("key head dimension must be even")
-    freq_count = head_dim // 2
+    rotary_dim = head_dim if stats.rotary_dim is None else stats.rotary_dim
+    if rotary_dim <= 0 or rotary_dim > head_dim or rotary_dim % 2:
+        raise ValueError("calibration rotary dimension is incompatible with keys")
+    freq_count = rotary_dim // 2
     if stats.q_mean_real.shape[0] != kv_heads:
         raise ValueError("calibration KV-head count does not match cache keys")
     if stats.q_mean_real.shape[-1] != freq_count:
         raise ValueError("calibration frequency count does not match cache keys")
 
     keys_fp32 = keys.to(dtype=torch.float32).permute(1, 0, 2)
+    rotated_keys = keys_fp32[..., :rotary_dim]
     if stats.rope_style == "interleaved":
-        key_real = keys_fp32[..., 0::2]
-        key_imag = keys_fp32[..., 1::2]
+        key_real = rotated_keys[..., 0::2]
+        key_imag = rotated_keys[..., 1::2]
     else:
-        key_real = keys_fp32[..., :freq_count]
-        key_imag = keys_fp32[..., freq_count:]
+        key_real = rotated_keys[..., :freq_count]
+        key_imag = rotated_keys[..., freq_count:rotary_dim]
 
     q_real = stats.q_mean_real.unsqueeze(2)
     q_imag = stats.q_mean_imag.unsqueeze(2)
@@ -100,7 +104,20 @@ def score_post_rope_keys(
     )
     extra_coefficient = (stats.q_abs_mean - q_mean_abs).unsqueeze(2)
     extra = (key_abs * extra_coefficient * frequency_scale).sum(dim=-1)
-    return scores + extra
+    scores = scores + extra
+
+    # Partial-RoPE models such as Qwen3.5 leave most key dimensions unrotated.
+    # Their direct calibrated Q·K contribution is position independent and must
+    # be included; a phase-only score is otherwise blind to 75% of each key.
+    if rotary_dim < head_dim:
+        if stats.q_pass_mean is None:
+            raise ValueError("partial-RoPE scoring requires q_pass_mean")
+        if stats.q_pass_mean.shape[-1] != head_dim - rotary_dim:
+            raise ValueError("q_pass_mean width does not match unrotated keys")
+        key_pass = keys_fp32[..., rotary_dim:].unsqueeze(1)
+        content_score = (stats.q_pass_mean.unsqueeze(2) * key_pass).sum(dim=-1)
+        scores = scores + content_score
+    return scores
 
 
 def normalize_head_scores(

@@ -5,12 +5,30 @@ from types import SimpleNamespace
 
 import torch
 
+from vllm_ascend_kvcompress.methods.base import ModelShape
 from vllm_ascend_kvcompress.methods.triattention import (
     TriAttentionConfig,
     TriAttentionLayerCache,
     TriAttentionMethod,
 )
 from vllm_ascend_kvcompress.methods.triattention import method as triattention_method
+from vllm_ascend_kvcompress.methods.triattention.selection import select_keep_indices
+
+
+def test_qwen35_gqa_width_is_invariant_under_tensor_parallel_sharding() -> None:
+    shape = ModelShape(
+        model_type="qwen3_5_moe_text",
+        num_layers=40,
+        num_attention_heads=16,
+        num_kv_heads=2,
+        head_dim=256,
+        rope_theta=10_000_000.0,
+        has_rope_scaling=False,
+        rotary_dim=64,
+        attention_layer_indices=tuple(range(3, 40, 4)),
+    )
+
+    assert triattention_method._queries_per_kv_head(shape) == 8
 
 
 def test_protected_window_and_sorted_topk_contract() -> None:
@@ -21,6 +39,53 @@ def test_protected_window_and_sorted_topk_contract() -> None:
     keep = torch.sort(
         torch.topk(scores, k=budget, largest=True, sorted=False).indices
     ).values
+    torch.testing.assert_close(keep, torch.tensor([0, 1, 4, 5]))
+
+
+def test_v3_protects_prefix_and_recent_and_spreads_eviction() -> None:
+    scores = torch.arange(16, dtype=torch.float32)
+
+    keep = select_keep_indices(
+        scores,
+        budget=12,
+        protected_prefix=2,
+        protected_recent=2,
+        segments=4,
+        policy="v3",
+    )
+
+    torch.testing.assert_close(keep[:2], torch.tensor([0, 1]))
+    torch.testing.assert_close(keep[-2:], torch.tensor([14, 15]))
+    evicted = set(range(16)) - set(keep.tolist())
+    assert evicted == {2, 5, 8, 11}
+
+
+def test_v3_uses_exact_proportional_quota_with_uneven_segments() -> None:
+    scores = torch.zeros(19)
+
+    keep = select_keep_indices(
+        scores,
+        budget=13,
+        protected_prefix=2,
+        protected_recent=2,
+        segments=8,
+        policy="v3",
+    )
+
+    assert keep.numel() == 13
+    assert {0, 1, 17, 18}.issubset(set(keep.tolist()))
+
+
+def test_global_policy_preserves_legacy_topk_behavior() -> None:
+    keep = select_keep_indices(
+        torch.tensor([10.0, 9.0, 8.0, 7.0, -5.0, -6.0]),
+        budget=4,
+        protected_prefix=0,
+        protected_recent=2,
+        segments=8,
+        policy="global",
+    )
+
     torch.testing.assert_close(keep, torch.tensor([0, 1, 4, 5]))
 
 

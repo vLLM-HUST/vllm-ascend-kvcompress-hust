@@ -49,8 +49,9 @@ The wheel must contain code, `LICENSE`, `NOTICE`, and
 `vllm.general_plugins`, `vllm_hust.extension_bundles`, and the
 `vllm-ascend-kvcompress-calibrate` console script. Neither archive
 may contain `artifacts/*.pt`, raw data, service logs, or historical
-`docs/dev/results`. The sdist may include only the aggregate evidence summaries
-under `docs/evidence`.
+`docs/dev/results`. The sdist includes the static HTML leaderboard and its
+generated browser data bundle; `docs/evidence` may contain only aggregate
+evidence summaries.
 
 ## Isolated lifecycle
 

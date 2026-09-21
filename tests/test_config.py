@@ -61,7 +61,10 @@ def test_triattention_config_accepts_documented_values() -> None:
             "stats_path": "/tmp/stats.pt",
             "kv_budget": 2048,
             "recompute_window": 128,
+            "position_policy": "v3",
+            "protected_prefix_window": 128,
             "protected_recent_window": 64,
+            "position_segments": 8,
             "score_aggregation": "max",
             "layer_aggregation": "mean",
             "score_chunk_size": 512,
@@ -77,6 +80,9 @@ def test_triattention_config_accepts_documented_values() -> None:
     )
     assert config.stats_path == Path("/tmp/stats.pt")
     assert config.compression_threshold_tokens == 2176
+    assert config.position_policy == "v3"
+    assert config.protected_prefix_window == 128
+    assert config.position_segments == 8
     assert config.min_output_tokens_for_compression == 64
     assert config.auto_calibrate
     assert config.calibration_input_path == Path("/tmp/calibration.txt")
@@ -91,7 +97,10 @@ def test_triattention_config_accepts_documented_values() -> None:
         ("score_chunk_size", 129),
         ("score_layer_stride", 0),
         ("min_output_tokens_for_compression", -1),
+        ("protected_prefix_window", -1),
         ("protected_recent_window", -1),
+        ("position_segments", 0),
+        ("position_policy", "unknown"),
         ("score_aggregation", "median"),
         ("auto_calibrate", 1),
         ("calibration_max_length", 127),

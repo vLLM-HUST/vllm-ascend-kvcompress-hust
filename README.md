@@ -3,15 +3,17 @@
 English | [简体中文](README.zh.md)
 
 An independently packaged TriAttention KV-cache compression plugin for the
-upstream-aligned vLLM-HUST and vLLM-Ascend-HUST stacks. Version 0.6 precomputes
-phase coefficients across sampled layers and generates model-matched calibration
-artifacts itself, without changing either host repository.
+upstream-aligned vLLM-HUST and vLLM-Ascend-HUST stacks. The current working tree
+adds the paper's V3 position policy and an experimental Qwen3.5 hybrid-model
+path on top of the 0.6 phase-precompute release, without changing either host
+repository.
 
 > Status: experimental release candidate. Package lifecycle, Ascend kernel
-> smoke, three cold 16K engineering-control pairs, and bounded public
-> LongBench-v2/LongBench quality checks pass. The full V4.6 official baseline,
-> production-corpus calibration, repeated public performance runs, and stability
-> matrix remain release gates. See [Validation](docs/validation.md).
+> smoke, the complete three-cold-start A2 engineering matrix, and bounded public
+> LongBench-v2/LongBench quality checks pass. The completed A3 matrix fails its
+> minimum-completion and six-window throughput-CV gates. The official V4.6 B0,
+> authorized production data, and a passing stability matrix remain release
+> gates. See [Validation](docs/validation.md).
 
 ## Ownership and maintenance
 
@@ -52,9 +54,16 @@ and [calibration artifacts](docs/calibration-artifacts.md).
 | Extension Manager | `>=0.2.0.dev0,<0.3` | `cf1ea71e3e` |
 | Python | `>=3.10,<3.15` | 3.11.16 |
 
-The supported topology is one Ascend NPU, the v1 scheduler and
+The standard acceptance topology remains one Ascend NPU, the v1 scheduler and
 `NPUModelRunner`, one full-attention KV group, block size 128, and dense
-BF16/FP16 K/V. Unsupported combinations fail during startup. The manifest
+BF16/FP16 K/V. Qwen3.5 text/MoE hybrids additionally support one full-attention
+group plus Gated-DeltaNet state groups with `mamba_cache_mode=none`; tensor
+parallelism is accepted only when its size divides the model's KV-head count
+(TP=2 for Qwen3.5-35B-A3B). On the validated Ascend host, that hybrid uses a
+32,768-token cross-group scheduler alignment, 2,048-token full-attention pages,
+and 128-token attention-kernel cache blocks. The plugin validates all three
+scales and expands the attention mapping 16:1. Unsupported combinations fail
+during startup. The manifest
 uses the stable `vllm.general_plugins` discovery entry point; current hosts do
 not expose a frozen native KV-lifecycle API, so the narrow host range and
 contract tests intentionally guard the internal integration seams.
@@ -130,6 +139,16 @@ vllm serve /path/to/model --block-size 128 --no-enable-prefix-caching
 
 Unset both `VLLM_ASCEND_KVCOMPRESS_*` variables and restart to disable it.
 
+Qwen3.5-35B-A3B uses the dedicated
+[Qwen3.5 example](examples/qwen3.5-35b-a3b-triattention.json) and TP=2. Its
+temporary calibration model is automatically distributed across visible NPUs
+before serving weights are loaded. See the
+[Qwen3.5 adaptation note](docs/qwen3.5-35b-a3b-adaptation.md). The validated
+host stack also requires `--enforce-eager` and the explicit
+`VLLM_ASCEND_KVCOMPRESS_QWEN_GDN_LIST_COMPAT=1` bridge because its installed
+GDN operator still exposes the legacy non-optional `int[]` metadata ABI. The
+bridge is schema-gated and does not modify either host repository.
+
 ## Runtime and long-context optimization
 
 After explicit activation, the adapter validates and hooks the current
@@ -148,24 +167,44 @@ fused aggregation, device-resident offsets, dynamic JIT lengths, and the
 short-output bypass remain. A fused Triton K/V copy experiment was removed
 after measuring 14.504 ms versus 0.334 ms for the retained workspace path.
 
-In three cold engineering-control pairs on Qwen2.5-14B, each with four fixed
-16,384+1,024 requests at 0.4 RPS/concurrency 4, all 24 requests completed with
-the expected output length. Compression retained 32/128 blocks per request
-(75% physical KV reduction). Median total throughput was 1431.3 versus 1129.5
-tok/s (+26.7%); mean TPOT was 39.16 versus 52.43 ms (-25.3%); mean E2E was
-44.37 versus 57.81 s (-23.2%). This is engineering evidence against a
-same-host compatibility control, not the required official V4.6 B0 claim.
+The V3 policy hard-protects a configurable prefix and recent window, then
+distributes eviction proportionally across equal middle-context segments. For
+Qwen3.5, scoring only the 64 rotated dimensions would ignore 75% of each
+256-dimensional key, so the adapter also adds a calibrated direct Q·K content
+term over the 192 unrotated dimensions. Only the ten full-attention layers are
+scored and compacted; Gated-DeltaNet recurrent state remains under the host's
+native lifecycle. Tensor-parallel ranks synchronize each layer's selection
+score before choosing one identical token set.
 
-A separate public A3 sweep used all eligible non-truncated cases from
+The complete Qwen2.5 A2 engineering matrix covers 8K/16K at
+0.05/0.1/0.2/0.4 RPS, three cold lifecycles per arm. All eight cells passed;
+all 768 measured arm-requests were correct and complete. The 16K cells reduced
+physical KV by at least 50%, with median total-throughput changes from +0.71%
+to +16.36%; 8K stayed below the compression threshold and was effectively
+neutral. The completed A3 matrix improved median total throughput 13.17% and
+reduced physical KV at least 73.33%, but failed because B0 completed 23 rather
+than 24 requests per lifecycle and six-window throughput CV was 12.86% for B0
+and 8.94% for B1, both above 5%. These are same-host commissioning results, not
+an official V4.6 B0 claim.
+
+A separate public long-context run used all eligible non-truncated cases from
 LongBench-v2 (116), LongBench `passage_retrieval_en` (200), and LongBench
-`qasper` (93). With the 8K/stride-8 candidate, LongBench-v2 accuracy was
-unchanged, request throughput improved 2.81%, and mean E2E fell 2.72%; Qasper
-F1 returned to the exact B0 value and throughput was neutral (+0.03%).
-Retrieval stayed at 100% and deliberately bypassed compression because its
-output cap is 32 tokens. B1 recorded 127/127 scheduler/worker commits and
-reduced physical blocks 60.67% over compressed cases. See the full
-[public benchmark record](docs/public-long-context-benchmarks.md), including
-the rejected 4K Qasper result and single-run limitations.
+`qasper` (93) with Qwen2.5-14B-Instruct and the frozen sampling contract.
+At the 8K physical budget, quality changed by −0.86 pp, 0.00 pp, and −0.24 pp,
+respectively, so all three passed the 1 pp gate. Request throughput changed by
++7.78%, +2.41%, and +1.35%; B1 recorded 127/127 scheduler/worker commits and
+reduced physical blocks 60.67% over compressed cases. A supplementary
+Qwen3.5-35B-A3B TP=2 run also passed all quality and transaction gates, although
+its performance did not beat B0. See the full
+[public benchmark record](docs/public-long-context-benchmarks.md) and its
+single-run limitations.
+
+The supplementary Qwen3.5 transferred A2/A3 matrix is intentionally retained
+as a negative result: all 792 measured arm-requests were correct and TP=2
+transactions matched exactly, but only two of eight A2 cells met the 1%
+throughput-regression budget, while A3 completed 4 rather than 24 requests per
+lifecycle and reported 100% six-window throughput CV. This BF16/eager evidence
+does not change Qwen2.5-14B-Instruct as the standard release model.
 
 ## Conflict matrix
 
@@ -175,24 +214,32 @@ the rejected 4K Qasper result and single-run limitations.
 | Speculative decoding | Conflict | Rejected |
 | KV transfer / disaggregated P/D | Conflict | Rejected |
 | Quantized KV | Conflict | Rejected; dense BF16/FP16 only |
-| Hybrid/MLA/sliding/local attention | Conflict | Rejected |
+| Qwen3.5 full-attention + Gated-DeltaNet hybrid | Experimental | `mamba_cache_mode=none`; only full-attention KV is compacted |
+| Other hybrid / MLA / sliding / local attention | Conflict | Rejected |
 | Async scheduling | Conflict | Rejected |
-| TP/PP/DP/DCP/PCP > 1 | Conflict | Rejected |
+| TP > 1 | Conditional | Must divide KV heads; TP ranks synchronize scores |
+| PP/DP/DCP/PCP > 1 | Conflict | Rejected |
 | BidKV or another scheduler | Conflict | Standard v1 scheduler required; active balance scheduling rejected |
 | Removed Prefix Router, KV Tiering, KNorm, PyramidKV Ascend, SliceGPT | Not integrated | No imports or assumptions about former host code |
 | Other general plugins | Unverified | Use an explicit allowlist and test the combination |
 
 ## Configuration and validation
 
-The example uses an 8192-token budget, 1024-token recompute window, 512-token
-protected recent window, 8192-token scoring chunks, and every eighth scoring
-layer. It bypasses compression below 64 requested output tokens. KV-related
-token counts must be positive multiples of block size 128.
+The default example uses an 8192-token budget, 1024-token recompute window,
+V3 prefix/recent protection of 128/512 tokens, eight position segments,
+8192-token scoring chunks, and every eighth scoring layer. It bypasses
+compression below 64 requested output tokens. The Qwen3.5 example scores all
+ten full-attention layers. KV-related token counts must be positive multiples
+of block size 128. For a Qwen3.5 runtime with a promoted 2,048-token attention
+page, `kv_budget` must also be divisible by 2,048; it need not be divisible by
+the scheduler's 32,768-token cross-group alignment.
 
 - [Current validation record](docs/validation.md)
 - [V4.6-derived requirements](docs/kv-compress-test-requirements.md)
 - [Benchmark protocol](docs/benchmarking.md)
 - [Public long-context benchmarks](docs/public-long-context-benchmarks.md)
+- [HTML benchmark leaderboard](docs/benchmark-leaderboard.html)
+- [Qwen3.5-35B-A3B adaptation](docs/qwen3.5-35b-a3b-adaptation.md)
 - [Packaging and release](docs/packaging-and-release.md)
 - [Method extension API](docs/methods.md)
 - [Calibration artifacts](docs/calibration-artifacts.md)

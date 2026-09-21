@@ -48,6 +48,13 @@ class AscendKVCompressionProvider:
         self.vllm_config = vllm_config
         self.selection = selection
         self.model_shape: ModelShape = model_shape_from_config(vllm_config.model_config)
+        self.tensor_parallel_size = int(
+            getattr(vllm_config.parallel_config, "tensor_parallel_size", 1)
+        )
+        self.attention_group_index = 0
+        self.scheduler_block_size = int(vllm_config.cache_config.block_size)
+        self.cache_block_size = ASCEND_BLOCK_SIZE
+        self.cache_blocks_per_scheduler_block = 1
         self.method = create_method(
             selection.method,
             selection.method_config,
@@ -84,20 +91,54 @@ class AscendKVCompressionProvider:
         """Validate and bind dense K/V views after the host allocates its cache."""
         self.validate_host(runner)
         from vllm.model_executor.models.utils import extract_layer_index
-        from vllm.v1.kv_cache_interface import FullAttentionSpec
 
         groups = kv_cache_config.kv_cache_groups
-        if len(groups) != 1:
-            raise RuntimeError("Ascend KV compression requires exactly one KV group")
-        group = groups[0]
-        if type(group.kv_cache_spec) is not FullAttentionSpec:
+        self.attention_group_index = _find_full_attention_group(groups)
+        group = groups[self.attention_group_index]
+        self.scheduler_block_size = int(group.kv_cache_spec.block_size)
+        allowed_block_sizes = _allowed_scheduler_block_sizes(self.vllm_config)
+        if self.scheduler_block_size not in allowed_block_sizes:
             raise RuntimeError(
-                "Ascend KV compression requires a plain FullAttentionSpec"
+                "Ascend KV compression does not support logical KV block size "
+                f"{self.scheduler_block_size}; allowed sizes are "
+                f"{sorted(allowed_block_sizes)}"
             )
-        if int(group.kv_cache_spec.block_size) != ASCEND_BLOCK_SIZE:
+        if self.runtime_spec.max_physical_num_tokens % self.scheduler_block_size:
             raise RuntimeError(
-                f"Ascend KV compression requires block size {ASCEND_BLOCK_SIZE}"
+                "compression target must be divisible by the logical KV block "
+                f"size {self.scheduler_block_size}"
             )
+
+        block_tables = runner.input_batch.block_table.block_tables
+        if len(block_tables) != len(groups):
+            raise RuntimeError("worker block-table groups do not match KV groups")
+        attention_block_table = block_tables[self.attention_group_index]
+        physical_block_size = int(
+            getattr(
+                attention_block_table,
+                "physical_block_size",
+                self.scheduler_block_size,
+            )
+        )
+        if physical_block_size != self.scheduler_block_size:
+            raise RuntimeError(
+                "worker full-attention block table disagrees with its KV cache "
+                "group block size"
+            )
+        self.cache_block_size = int(
+            getattr(attention_block_table, "block_size", self.scheduler_block_size)
+        )
+        if (
+            self.cache_block_size != ASCEND_BLOCK_SIZE
+            or self.scheduler_block_size % self.cache_block_size
+        ):
+            raise RuntimeError(
+                "Ascend KV compression requires 128-token kernel cache blocks "
+                "that evenly divide the logical KV block size"
+            )
+        self.cache_blocks_per_scheduler_block = (
+            self.scheduler_block_size // self.cache_block_size
+        )
 
         layer_caches: list[LayerCache] = []
         context = runner.compilation_config.static_forward_context
@@ -106,8 +147,23 @@ class AscendKVCompressionProvider:
             if layer is None:
                 raise RuntimeError(f"attention layer {layer_name!r} is not bound")
             k_cache, v_cache = _unpack_layer_cache(layer_name, layer)
-            _validate_cache_tensor(layer_name, "K", k_cache, self.model_shape)
-            _validate_cache_tensor(layer_name, "V", v_cache, self.model_shape)
+            local_kv_heads = self.model_shape.num_kv_heads // self.tensor_parallel_size
+            _validate_cache_tensor(
+                layer_name,
+                "K",
+                k_cache,
+                self.model_shape,
+                local_kv_heads,
+                self.cache_block_size,
+            )
+            _validate_cache_tensor(
+                layer_name,
+                "V",
+                v_cache,
+                self.model_shape,
+                local_kv_heads,
+                self.cache_block_size,
+            )
             layer_caches.append(
                 LayerCache(
                     name=layer_name,
@@ -133,16 +189,18 @@ class AscendKVCompressionProvider:
         self._physical_positions = torch.empty(
             runner.max_num_tokens, dtype=torch.int64, device=runner.device
         )
-        for block_table in runner.input_batch.block_table.block_tables:
-            setattr(block_table, RUNNER_PROVIDER_ATTRIBUTE, self)
+        setattr(attention_block_table, RUNNER_PROVIDER_ATTRIBUTE, self)
         logger.info(
             "Ascend KV compression cache bound method=%s layers=%d "
-            "threshold_tokens=%d target_tokens=%d min_output_tokens=%d",
+            "threshold_tokens=%d target_tokens=%d min_output_tokens=%d "
+            "logical_block_size=%d cache_block_size=%d",
             self.method.name,
             len(self.layer_caches),
             self.runtime_spec.compression_threshold_tokens,
             self.runtime_spec.max_physical_num_tokens,
             self.runtime_spec.min_output_tokens_for_compression,
+            self.scheduler_block_size,
+            self.cache_block_size,
         )
 
     def before_update_states(self, scheduler_output: Any) -> None:
@@ -162,10 +220,14 @@ class AscendKVCompressionProvider:
                 self.pending.pop(request_id, None)
                 continue
             mutable = list(pending.block_ids)
-            request.block_ids = (mutable,)
+            group_block_ids = list(request.block_ids)
+            group_block_ids[self.attention_group_index] = mutable
+            request.block_ids = tuple(group_block_ids)
             request_index = self.runner.input_batch.req_id_to_index.get(request_id)
             if request_index is not None:
-                self.runner.input_batch.block_table.add_row((mutable,), request_index)
+                self.runner.input_batch.block_table.add_row(
+                    request.block_ids, request_index
+                )
             self.active[request_id] = ActiveCompression(
                 pending.semantic_anchor, pending.physical_anchor
             )
@@ -209,21 +271,28 @@ class AscendKVCompressionProvider:
                 physical = active.physical_anchor + semantic - active.semantic_anchor
             if physical < self.runtime_spec.compression_threshold_tokens:
                 continue
-            if len(request.block_ids) != 1:
-                raise RuntimeError("Ascend KV compression requires one block table")
-            source_ids = tuple(int(value) for value in request.block_ids[0])
+            if self.attention_group_index >= len(request.block_ids):
+                raise RuntimeError("request has no full-attention block table")
+            source_ids = tuple(
+                int(value) for value in request.block_ids[self.attention_group_index]
+            )
             required_blocks = _blocks_for_tokens(
-                self.runtime_spec.max_physical_num_tokens
+                self.runtime_spec.max_physical_num_tokens,
+                self.scheduler_block_size,
             )
             if len(source_ids) < required_blocks:
                 raise RuntimeError(
                     f"request {request_id!r} has too few blocks for compression"
                 )
             destination_ids = source_ids[:required_blocks]
-            source_device = torch.as_tensor(
-                source_ids, device=self.runner.device, dtype=torch.long
+            source_device = _expand_scheduler_block_ids(
+                source_ids,
+                self.cache_blocks_per_scheduler_block,
+                self.runner.device,
             )
-            destination_device = source_device[:required_blocks]
+            destination_device = source_device[
+                : required_blocks * self.cache_blocks_per_scheduler_block
+            ]
             result = self.method.compress(
                 CompressionRequest(
                     request_id=request_id,
@@ -316,9 +385,12 @@ def _common_compatibility_reasons(vllm_config: Any, runner: Any) -> tuple[str, .
     cache_config = vllm_config.cache_config
     if bool(cache_config.enable_prefix_caching):
         reasons.append("prefix caching must be disabled")
-    if int(cache_config.block_size) != ASCEND_BLOCK_SIZE:
+    block_size = int(cache_config.block_size)
+    allowed_block_sizes = _allowed_scheduler_block_sizes(vllm_config)
+    if block_size not in allowed_block_sizes:
         reasons.append(
-            f"KV block size must be {ASCEND_BLOCK_SIZE}, got {cache_config.block_size}"
+            f"logical KV block size must be one of {sorted(allowed_block_sizes)}, "
+            f"got {block_size}"
         )
     if getattr(cache_config, "cache_dtype", "auto") not in {
         "auto",
@@ -334,14 +406,27 @@ def _common_compatibility_reasons(vllm_config: Any, runner: Any) -> tuple[str, .
         reasons.append("asynchronous scheduling is unsupported")
     model_config = vllm_config.model_config
     if bool(getattr(model_config, "is_hybrid", False)):
-        reasons.append("hybrid attention/state-space models are unsupported")
+        text_config = getattr(model_config, "hf_text_config", None)
+        model_type = str(getattr(text_config, "model_type", ""))
+        if model_type not in {"qwen3_5_text", "qwen3_5_moe_text"}:
+            reasons.append(
+                "only Qwen3.5-style full-attention/Gated-DeltaNet hybrids are supported"
+            )
+        if getattr(cache_config, "mamba_cache_mode", "none") != "none":
+            reasons.append("hybrid compression requires mamba_cache_mode='none'")
     if bool(getattr(model_config, "use_mla", False)):
         reasons.append("MLA cache layouts are unsupported")
     if bool(getattr(model_config, "is_encoder_decoder", False)):
         reasons.append("encoder-decoder models are unsupported")
     parallel = vllm_config.parallel_config
+    tensor_parallel_size = int(getattr(parallel, "tensor_parallel_size", 1))
+    text_config = getattr(model_config, "hf_text_config", None)
+    num_kv_heads = int(getattr(text_config, "num_key_value_heads", 0))
+    if tensor_parallel_size <= 0 or num_kv_heads % tensor_parallel_size:
+        reasons.append(
+            "tensor parallel size must be positive and divide the model KV heads"
+        )
     for name, attr in (
-        ("tensor parallel", "tensor_parallel_size"),
         ("pipeline parallel", "pipeline_parallel_size"),
         ("data parallel", "data_parallel_size"),
         ("prefill context parallel", "prefill_context_parallel_size"),
@@ -360,9 +445,65 @@ def _common_compatibility_reasons(vllm_config: Any, runner: Any) -> tuple[str, .
         reasons.append("Ascend sparse attention is unsupported")
     if bool(getattr(runner, "use_compress", False)):
         reasons.append("model-native Ascend compression is unsupported")
-    if bool(getattr(runner, "use_hybrid_blocks", False)):
-        reasons.append("hybrid allocation blocks are unsupported")
     return tuple(reasons)
+
+
+def _allowed_scheduler_block_sizes(vllm_config: Any) -> frozenset[int]:
+    """Return fail-closed logical page sizes for a supported model family.
+
+    Ascend keeps 128-token kernel cache blocks. Its hybrid cache adapter may
+    promote the full-attention manager page to 2048 tokens, representing one
+    logical attention block as 16 consecutive kernel blocks. The scheduler's
+    cross-group LCM alignment is validated separately.
+    """
+    model_config = getattr(vllm_config, "model_config", None)
+    if not bool(getattr(model_config, "is_hybrid", False)):
+        return frozenset({ASCEND_BLOCK_SIZE})
+    text_config = getattr(model_config, "hf_text_config", None)
+    model_type = str(getattr(text_config, "model_type", ""))
+    if model_type in {"qwen3_5_text", "qwen3_5_moe_text"}:
+        return frozenset({ASCEND_BLOCK_SIZE, 2048})
+    return frozenset({ASCEND_BLOCK_SIZE})
+
+
+def _find_full_attention_group(groups: Any) -> int:
+    """Return the sole full-attention group, allowing Mamba companion groups."""
+    from vllm.v1.kv_cache_interface import (
+        FullAttentionSpec,
+        MambaSpec,
+        UniformTypeKVCacheSpecs,
+    )
+
+    # A few downstream host-contract tests intentionally use an opaque object
+    # for the legacy single-group layout. Real vLLM groups always expose a
+    # ``kv_cache_spec``; keep that narrow test-double compatibility without
+    # weakening validation for hybrid layouts.
+    if len(groups) == 1 and not hasattr(groups[0], "kv_cache_spec"):
+        return 0
+
+    full_groups: list[int] = []
+    unsupported: list[str] = []
+    for index, group in enumerate(groups):
+        spec = group.kv_cache_spec
+        specs = (
+            tuple(spec.kv_cache_specs.values())
+            if isinstance(spec, UniformTypeKVCacheSpecs)
+            else (spec,)
+        )
+        if all(isinstance(item, FullAttentionSpec) for item in specs):
+            full_groups.append(index)
+        elif not all(isinstance(item, MambaSpec) for item in specs):
+            unsupported.append(type(spec).__name__)
+    if unsupported:
+        raise RuntimeError(
+            "Ascend KV compression supports only full-attention plus optional "
+            "Mamba groups; found " + ", ".join(unsupported)
+        )
+    if len(full_groups) != 1:
+        raise RuntimeError(
+            "Ascend KV compression requires exactly one full-attention KV group"
+        )
+    return full_groups[0]
 
 
 def _unpack_layer_cache(
@@ -387,9 +528,18 @@ def _unpack_layer_cache(
 
 
 def _validate_cache_tensor(
-    layer_name: str, kind: str, cache: torch.Tensor, model: ModelShape
+    layer_name: str,
+    kind: str,
+    cache: torch.Tensor,
+    model: ModelShape,
+    expected_kv_heads: int | None = None,
+    expected_block_size: int = ASCEND_BLOCK_SIZE,
 ) -> None:
-    expected_tail = (ASCEND_BLOCK_SIZE, model.num_kv_heads, model.head_dim)
+    expected_tail = (
+        expected_block_size,
+        model.num_kv_heads if expected_kv_heads is None else expected_kv_heads,
+        model.head_dim,
+    )
     if cache.ndim != 4 or tuple(cache.shape[1:]) != expected_tail:
         raise RuntimeError(
             f"attention layer {layer_name!r} {kind} cache shape {tuple(cache.shape)} "
@@ -442,8 +592,25 @@ def _request_max_tokens(request: Any) -> int:
     return value
 
 
-def _blocks_for_tokens(num_tokens: int) -> int:
-    return (num_tokens + ASCEND_BLOCK_SIZE - 1) // ASCEND_BLOCK_SIZE
+def _blocks_for_tokens(num_tokens: int, block_size: int) -> int:
+    return (num_tokens + block_size - 1) // block_size
+
+
+def _expand_scheduler_block_ids(
+    block_ids: tuple[int, ...],
+    cache_blocks_per_scheduler_block: int,
+    device: torch.device | str,
+) -> torch.Tensor:
+    """Map scheduler block IDs to consecutive 128-token cache block IDs."""
+    ids = torch.as_tensor(block_ids, device=device, dtype=torch.long)
+    if cache_blocks_per_scheduler_block == 1:
+        return ids
+    offsets = torch.arange(
+        cache_blocks_per_scheduler_block,
+        device=device,
+        dtype=torch.long,
+    )
+    return (ids.unsqueeze(1) * cache_blocks_per_scheduler_block + offsets).reshape(-1)
 
 
 # Compatibility name retained for downstream imports.

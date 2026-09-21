@@ -33,18 +33,28 @@ V4.6 acceptance claims.
   off, chunked prefill on, and no silent input truncation.
 - Graph mode for A2/A3: `FULL_DECODE_ONLY`, capture sizes matching the profile;
   `--enforce-eager` is not formal A2/A3 evidence.
-- Sampling: temperature 0, top-p 1, top-k -1, min-p 0, all penalties 0, n=1,
-  no beam search, empty stop list, seed 0, streaming with usage, and special
-  tokens enabled.
+- The server must use `--generation-config vllm`; model-directory sampling
+  defaults must not leak into a run.
+- Request sampling: temperature 0, top-p 1, top-k -1, min-p 0,
+  presence/frequency penalties 0, repetition penalty 1 (its multiplicative
+  neutral value), n=1, no beam search, empty stop list, seed 0, streaming with
+  usage, and `add_special_tokens=true`.
 - Execute at least three independent cold-start lifecycles per B0 and B1:
   start, warm, measure, stop. Retain failures, timeouts and retries. The
   predeclared primary result is the median; up to two additional runs may be
   reported but cannot replace failed runs.
 
 Formal V4.6 B0 is the fixed official vLLM 0.18 / matching official
-vLLM-Ascend baseline declared by the controlled plan. For plugin engineering,
-“B0/plugin disabled” versus “B1/plugin enabled” on the current HUST host is a
-useful paired comparison, but is not a replacement for that formal B0.
+vLLM-Ascend baseline declared by the controlled plan. The current-host paired
+engineering run loads the same plugin in both arms: B0 prevents compression
+with a threshold above the service limit, while B1 uses the candidate budget.
+It is not a replacement for the formal B0. The procedure must not modify the
+`vllm-hust` or `vllm-ascend-hust` host repositories.
+
+Qwen3.5-35B-A3B is a supplementary engineering target. It uses TP=2 and a
+hybrid full-attention/Gated-DeltaNet cache layout, so its results must be kept
+separate and may not replace, relax, or be merged into the frozen
+Qwen2.5-14B-Instruct acceptance matrix.
 
 ## Selected delivery scenarios
 
@@ -91,11 +101,14 @@ KV reduction; retain block-release transactions and 1-second HBM samples.
 ## Applicability and conflicts
 
 Prefix cache, speculative decoding, KV transfer/disaggregated P/D, quantized
-KV, hybrid/MLA/local attention, async scheduling and parallel degrees above
-one are rejected at startup. A1's non-chunked configuration and A4's
-prefix-enabled configuration therefore do not apply to this plugin as
-currently implemented. Former Prefix Router, KV Tiering, KNorm, PyramidKV
-Ascend and SliceGPT code is absent from the current hosts and is not assumed.
+KV, MLA/local attention, async scheduling, PP/DP/DCP/PCP above one, and
+unrecognized hybrid layouts are rejected at startup. The sole hybrid exception
+is Qwen3.5 full attention plus Gated-DeltaNet with `mamba_cache_mode=none`;
+TP is allowed only when its size divides the model's KV heads. These exceptions
+are engineering scope and do not alter the single-card formal topology. A1's
+non-chunked configuration and A4's prefix-enabled configuration therefore do
+not apply. Former Prefix Router, KV Tiering, KNorm, PyramidKV Ascend and
+SliceGPT code is absent from the current hosts and is not assumed.
 
 ## Data preparation
 
@@ -125,8 +138,10 @@ python scripts/kvcompress_prepare_dataset.py generate-commissioning \
 ## Execution and comparison
 
 Run `kv-pressure-online` once as a quick pressure smoke. Then execute all
-frozen A2 cells and A3 independently with plugin disabled (B0 engineering
-control) and enabled (B1), restarting the service every time. One A2 example:
+frozen A2 cells and A3 independently with compression forbidden (B0
+engineering control) and candidate compression enabled (B1), restarting the
+service every time. Both arms load the plugin; B0's threshold must be strictly
+above `max_model_len`. One A2 example:
 
 ```bash
 python scripts/kvcompress_long_context_run.py \
@@ -138,6 +153,14 @@ python scripts/kvcompress_long_context_run.py \
   --result .benchmarks/b1-r1/a2-16k.json
 ```
 
+When a frozen cell cannot cross the compression threshold (for example, the
+8K cell with the default 9,216-token threshold), its B1 command must explicitly
+add `--compression-evidence optional`. This permits zero transactions but still
+requires a worker acknowledgement for every scheduler commit that does occur.
+Cells that cross the threshold keep the default `auto` behavior (transactions
+are required for B1); B0 may use `--compression-evidence forbidden` to assert
+that compression never occurred.
+
 Compare exactly three results from each side:
 
 ```bash
@@ -146,6 +169,23 @@ python scripts/kvcompress_acceptance_compare.py \
   --plugin .benchmarks/b1-r{1,2,3}/a2-16k.json \
   --output .benchmarks/a2-16k-comparison.json
 ```
+
+The frozen Qwen2.5 TP=1 matrix keeps the default one worker acknowledgement
+per commit. The supplementary Qwen3.5 TP=2 engineering matrix must explicitly
+add `--worker-acks-per-commit 2`; the comparator then requires exactly two rank
+acknowledgements per scheduler commit. This option must not relax the TP=1
+standard matrix.
+
+The comparator reads the frozen compression-evidence expectation from the B1
+raw results. `required` (and fail-closed `auto` for older evidence without the
+field) must satisfy the M3 20% physical-KV-reduction gate. When all three runs
+of an `optional` cell contain no compression transaction, that cell records the
+M3 reduction gate as not applicable while quality, throughput, request
+cleanliness, and commit/ack pairing checks still run. Any commit in an
+`optional` cell makes the M3 reduction gate required again.
+For evidence produced before that field existed, the comparison command must
+explicitly add `--compression-evidence optional`; the default does not guess
+legacy intent and remains fail-closed as `auto`.
 
 ## Evidence package and decision
 

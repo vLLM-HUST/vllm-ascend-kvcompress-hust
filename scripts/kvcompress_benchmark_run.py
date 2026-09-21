@@ -20,6 +20,24 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
+FROZEN_SAMPLING_PARAMS: dict[str, Any] = {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "top_k": -1,
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "frequency_penalty": 0.0,
+    # Repetition penalty is multiplicative; 1.0 is its neutral value.
+    "repetition_penalty": 1.0,
+    "n": 1,
+    "use_beam_search": False,
+    "stop": [],
+    "seed": 0,
+    "stream": True,
+    "stream_options": {"include_usage": True},
+    "add_special_tokens": True,
+}
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -76,17 +94,8 @@ def run_case(
         "model": model,
         "prompt": case["prompt_token_ids"],
         "max_tokens": case["max_tokens"],
-        "temperature": 0.0,
-        "top_p": 1.0,
-        "top_k": -1,
-        "min_p": 0.0,
-        "presence_penalty": 0.0,
-        "frequency_penalty": 0.0,
-        "n": 1,
-        "stream": True,
-        "stream_options": {"include_usage": True},
+        **FROZEN_SAMPLING_PARAMS,
         "ignore_eos": False,
-        "seed": 0,
     }
     request = urllib.request.Request(
         f"{base_url.rstrip('/')}/v1/completions",

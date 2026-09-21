@@ -1,165 +1,164 @@
-# 0.6 候选版本验收记录
+# 当前工作树验收记录
 
 [English](validation.md) | 简体中文
 
-日期：2026-09-15。结论：**工程验收通过，但不是 V4.6 正式验收**。插件包及当前
-宿主适配可继续评估；下述缺口使其暂不能宣称生产可用或官方基线收益。
+日期：2026-09-20。结论：**工程部分通过，不是 V4.6 正式验收**。完整 A2
+commissioning 矩阵和三项公开质量任务通过；冻结的 A3 稳定性矩阵已完整执行，但未
+通过最少完成数和六窗口吞吐 CV 门槛。该负结果原样保留，没有用新增轮次替换。补充
+的 Qwen3.5 矩阵也已完成：A2 八个 cell 中两个通过，A3 稳定性失败，但模型输出和
+压缩事务全部正确。
 
-## 0.6 评分路径优化
+| 范围 | 结果 | 结论边界 |
+| --- | --- | --- |
+| 单元/契约套件 | 通过 | 仅代表仓库正确性 |
+| Ascend 数值 smoke 与算子微基准 | 通过 | 合成 cache 形状，不是服务吞吐 |
+| Qwen2.5 A2 八个 cell、每组各三轮冷启动 | 通过 | commissioning fixture 与同宿主对照 |
+| Qwen2.5 A3、每组各三轮 30 分钟 | **失败** | 完成数和吞吐 CV 未通过 |
+| Qwen2.5 公开 LongBench-v2/LongBench | 通过 | 每组单轮，主要证明质量和完整性 |
+| Qwen3.5-35B-A3B 适配与公开任务 | 通过，补充证据 | 仅 TP=2/eager 工程证据 |
+| Qwen3.5 移植 A2/A3 矩阵 | **失败**，补充证据 | 六个 A2 cell 吞吐失败，A3 稳定性失败 |
+| V4.6 正式放行 | **不宣称** | 缺少官方 B0 与获授权 LONG-PUBLIC 证据 |
 
-0.6 将 RoPE 相位计算从每个 query-head/token 评分程序中移出。一次批量 Triton
-launch 为全部抽样层准备相位系数，分页 K 直接评分随后复用这些系数。已验证默认值
-`score_layer_stride=8`，即 48 层中抽取 6 层评分，但仍物化全部 K/V 层。
+## 被测实现
 
-Ascend 910B2 三个新进程的中位数为：预计算评分 0.253 ms，六层相位准备 0.102 ms，
-每抽样层摊销 0.270 ms；原相位内算路径为 0.460 ms，因此热路径降低 41.3%。NPU
-数值 smoke 通过。另一个 Triton K/V 融合 copy 候选虽然数值正确，但耗时 14.504
-ms，保留的 workspace 路径仅 0.334 ms，因此已作为负优化撤回。
+当前工作树实现 TriAttention V3 位置策略：硬保护可配置的前缀与最近 token，再在等长
+中间上下文分段间按比例分配驱逐额度。Qwen3.5 hybrid 路径只评分和压缩 10 个全注意力
+层，Gated-DeltaNet 循环状态继续使用宿主生命周期。Qwen3.5 的 192 个非旋转 key
+维度还使用校准后的直接 Q·K 内容项；TP rank 在选择前 all-reduce 每层分数，确保选择
+完全相同的 token 集合。
 
-## 0.5 校准能力验收
+两个模型系列都使用 schema-3 校准产物：
 
-0.5 新增插件内校准生成。在物理 NPU 6 上，最终生成器加载本地
-Qwen2.5-Coder-14B-Instruct，以默认 4,096-token 长度生成全部 48 x 40 个查询 head
-统计。schema-2 产物为 1,565,471 字节，通过模型形状、RoPE、有限值、模型标识、
-revision 和 checkpoint manifest 指纹校验，SHA-256 为
-`f53898b153fe8b3177b7e10e3c0f979eb6b470a9e5fc335a3f0ed3258f42846b`。
+| 模型 | 校准 SHA-256 |
+| --- | --- |
+| Qwen2.5-14B-Instruct | `cf3be9376043bb9c47fb8beb461d3951c3d82caa90d33bffcfc4dff5d96a6f26` |
+| Qwen3.5-35B-A3B | `c09e9ec41c34d876802865a5ef489c1d4514245a90b71d1574663ddcfa2c637b` |
 
-一次 `stats_path` 缺失的干净服务启动确认：校准在原始服务权重加载之前完成，临时
-模型随后释放，48 层 KV 成功绑定，`/health` 返回 200，短 completion 成功。第二次
-服务使用新生成的 4,096 产物完成一个精确 3,072-token 检索用例：答案正确，记录一次
-scheduler commit 和一次 worker 回执，并将 24 个 source block 压至 16 个
-destination block。Ascend 算子数值 smoke 也通过。
-
-内置语料只是 bootstrap 默认值。单个使用用例不能替代下文已有的重复性能与公开质量
-证据；生产环境必须使用具有代表性、许可清晰的语料生成，并重新执行质量、性能和 HBM
-矩阵。机器可读记录见
-[kvcompress-v0.5.0-auto-calibration-summary.json](evidence/kvcompress-v0.5.0-auto-calibration-summary.json)。
-最终自动化套件为 77 passed、1 skipped；Ruff 检查与格式检查通过。
+本次没有修改 `vllm-hust` 或 `vllm-ascend-hust`。所有集成都在独立插件内完成。
+Qwen3.5 的旧 `int[]` GDN ABI 兼容桥必须显式启用，并严格匹配已验证宿主 schema。
 
 ## 冻结环境
 
 | 组件 | 已验证值 |
 | --- | --- |
-| 插件 | 0.6.0 发布候选，基于 `1f78d51af7` |
-| vLLM-HUST | `6cdc0304a8`，`0.28.1.post1.dev260` |
-| vLLM-Ascend-HUST | `5901bedbb7`，`0.25.1rc2.dev232+hust.20260903.4.g5901bedbb` |
-| Extension Manager | `cf1ea71e3e`，`0.2.0.dev0` |
-| Triton Ascend | `8f0a4de84`，wheel `3.6.0+git8f0a4de8` |
+| 插件 | 基于 `33b936d9d09d` 的 0.6.0 工作树 |
+| vLLM-HUST | `6cdc0304a8ba`，`0.28.1.post1.dev260` |
+| vLLM-Ascend-HUST | `5901bedbb718`，`0.25.1rc2.dev232+hust.20260903.4.g5901bedbb` |
 | Python / torch / torch-npu | 3.11.16 / 2.10 / 2.10.post2 |
-| 设备 | 单卡 Ascend 910B2 |
-| 模型 | 本地 Qwen2.5-14B-Instruct，FP16 |
+| 标准模型 | `/data/shared_models/Qwen--Qwen2.5-14B-Instruct`，FP16，TP=1 |
+| 补充模型 | `/workspace/models/Qwen--Qwen3.5-35B-A3B`，BF16，TP=2，eager |
+| 设备 | Ascend 910B2；本次只使用 0–5 卡 |
 
-现有 quickstart 使用通用 Triton `setup.py`，不能构建 Ascend 后端。本次在临时
-目录通过 `setup_ascend.py` 构建并重装同一份、未经修改的 Triton-Ascend 源码。
-来源与恢复流程见[环境安装](environment-installation.zh.md)。
-
-## 插件包与 Extension Manager 生命周期
-
-最终本地 0.6.0 wheel 在不把源码目录加入 `PYTHONPATH` 的条件下安装。插件发现、manifest
-解析、兼容性检查、配置、校验、启用、status/check/plan/env 渲染和
-`run --dry-run` 均通过，渲染环境包含：
-
-```text
-VLLM_ASCEND_KVCOMPRESS_ENABLED=1
-VLLMHUST_EXT_ENABLED_BUNDLES=org.vllm-hust.ascend-kvcompress
-```
-
-0.6 生命周期覆盖禁用、卸载、从 `extension list` 消失、从最终 wheel 重装、重新
-发现、使用已验证 8K/stride-8 文件配置、check、dry-run 渲染和重新启用。此前检查
-还覆盖了 `forget` 与禁用导入惰性。当前 Manager 判定宿主未提供原生扩展 API，
-因此 manifest 不声明虚假的 `api_range`，而以精确包版本范围和运行时契约测试约束适配。
+服务使用 `--generation-config vllm`。客户端固定 temperature 0、top-p 1、top-k -1、
+min-p 0、presence/frequency penalty 0、repetition penalty 1、n=1、禁用 beam、
+stop 为空、seed 0、流式回传 usage、`add_special_tokens=true`。
 
 ## 自动化与 NPU 检查
 
-最终候选应复现：
-
-- `pytest`：78 passed、1 skipped；
+- `pytest`：114 passed、1 项环境跳过；
 - Ruff 检查和格式检查：通过；
-- 包 metadata 与 wheel/sdist 内容检查：通过；
-- Ascend 算子数值 smoke：通过；
-- 下列数值为三个全新 0.6 benchmark 进程的中位数：
+- Ascend 数值算子 smoke：通过；
+- 2,176-token、8 KV head、BF16 新进程微基准：分页 K/V copy 相对参考 1.64×、
+  直接评分 1.85×、融合聚合 1.35×。
 
-| 算子路径 | 优化实现 | 通用参考 | 比值 |
+算子结果只是隔离微基准，不是模型服务收益。跨版本规范化视图见
+[HTML 测试榜单](benchmark-leaderboard.html)。
+
+## Qwen2.5 标准 commissioning 矩阵
+
+确定性 fixture SHA-256 为
+`6911a586376fbb9472be9017d68660cd3fb38dda2a054dd76cd2b11c408e208e`。
+B0/B1 各运行三轮独立冷服务生命周期；A2 每个 cell、每轮测量 16 个请求，并发 4。
+
+| Profile | RPS | B0 → B1 总吞吐中位数 tok/s | 变化 | 质量 | 最小物理 KV 缩减 | 结果 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 8K + 512 | 0.05 | 439.13 → 438.90 | −0.05% | 100% → 100% | 不适用：未跨阈值 | 通过 |
+| 8K + 512 | 0.10 | 829.81 → 828.68 | −0.14% | 100% → 100% | 不适用：未跨阈值 | 通过 |
+| 8K + 512 | 0.20 | 1294.64 → 1290.71 | −0.30% | 100% → 100% | 不适用：未跨阈值 | 通过 |
+| 8K + 512 | 0.40 | 1370.00 → 1368.79 | −0.09% | 100% → 100% | 不适用：未跨阈值 | 通过 |
+| 16K + 1,024 | 0.05 | 820.79 → 826.60 | +0.71% | 100% → 100% | 50.00% | 通过 |
+| 16K + 1,024 | 0.10 | 1085.70 → 1232.85 | +13.55% | 100% → 100% | 50.00% | 通过 |
+| 16K + 1,024 | 0.20 | 1128.82 → 1300.52 | +15.21% | 100% → 100% | 50.00% | 通过 |
+| 16K + 1,024 | 0.40 | 1147.92 → 1335.78 | +16.36% | 100% → 100% | 50.00% | 通过 |
+
+A2 实测的 768 个组别请求全部完成，无失败、强制输出不足或静默截断；六个预热请求
+也全部正常。16K B1 共记录 192 次 scheduler 提交和 192 次 worker 回执。设备 HBM
+峰值为 87%；vLLM 启动时预留 KV 池，因此不宣称预留池缩小。8K cell 未跨过 9,216
+语义 token 阈值，按规范把 M3 标为不适用。
+
+## Qwen2.5 A3 稳定性负结果
+
+A3 使用精确 30,720 输入 token 加 2,048 强制输出 token，并发 1，预热五分钟，
+测量 30 分钟并切分为六个五分钟窗口。B0/B1 各运行三轮独立冷生命周期。
+
+| 三轮中位数 | B0 | B1 | 变化 |
 | --- | ---: | ---: | ---: |
-| 分页 K/V copy | 0.562 ms | 0.339 ms | 1.66x |
-| 预计算相位直接评分（摊销） | 1.247 ms | 0.270 ms | 4.62x |
-| 融合聚合 | 0.150 ms | 0.113 ms | 1.33x |
-| Offset 更新 | 0.044 ms | 0.053 ms | 0.83x |
+| 总 token 吞吐 | 407.91 tok/s | 461.62 tok/s | +13.17% |
+| 平均 TTFT | 6304.90 ms | 6318.90 ms | +0.22% |
+| 平均 TPOT | 36.16 ms | 31.58 ms | −12.68% |
+| 平均 E2E | 80.32 s | 70.96 s | −11.66% |
 
-比值为通用参考耗时除以优化实现耗时。Offset 更新存在负收益，不宣称该项优化有效。
+实测 147 个组别请求全部正确；失败、OOM、短输出和静默截断均为 0。B1 记录 156 次
+提交和 156 次回执，最小物理 KV 缩减 73.33%。TTFT/TPOT 中位数与 p99 漂移门槛
+全部通过，但 A3 仍因以下两个冻结条件失败：
 
-## 长上下文工程对照
+- B0 每轮只完成 23 个请求，低于至少 24 个的要求；B1 每轮完成 26 个；
+- B0 每轮六窗口吞吐 CV 都是 12.86%，B1 都是 8.94%，均高于 5%。
 
-已完成的主测试单元为 A2-LONG-FP16-16K：每个冷服务生命周期 4 个确定性请求，
-16,384 输入 token、强制输出 1,024 token、忽略 EOS、0.4 RPS、并发 4、block
-size 128，关闭 prefix cache 和 speculative decoding。两组各运行三个独立冷生命周期。
+这是测试门槛失败，不是崩溃或数据损坏；没有用额外轮次替换失败结果。
 
-| 三轮冷启动中位数 | 同宿主对照 | 压缩 | 变化 |
-| --- | ---: | ---: | ---: |
-| 请求吞吐 | 0.06489 req/s | 0.08222 req/s | +26.7% |
-| 输入吞吐 | 1063.1 tok/s | 1347.1 tok/s | +26.7% |
-| 输出吞吐 | 66.44 tok/s | 84.19 tok/s | +26.7% |
-| 总吞吐 | 1129.5 tok/s | 1431.3 tok/s | +26.7% |
-| 平均 TTFT | 4167.7 ms | 4326.3 ms | +3.8%（变差） |
-| 平均 TPOT | 52.43 ms | 39.16 ms | -25.3% |
-| 平均端到端时延 | 57.81 s | 44.37 s | -23.2% |
-| p99 端到端时延 | 61.45 s | 48.03 s | -21.8% |
+## 公开长上下文质量与性能
 
-24 个请求（每组 12 个）均达到指定输出长度并返回正确检索答案。压缩组记录到 12 次
-调度提交及 12 次 worker 确认；每个请求均从 128 个物理 block 压至 32 个，减少
-75%。由于 vLLM 启动时预留 KV 池，设备级 HBM 峰值均为 87%；服务日志中的动态
-KV block 使用峰值约为压缩组 16.5%、对照组 56%。因此这里只宣称物理 KV 压力
-降低，不宣称预留 HBM 池变小。
+Qwen2.5 使用所有可接纳且未截断样本：LongBench-v2 116 条、段落检索 200 条、
+Qasper 压力子集 93 条。两组共 818 个请求全部完成。
 
-机器可读摘要见
-[kvcompress-v0.4.0-a2-16k-c4-summary.json](evidence/kvcompress-v0.4.0-a2-16k-c4-summary.json)。
-确定性数据 SHA-256 为
-`3f68a54ee4028aa63418534466e3763d8e7c1da308af58cec2506cc16b067ab0`。
+| 数据集 | B0 → B1 质量 | 请求吞吐 | 平均 E2E | 物理 block | 结果 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| LongBench-v2 | 40.52 → 39.66 accuracy（−0.86 pp） | +7.78% | −6.99% | −61.96% | 通过 |
+| 段落检索 | 98.75 → 98.75（0.00 pp） | +2.41% | −2.33% | 绕过 | 通过 |
+| Qasper | 43.60 → 43.36 F1（−0.24 pp） | +1.35% | −1.41% | 触发样本 −38.73% | 通过 |
 
-8,192+512 和 16,384+1,024 的单请求 commissioning smoke 也已通过，仅用于确认
-边界行为，不能替代三轮测试矩阵。
+三项质量差都在冻结的 1 pp 门槛内。B1 有 127 次提交和 127 次回执；触发压缩的
+样本从 20,666 个源 block 降至 8,128 个目标 block（−60.67%）。这些是每组单轮、
+且宿主其他 NPU 同期有负载的工程结果，性能差只作探索性数据。详见
+[公开长上下文 Benchmark](public-long-context-benchmarks.zh.md)。
 
-## 公开 A3 长上下文质量测试
+## Qwen3.5 补充适配
 
-为补足合成数据，本次在本地 Qwen2.5-Coder-14B-Instruct FP16 上运行三个公开场景。
-因宿主、模型、tokenizer、数据集和服务参数未变，0.6 候选复用冻结的同宿主 B0。
-B0 使用 32,768-token 无压缩预算；B1 使用推荐的 8,192-token 预算和 stride 8。所有接纳的 prompt
-均精确 token 化且不截断，超限输入单独登记为 unsupported。
+已下载模型快照 revision 为 `59d61f3ce65a6d9863b86d2e96597125219dc754`；
+14 个权重分片含 71,903,655,008 tensor bytes。TP=2 16K smoke 通过，物理 KV
+缩减 50%。非思考公开测试的 806 个组别请求全部完成，无错误或静默截断，三项质量
+门槛全部通过：LongBench-v2 准确率不变，段落检索保持 100% 且绕过压缩，Qasper
+变化 −0.43 pp。TP=2 事务证据严格匹配：121 次 scheduler 提交对应 242 次逐 rank
+回执。
 
-| 全部可接纳样本 | 质量 B0 → B1 | 请求吞吐 | 平均 TTFT | 平均 TPOT | 物理 block |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| LongBench-v2，116 条（10K–32K） | 34.48 → 34.48 accuracy | +2.81% | -3.29% | -13.22% | -61.96% |
-| LongBench 段落检索，200 条（10K–16K） | 100.00 → 100.00 | +0.09% | +3.06% | -2.52% | 绕过（0 次提交） |
-| LongBench Qasper，93 条（5K–22K） | 42.51 → 42.51 F1（0.00 pp） | +0.03% | +6.81% | -2.40% | 11 条触发样本 -38.73% |
+这些公开任务的性能没有优于 B0；当前宿主还要求 eager 和显式旧 GDN ABI 兼容桥。
+因此 Qwen3.5 只能作为 hybrid 兼容性补充证据，不能替代标准 Qwen2.5 矩阵。
 
-两组共 818 个请求全部完成，静默截断为 0。B1 记录 127 次 scheduler 提交和 127
-次 worker 回执；触发压缩样本的物理 block 从 20,666 降至 8,128（-60.67%）。
-LongBench-v2 动态 KV 峰值从 B0 的 90.4% 降至 46.7%；候选与 B0 的设备 HBM
-峰值分别为 88% 和 87%，因为启动时会预留 KV 池。
+移植的 A2 矩阵中，768 个实测组别请求全部正确，192 次提交对应 384 次 TP rank
+回执；只有 8K@0.05 和 16K@0.40 通过，其他六个 cell 超过冻结的 1% 总吞吐回退
+预算。移植的 A3 中，B0/B1 每轮均完成 4 个正确请求，总吞吐中位数提升 1.23%，但
+未达到 24 个完成数，六窗口吞吐 CV 为 100%，且空窗口导致时延漂移无法计算。B1
+仍实现至少 73.33% 物理 KV 缩减，24 次提交对应 48 次回执。详见
+[Qwen3.5 适配说明](qwen3.5-35b-a3b-adaptation.zh.md)。
 
-4,096-token 调参候选因 Qasper F1 下降 4.71 个百分点而被淘汰。8K 下 stride-4
-仍下降 0.48 pp，stride-8 则恢复准确 B0 分数。8K/stride-8 满足质量容差，但性能与
-负载相关：LongBench-v2 有收益；优化后的 64-token 请求输出门槛
-会为 32-token 检索负载绕过压缩，将原有额外开销降至近似中性。
-由于每组只有一次运行，这些性能数值是方向性工程证据，不是重复测量统计。数据固定
-版本、许可、命令、评分器、完整指标、负结果和哈希见
-[公开长上下文 Benchmark](public-long-context-benchmarks.zh.md)及其
-[机器可读证据](evidence/kvcompress-v0.6.0-performance-summary.json)。
+## 放行边界
 
-## V4.6 缺口与可发布结论
+当前工作树不能宣称 V4.6 正式通过或生产就绪：
 
-本记录不是 V4.6 正式 PASS，原因如下：
+1. B0 是当前宿主的无压缩工程对照，不是规定的官方 vLLM 0.18 与匹配官方 Ascend；
+2. A2/A3 使用仓库 commissioning fixture，而非独立批准、签名的 LONG-PUBLIC；
+3. Qwen2.5 A3 和移植的 Qwen3.5 A3 均未通过最少完成数和六窗口吞吐 CV 门槛；
+   Qwen3.5 A2 另有六个 cell 未通过吞吐回退门槛；
+4. 公开性能每组只有一次运行，且同机有并行负载；
+5. 设备预留 HBM 未下降，也未独立测量系统 cost/token；
+6. Qwen3.5 使用非标准 TP=2/eager 拓扑和宿主特定 ABI 桥，压缩态严格多位置 NIAH
+   仍是部署门槛。
 
-1. B0 是当前宿主下禁用压缩/no-op 的兼容性对照，而不是规定的官方 vLLM 0.18 与
-   匹配官方 Ascend 栈；
-2. 公开质量任务已补充确定性合成数据，但公开性能组每组仅一次冷测，也不是经授权的
-   生产数据集；
-3. 公开测试模型与统计文件属于同一 Qwen2.5-Coder-14B 系列，但缺少准确上游
-   revision 与生成 provenance；此前合成测试使用了另一 Qwen2.5-14B 变体；
-4. 只有 A2 的 16K/0.4-RPS/并发 4 单元完成三轮冷测，完整 A2 速率矩阵和 A3
-   30 分钟/六窗口稳定性测试尚未完成；
-5. 宿主预分配 KV 池使 HBM 百分比未下降，系统 cost/token 也未单独测量。
+机器可读记录：
 
-因此当前可以声明：插件包/Manager 兼容、声明快照上的 NPU 正确性、推荐 8K 预算
-下有边界的公开质量保持，以及上述负载特定工程测量；不能声明 V4.6 正式通过、普遍
-质量/吞吐保持或生产就绪。
+- [Qwen2.5 A2/A3 摘要](evidence/kvcompress-working-tree-20260920-qwen25-standard-summary.json)
+- [Qwen2.5 公开基准摘要](evidence/kvcompress-working-tree-20260920-qwen25-public-summary.json)
+- [Qwen3.5 公开基准摘要](evidence/kvcompress-working-tree-20260920-qwen35-public-summary.json)
+- [Qwen3.5 移植 A2/A3 摘要](evidence/kvcompress-working-tree-20260920-qwen35-standard-summary.json)
+- [榜单历史记录](evidence/leaderboard-history.json)

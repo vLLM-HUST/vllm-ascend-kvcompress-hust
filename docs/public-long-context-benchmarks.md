@@ -2,9 +2,15 @@
 
 English | [简体中文](public-long-context-benchmarks.zh.md)
 
-Updated: 2026-09-15. This record supplements the synthetic commissioning test
-with three public A3 long-context/KV scenarios. It is a same-host engineering
-comparison, not the formal V4.6 official baseline.
+Updated: 2026-09-20. This record supplements the synthetic commissioning test
+with three public long-context/KV scenarios. It is a same-host engineering
+comparison, not formal V4.6 official-baseline acceptance or the 30-minute A3
+stability test.
+
+Standard release testing is frozen to Qwen2.5-14B-Instruct by the acceptance
+requirements. Qwen3.5-35B-A3B is supplementary adaptation evidence for a
+related hybrid architecture. Earlier Qwen2.5-Coder runs remain in the history
+of the [HTML benchmark leaderboard](benchmark-leaderboard.html).
 
 ## Scenarios and frozen inputs
 
@@ -37,7 +43,7 @@ the terms of each source dataset.
 Download and prepare with the exact model tokenizer:
 
 ```bash
-MODEL=/path/to/Qwen2.5-Coder-14B-Instruct
+MODEL=/path/to/Qwen2.5-14B-Instruct
 python scripts/kvcompress_benchmark_data.py download \
   --source all --root .benchmarks/datasets
 
@@ -58,6 +64,13 @@ python scripts/kvcompress_benchmark_data.py prepare \
   --output .benchmarks/public/longbench-qasper.jsonl
 ```
 
+Models such as Qwen3.5 that enable reasoning by default must add
+`--disable-thinking` to all three `prepare` commands. The option passes
+`enable_thinking=false` to the chat template and freezes
+`chat_template_enable_thinking: false` in the request-set manifest. Do not mix
+a request set rendered with the default thinking template into a non-thinking
+B0/B1 comparison.
+
 The frozen B0 is the same plugin and host with a 32,768-token
 budget/32,896-token threshold, so no request can compress. The 0.6 candidate
 reuses that B0 because the host, model, tokenizer, datasets, and service flags
@@ -67,10 +80,10 @@ are unchanged. B1 uses [the example configuration](../examples/triattention.json
 output before compression is worthwhile.
 
 ```bash
-export ASCEND_RT_VISIBLE_DEVICES=6
+export ASCEND_RT_VISIBLE_DEVICES=0
 export VLLM_PLUGINS=ascend,ascend_kvcompress
 vllm-hust-ext run -- vllm serve "$MODEL" \
-  --served-model-name qwen2.5-coder-14b --dtype float16 \
+  --served-model-name qwen2.5-14b --dtype float16 \
   --block-size 128 --gpu-memory-utilization 0.85 \
   --max-model-len 32768 --max-num-batched-tokens 16384 --max-num-seqs 4 \
   --no-enable-prefix-caching --enable-chunked-prefill --no-async-scheduling \
@@ -83,17 +96,17 @@ needed:
 ```bash
 python scripts/kvcompress_benchmark_run.py \
   --dataset .benchmarks/public/longbench-v2.jsonl \
-  --base-url http://127.0.0.1:8000 --model qwen2.5-coder-14b \
+  --base-url http://127.0.0.1:8000 --model qwen2.5-14b \
   --result .benchmarks/results/b1-longbench-v2.json --run-label B1 \
-  --request-rate 0 --concurrency 4 --timeout 1800 --npu-id 6 \
+  --request-rate 0 --concurrency 4 --timeout 1800 --npu-id 0 \
   --server-log .benchmarks/logs/b1.log
 
 # passage_retrieval_en has max_output_tokens=32 and must exercise the bypass:
 python scripts/kvcompress_benchmark_run.py \
   --dataset .benchmarks/public/longbench-passage-retrieval-en.jsonl \
-  --base-url http://127.0.0.1:8000 --model qwen2.5-coder-14b \
+  --base-url http://127.0.0.1:8000 --model qwen2.5-14b \
   --result .benchmarks/results/b1-passage-retrieval-en.json --run-label B1 \
-  --request-rate 0 --concurrency 4 --timeout 1800 --npu-id 6 \
+  --request-rate 0 --concurrency 4 --timeout 1800 --npu-id 0 \
   --server-log .benchmarks/logs/b1.log \
   --compression-expectation forbidden
 
@@ -104,8 +117,11 @@ python scripts/kvcompress_benchmark_score.py \
   --output .benchmarks/results/paired-longbench-v2.json
 ```
 
-The runner fixes `temperature=0`, `top_p=1`, `top_k=-1`, `min_p=0`, and
-`seed=0`. It saves per-request predictions, TTFT/TPOT/E2E, package versions,
+The server must use `--generation-config vllm`. The runner fixes
+`temperature=0`, `top_p=1`, `top_k=-1`, `min_p=0`, presence/frequency
+penalties 0, `repetition_penalty=1`, `n=1`, beam search off, an empty stop
+list, `seed=0`, and `add_special_tokens=true`. It saves per-request
+predictions, TTFT/TPOT/E2E, package versions,
 device samples, server-reported token counts, and scheduler/worker compression
 evidence. The scorer implements the official LongBench-v2 answer extraction,
 LongBench retrieval score, and LongBench QA F1 normalization. A B1 result fails
@@ -117,48 +133,65 @@ than silently accepting an uncompressed run.
 
 ## Results
 
-Model: local Qwen2.5-Coder-14B-Instruct, FP16. Device: one Ascend 910B2.
-Each arm is one cold-service run, unlimited arrival rate, concurrency 4. B0 is
-the same-host no-compression engineering control described above.
+### Standard model: Qwen2.5-14B-Instruct
+
+Model: `Qwen/Qwen2.5-14B-Instruct`, FP16. Each service uses one Ascend 910B2.
+Each arm is one cold-service run, unlimited arrival rate, concurrency 4, with
+the frozen server and client sampling contract. B0 is the same-host
+no-compression engineering control described above.
 
 | Scenario | B0 → B1 quality | Requests / compression | Request throughput | Mean TTFT | Mean TPOT | Mean E2E | Physical blocks |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| LongBench-v2 | 34.48 → 34.48 accuracy (0.00 pp) | 116 / 116 | **+2.81%** | **−3.29%** | **−13.22%** | **−2.72%** | −61.96% |
-| Passage retrieval | 100.00 → 100.00 (0.00 pp) | 200 / 0 (bypassed) | +0.09% | +3.06% | **−2.52%** | **−0.10%** | n/a |
-| Qasper | 42.51 → 42.51 F1 (0.00 pp) | 93 / 11 | +0.03% | +6.81% | **−2.40%** | +0.43% | −38.73% on compressed cases |
+| LongBench-v2 | 40.52 → 39.66 accuracy (−0.86 pp) | 116 / 116 | **+7.78%** | +4.00% | **−4.34%** | **−6.99%** | −61.96% |
+| Passage retrieval | 98.75 → 98.75 (0.00 pp) | 200 / 0 (bypassed) | **+2.41%** | +0.36% | **−4.13%** | **−2.33%** | n/a |
+| Qasper | 43.60 → 43.36 F1 (−0.24 pp) | 93 / 11 | **+1.35%** | **−2.94%** | **−1.08%** | **−1.41%** | −38.73% on compressed cases |
 
-All 818 arm-requests completed with zero silent truncations. B1 produced 127
-scheduler commits and 127 worker acknowledgements. Across compressed cases,
-20,666 source blocks became 8,128 destination blocks, a 60.67% reduction.
-LongBench-v2 dynamic KV use peaked at 46.7% versus B0's 90.4%. Device HBM
-peaked at 88% for the candidate and 87% for B0 because vLLM reserves the KV
-pool at startup; no smaller reserved-pool claim is made.
+All 818 arm-requests completed with zero failures or silent truncations. B1
+produced 127 scheduler commits and 127 worker acknowledgements. Across
+compressed cases, 20,666 source blocks became 8,128 destination blocks, a
+60.67% reduction. All three quality changes remain within the frozen 1 pp gate.
 
-The workload boundary is material: compression improves the broad,
-10K–32K-input LongBench-v2 run. The 10K–16K retrieval task requests at most 32
-output tokens, so the optimized 64-token gate bypasses scoring and copy work;
-all 200 runs show zero scheduler commits/worker acknowledgements and effectively
-neutral performance. Qasper is mostly below the 9,216-token B1 threshold, so
-only 11 cases compress and aggregate performance is also effectively neutral.
-Qasper mean TTFT and E2E remain slightly worse even though TPOT improves.
-These single runs support directional engineering conclusions, not a confidence
-interval for throughput.
+The workload boundary is material. The 10K–16K retrieval task requests at most
+32 output tokens, so the 64-token gate bypasses scoring and copy work; all 200
+cases show zero commits/acknowledgements. Qasper is mostly below B1's 9,216-token
+threshold, so only 11 cases compress. Each arm has only one run, and tests on
+other NPUs ran concurrently; performance deltas are exploratory engineering
+evidence. Quality, request integrity, and compression transactions are the
+primary conclusions.
 
-The initial 4,096-token candidate is retained as a negative tuning result: it
-dropped Qasper F1 by 4.71 pp and therefore failed the 1 pp quality gate. At 8K,
-stride 4 still lost 0.48 pp on Qasper; stride 8 restored the exact B0 score and
-improved the complete LongBench-v2 result, so 8K/stride-8 is the recommended
-public-benchmark setting.
+Machine-readable evidence is in the
+[Qwen2.5 public benchmark summary](evidence/kvcompress-working-tree-20260920-qwen25-public-summary.json).
 
-Machine-readable evidence is in
-[kvcompress-v0.6.0-performance-summary.json](evidence/kvcompress-v0.6.0-performance-summary.json).
+### Supplementary model: Qwen3.5-35B-A3B
+
+Qwen3.5 uses BF16, TP=2, eager execution, and a non-thinking chat template;
+each service uses two Ascend 910B2 devices. It is not the standard acceptance
+model.
+
+| Scenario | B0 → B1 quality | Requests / compression | Request throughput | Mean TTFT | Mean TPOT | Mean E2E | Physical blocks |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| LongBench-v2 | 47.27 → 47.27 accuracy (0.00 pp) | 110 / 110 | −5.83% | +5.66% | +4.44% | +4.97% | −63.76% |
+| Passage retrieval | 100.00 → 100.00 (0.00 pp) | 200 / 0 (bypassed) | −2.39% | +1.65% | +3.10% | +2.54% | n/a |
+| Qasper | 51.07 → 50.64 F1 (−0.43 pp) | 93 / 11 | −1.28% | +5.43% | +9.69% | +2.26% | −42.11% on compressed cases |
+
+All 806 arm-requests completed with zero failures or silent truncations. B1
+produced 121 scheduler commits and 242 per-rank worker acknowledgements under
+TP=2. Every quality gate passed, but this host requires eager execution and the
+explicit legacy GDN ABI bridge, and performance did not beat B0. The result
+demonstrates a working hybrid-state, TP synchronization, and transaction path.
+The bypassed retrieval run does not establish compressed needle retention.
+Machine-readable evidence is in the
+[Qwen3.5 public benchmark summary](evidence/kvcompress-working-tree-20260920-qwen35-public-summary.json).
 
 ## Remaining limits
 
-- The performance comparison has one run per arm, rather than three cold runs.
-- B0 is not the prescribed official V4.6 host baseline.
-- The local model snapshot and calibration file match the Qwen2.5-Coder-14B
-  family but lack complete upstream revision/generation provenance.
+- The performance comparison has one run per arm rather than three cold runs,
+  and other NPUs on the host carried concurrent test load.
+- B0 is a same-host no-compression engineering control, not the prescribed
+  official V4.6 host baseline.
 - LongBench-v2 medium and long strata require a service/model with a context
   limit above 32K and remain untested here.
-- This is not the 30-minute/six-window A3 stability test.
+- Qwen3.5 is supplementary adaptation evidence; standard release tests remain
+  on Qwen2.5-14B-Instruct.
+- This is not the 30-minute/six-window A3 stability test; A3 is recorded
+  separately.

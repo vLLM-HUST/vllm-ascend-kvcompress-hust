@@ -14,6 +14,9 @@ from vllm_ascend_kvcompress.provider import (
     ActiveCompression,
     AscendKVCompressionProvider,
     PendingCompression,
+    _allowed_scheduler_block_sizes,
+    _expand_scheduler_block_ids,
+    _find_full_attention_group,
     _unpack_layer_cache,
 )
 
@@ -46,6 +49,10 @@ def _provider() -> AscendKVCompressionProvider:
     )
     provider.pending = {}
     provider.active = {}
+    provider.attention_group_index = 0
+    provider.scheduler_block_size = 128
+    provider.cache_block_size = 128
+    provider.cache_blocks_per_scheduler_block = 1
     provider._request_offsets_cpu = None
     provider._request_offsets_device = None
     provider._physical_positions = None
@@ -53,6 +60,26 @@ def _provider() -> AscendKVCompressionProvider:
     provider._has_active_rows = False
     provider._physical_lengths_applied = False
     return provider
+
+
+def test_qwen35_hybrid_accepts_host_promoted_logical_block_size() -> None:
+    config = SimpleNamespace(
+        model_config=SimpleNamespace(
+            is_hybrid=True,
+            hf_text_config=SimpleNamespace(model_type="qwen3_5_moe_text"),
+        )
+    )
+
+    assert _allowed_scheduler_block_sizes(config) == frozenset({128, 2048})
+
+
+def test_scheduler_blocks_expand_to_consecutive_kernel_cache_blocks() -> None:
+    actual = _expand_scheduler_block_ids((2, 0), 16, torch.device("cpu"))
+
+    torch.testing.assert_close(
+        actual,
+        torch.tensor([*range(32, 48), *range(0, 16)], dtype=torch.long),
+    )
 
 
 def test_current_standardized_cache_uses_ascend_unpacker() -> None:
@@ -68,6 +95,19 @@ def test_current_standardized_cache_uses_ascend_unpacker() -> None:
     actual_k, actual_v = _unpack_layer_cache("layer", layer)
     assert actual_k is k_cache
     assert actual_v is v_cache
+
+
+def test_hybrid_group_finder_selects_only_full_attention_group() -> None:
+    from vllm.v1.kv_cache_interface import FullAttentionSpec, MambaSpec
+
+    full_attention = object.__new__(FullAttentionSpec)
+    recurrent_state = object.__new__(MambaSpec)
+    groups = [
+        SimpleNamespace(kv_cache_spec=recurrent_state),
+        SimpleNamespace(kv_cache_spec=full_attention),
+    ]
+
+    assert _find_full_attention_group(groups) == 1
 
 
 def test_final_prefill_compresses_and_arms_worker_commit() -> None:
@@ -111,6 +151,29 @@ def test_worker_commit_truncates_tables_and_activates_offsets() -> None:
     assert request.block_ids == ([2],)
     assert block_table.added == (([2],), 0)
     assert provider.active["r"] == ActiveCompression(300, 128)
+
+
+def test_worker_commit_preserves_non_attention_group_tables() -> None:
+    provider = _provider()
+    provider.attention_group_index = 1
+    block_table = _RecordingBlockTable()
+    recurrent_state_blocks = [11]
+    request = SimpleNamespace(block_ids=(recurrent_state_blocks, [2, 0, 3]))
+    provider.runner = SimpleNamespace(
+        requests={"r": request},
+        input_batch=SimpleNamespace(req_id_to_index={"r": 0}, block_table=block_table),
+    )
+    provider.pending["r"] = PendingCompression(300, 128, (2,))
+    output = SimpleNamespace(
+        finished_req_ids=set(),
+        preempted_req_ids=set(),
+        scheduled_cached_reqs=SimpleNamespace(resumed_req_ids=set()),
+    )
+
+    provider.before_update_states(output)
+
+    assert request.block_ids == (recurrent_state_blocks, [2])
+    assert block_table.added == ((recurrent_state_blocks, [2]), 0)
 
 
 def test_worker_discards_preempted_compression_state() -> None:

@@ -20,6 +20,24 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
+FROZEN_SAMPLING_PARAMS: dict[str, Any] = {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "top_k": -1,
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "frequency_penalty": 0.0,
+    # Repetition penalty is multiplicative; 1.0 is its neutral value.
+    "repetition_penalty": 1.0,
+    "n": 1,
+    "use_beam_search": False,
+    "stop": [],
+    "seed": 0,
+    "stream": True,
+    "stream_options": {"include_usage": True},
+    "add_special_tokens": True,
+}
+
 
 def _nearest_rank(values: list[float], percentile: float) -> float | None:
     if not values:
@@ -66,17 +84,8 @@ def _run_case(
         "model": model,
         "prompt": case["prompt_token_ids"],
         "max_tokens": case["max_tokens"],
-        "temperature": 0.0,
-        "top_p": 1.0,
-        "top_k": -1,
-        "min_p": 0.0,
-        "presence_penalty": 0.0,
-        "frequency_penalty": 0.0,
-        "n": 1,
-        "stream": True,
-        "stream_options": {"include_usage": True},
+        **FROZEN_SAMPLING_PARAMS,
         "ignore_eos": bool(case["ignore_eos"]),
-        "seed": 0,
     }
     encoded = json.dumps(payload, separators=(",", ":")).encode()
     request = urllib.request.Request(
@@ -382,6 +391,22 @@ def _compression_evidence(path: Path | None, start_offset: int = 0) -> dict[str,
     }
 
 
+def _compression_evidence_passes(
+    evidence: dict[str, Any], expectation: str, run_label: str
+) -> bool:
+    if expectation == "auto":
+        expectation = "required" if run_label == "B1" else "optional"
+    commits = len(evidence["scheduler_commits"])
+    acknowledgements = int(evidence["worker_acks"])
+    if expectation == "required":
+        return commits > 0 and acknowledgements >= commits
+    if expectation == "forbidden":
+        return commits == 0 and acknowledgements == 0
+    if expectation == "optional":
+        return acknowledgements >= commits
+    raise ValueError(f"unknown compression evidence expectation: {expectation!r}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=Path, required=True)
@@ -397,6 +422,15 @@ def main() -> int:
     parser.add_argument("--npu-id", type=int)
     parser.add_argument("--server-log", type=Path)
     parser.add_argument("--run-label", choices=("B0", "B1"), required=True)
+    parser.add_argument(
+        "--compression-evidence",
+        choices=("auto", "required", "optional", "forbidden"),
+        default="auto",
+        help=(
+            "compression transaction expectation; use optional for workloads "
+            "that do not cross the configured threshold"
+        ),
+    )
     args = parser.parse_args()
     if args.request_rate <= 0 or args.concurrency <= 0 or args.max_requests <= 0:
         parser.error("request-rate, concurrency, and max-requests must be positive")
@@ -457,6 +491,7 @@ def main() -> int:
             "samples": sampler.samples,
         },
         "compression": _compression_evidence(args.server_log, server_log_offset),
+        "compression_evidence_expectation": args.compression_evidence,
         "results": results,
     }
     args.result.parent.mkdir(parents=True, exist_ok=True)
@@ -479,12 +514,10 @@ def main() -> int:
         and metrics["silent_truncations"] == 0
         and (not zero_error_required or metrics["failed"] == 0)
         and (not forced_output_required or metrics["short_forced_outputs"] == 0)
-        and (
-            args.run_label != "B1"
-            or (
-                len(compression["scheduler_commits"]) > 0
-                and compression["worker_acks"] >= len(compression["scheduler_commits"])
-            )
+        and _compression_evidence_passes(
+            compression,
+            args.compression_evidence,
+            args.run_label,
         )
     )
     return 0 if passed else 1

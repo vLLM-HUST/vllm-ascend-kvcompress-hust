@@ -21,6 +21,22 @@ class ModelShape:
     head_dim: int
     rope_theta: float
     has_rope_scaling: bool
+    rotary_dim: int | None = None
+    attention_layer_indices: tuple[int, ...] | None = None
+
+    @property
+    def effective_rotary_dim(self) -> int:
+        return self.head_dim if self.rotary_dim is None else self.rotary_dim
+
+    @property
+    def full_attention_layer_indices(self) -> tuple[int, ...]:
+        if self.attention_layer_indices is None:
+            return tuple(range(self.num_layers))
+        return self.attention_layer_indices
+
+    @property
+    def is_hybrid(self) -> bool:
+        return len(self.full_attention_layer_indices) != self.num_layers
 
 
 @dataclass(frozen=True)

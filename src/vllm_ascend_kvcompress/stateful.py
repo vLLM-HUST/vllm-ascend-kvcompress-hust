@@ -3,13 +3,15 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
 from vllm.logger import logger
 
-from .config import ASCEND_BLOCK_SIZE, ProviderSelection
+from .config import ProviderSelection
 from .methods.triattention.config import TriAttentionConfig
+from .provider import _allowed_scheduler_block_sizes, _find_full_attention_group
 
 _STATE_ATTRIBUTE = "_ascend_kvcompress_scheduler_state_v3"
 _OFFSETS_ATTRIBUTE = "_ascend_kvcompress_active_offsets_v3"
@@ -55,16 +57,24 @@ class SchedulerCompressionState:
         self.threshold = config.compression_threshold_tokens
         self.budget = config.kv_budget
         self.min_output_tokens = config.min_output_tokens_for_compression
+        # Scheduler.block_size is the LCM alignment across every hybrid cache
+        # group; it can be larger than the full-attention manager page.
+        self.scheduler_alignment_size = int(scheduler.block_size)
+        self.scheduler_block_size = self.scheduler_alignment_size
         self.pending: dict[str, SchedulerPendingCompression] = {}
         self.active: dict[str, SchedulerActiveCompression] = {}
+        self.attention_group_index = 0
         self._validate_host()
         setattr(scheduler.kv_cache_manager, _OFFSETS_ATTRIBUTE, self.active)
         logger.info(
             "Ascend KV compression scheduler bound threshold_tokens=%d "
-            "target_tokens=%d min_output_tokens=%d",
+            "target_tokens=%d min_output_tokens=%d scheduler_alignment=%d "
+            "attention_logical_block_size=%d",
             self.threshold,
             self.budget,
             self.min_output_tokens,
+            self.scheduler_alignment_size,
+            self.scheduler_block_size,
         )
 
     def _validate_host(self) -> None:
@@ -82,11 +92,6 @@ class SchedulerCompressionState:
             reasons.append("Ascend balance scheduling must be disabled")
         if bool(config.cache_config.enable_prefix_caching):
             reasons.append("prefix caching must be disabled")
-        if int(scheduler.block_size) != ASCEND_BLOCK_SIZE:
-            reasons.append(
-                f"scheduler block size must be {ASCEND_BLOCK_SIZE}, "
-                f"got {scheduler.block_size}"
-            )
         if config.speculative_config is not None:
             reasons.append("speculative decoding is unsupported")
         if config.kv_transfer_config is not None:
@@ -95,7 +100,6 @@ class SchedulerCompressionState:
             reasons.append("asynchronous scheduling is unsupported")
         parallel = config.parallel_config
         for name, attr in (
-            ("tensor parallel", "tensor_parallel_size"),
             ("pipeline parallel", "pipeline_parallel_size"),
             ("data parallel", "data_parallel_size"),
             ("prefill context parallel", "prefill_context_parallel_size"),
@@ -104,8 +108,49 @@ class SchedulerCompressionState:
             value = int(getattr(parallel, attr, 1))
             if value != 1:
                 reasons.append(f"{name} size must be one, got {value}")
-        if len(scheduler.kv_cache_config.kv_cache_groups) != 1:
-            reasons.append("exactly one full-attention KV group is required")
+        try:
+            self.attention_group_index = _find_full_attention_group(
+                scheduler.kv_cache_config.kv_cache_groups
+            )
+        except RuntimeError as error:
+            reasons.append(str(error))
+        single_managers = scheduler.kv_cache_manager.coordinator.single_type_managers
+        if self.attention_group_index >= len(single_managers):
+            reasons.append("full-attention cache manager is unavailable")
+        else:
+            manager_block_sizes = tuple(
+                int(getattr(manager, "block_size", 0)) for manager in single_managers
+            )
+            if any(block_size <= 0 for block_size in manager_block_sizes):
+                reasons.append("KV cache managers must expose positive block sizes")
+            else:
+                expected_alignment = math.lcm(*manager_block_sizes)
+                if self.scheduler_alignment_size != expected_alignment:
+                    reasons.append(
+                        "scheduler alignment must equal the LCM of cache-group "
+                        f"block sizes {manager_block_sizes}; got "
+                        f"{self.scheduler_alignment_size}"
+                    )
+                self.scheduler_block_size = manager_block_sizes[
+                    self.attention_group_index
+                ]
+                allowed_block_sizes = _allowed_scheduler_block_sizes(config)
+                if self.scheduler_block_size not in allowed_block_sizes:
+                    reasons.append(
+                        "full-attention logical block size must be one of "
+                        f"{sorted(allowed_block_sizes)}, got "
+                        f"{self.scheduler_block_size}"
+                    )
+                if self.budget % self.scheduler_block_size:
+                    reasons.append(
+                        "compression target must be divisible by full-attention "
+                        f"logical block size {self.scheduler_block_size}"
+                    )
+        if (
+            len(scheduler.kv_cache_config.kv_cache_groups) > 1
+            and getattr(config.cache_config, "mamba_cache_mode", "none") != "none"
+        ):
+            reasons.append("hybrid compression requires mamba_cache_mode='none'")
         if reasons:
             raise RuntimeError(
                 "Ascend KV compression is incompatible with this scheduler:\n- "
@@ -120,9 +165,9 @@ class SchedulerCompressionState:
             self.active.pop(request_id, None)
         manager = scheduler.kv_cache_manager
         single_managers = manager.coordinator.single_type_managers
-        if len(single_managers) != 1:
-            raise RuntimeError("compression requires exactly one cache manager")
-        cache_manager = single_managers[0]
+        if self.attention_group_index >= len(single_managers):
+            raise RuntimeError("full-attention cache manager is unavailable")
+        cache_manager = single_managers[self.attention_group_index]
         for request_id, pending in tuple(self.pending.items()):
             if request_id not in scheduler.requests:
                 self.pending.pop(request_id, None)
@@ -170,9 +215,8 @@ class SchedulerCompressionState:
             self.pending.pop(request_id, None)
             self.active.pop(request_id, None)
 
-        single_manager = (
-            self.scheduler.kv_cache_manager.coordinator.single_type_managers[0]
-        )
+        coordinator = self.scheduler.kv_cache_manager.coordinator
+        single_manager = coordinator.single_type_managers[self.attention_group_index]
         for request_id in output.num_scheduled_tokens:
             if request_id in self.pending:
                 continue
@@ -195,7 +239,7 @@ class SchedulerCompressionState:
             if physical < self.threshold:
                 continue
             blocks = single_manager.req_to_blocks.get(request_id, ())
-            keep = _blocks_for_tokens(self.budget)
+            keep = _blocks_for_tokens(self.budget, self.scheduler_block_size)
             if len(blocks) < keep:
                 raise RuntimeError(
                     f"request {request_id!r} has too few scheduler blocks"
@@ -277,5 +321,5 @@ def _install_manager_hooks(manager_cls: type[Any]) -> None:
     setattr(manager_cls, _PATCH_MARKER, True)
 
 
-def _blocks_for_tokens(num_tokens: int) -> int:
-    return (num_tokens + ASCEND_BLOCK_SIZE - 1) // ASCEND_BLOCK_SIZE
+def _blocks_for_tokens(num_tokens: int, block_size: int) -> int:
+    return (num_tokens + block_size - 1) // block_size

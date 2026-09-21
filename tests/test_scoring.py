@@ -102,3 +102,32 @@ def test_post_rope_keys_use_one_query_side_scaling_factor() -> None:
         aggregation="mean",
     )
     torch.testing.assert_close(scores, torch.tensor([[[4.0]]]))
+
+
+def test_partial_rope_score_includes_unrotated_content_dimensions() -> None:
+    stats = DeviceLayerCalibrationStats(
+        q_mean_real=torch.zeros(1, 1, 1),
+        q_mean_imag=torch.zeros(1, 1, 1),
+        q_abs_mean=torch.zeros(1, 1, 1),
+        freq_scale_sq=torch.ones(1, 1, 1),
+        omega=torch.zeros(1),
+        rope_style="half",
+        rotary_dim=2,
+        q_pass_mean=torch.tensor([[[2.0, -1.0]]]),
+    )
+    keys = torch.tensor(
+        [
+            [[0.0, 0.0, 3.0, 4.0]],
+            [[0.0, 0.0, -2.0, 1.0]],
+        ]
+    )
+
+    scores = score_post_rope_keys(
+        keys,
+        stats,
+        round_start=1,
+        offsets=torch.tensor([1.0]),
+        aggregation="mean",
+    )
+
+    torch.testing.assert_close(scores, torch.tensor([[[2.0, -5.0]]]))

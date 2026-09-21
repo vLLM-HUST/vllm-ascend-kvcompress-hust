@@ -34,7 +34,7 @@ python scripts/kvcompress_long_context_run.py --help
 python scripts/kvcompress_acceptance_compare.py --help
 ```
 
-For public A3 evidence, the repository also pins and hash-verifies LongBench-v2
+For complementary public long-context evidence, the repository also pins and hash-verifies LongBench-v2
 and LongBench, prepares prompts with the exact model tokenizer without
 truncation, runs the OpenAI-compatible service, and applies benchmark-specific
 quality scorers:
@@ -58,8 +58,9 @@ an intended short-output bypass cannot be confused with missing activation.
 Random data, truncation, prompt reuse, and a warm service restart are not valid
 substitutes. `kv-pressure-online` is a quick pressure smoke only. Formal B0 is
 the prescribed official vLLM 0.18 plus matching official Ascend baseline; a
-current-host plugin-disabled/no-compression run must be labeled an engineering
-compatibility control.
+current-host run that loads the same plugin but forbids compression with an
+above-limit threshold must be labeled an engineering compatibility control.
+Host repositories must not be modified to execute the tests.
 
 Prefix caching, speculative decoding, KV transfer, quantized KV, BidKV, and
 removed host optimizations are unsupported combinations, not benchmark tuning

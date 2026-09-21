@@ -44,8 +44,8 @@ wheel 必须包含代码、`LICENSE`、`NOTICE` 和
 `manifests/vllm-hust-extension-v0.2.json`；entry-point metadata 必须同时包含
 `vllm.general_plugins`、`vllm_hust.extension_bundles` 和
 `vllm-ascend-kvcompress-calibrate` 命令入口。两个发行包均不得包含
-`artifacts/*.pt`、原始数据、服务日志或历史 `docs/dev/results`；sdist 只可包含
-`docs/evidence` 下的聚合证据摘要。
+`artifacts/*.pt`、原始数据、服务日志或历史 `docs/dev/results`。sdist 包含静态
+HTML 榜单及其生成的浏览器数据 bundle；`docs/evidence` 只可包含聚合证据摘要。
 
 ## 隔离生命周期
 

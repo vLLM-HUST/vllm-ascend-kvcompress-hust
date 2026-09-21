@@ -3,9 +3,8 @@
   "provider": "ascend_kvcompress",
   "method": "triattention",
   "method_config": {
-    "stats_path": "/absolute/path/to/model-matched-stats.pt",
+    "stats_path": "/absolute/path/to/qwen3.5-35b-a3b-stats-v3.pt",
     "auto_calibrate": true,
-    "calibration_input_path": "/absolute/path/to/licensed-calibration.txt",
     "calibration_max_length": 4096,
     "calibration_device": "auto",
     "calibration_attn_implementation": "eager",
@@ -19,7 +18,7 @@
     "score_aggregation": "mean",
     "layer_aggregation": "mean",
     "score_chunk_size": 8192,
-    "score_layer_stride": 8,
+    "score_layer_stride": 1,
     "min_output_tokens_for_compression": 64
   }
 }

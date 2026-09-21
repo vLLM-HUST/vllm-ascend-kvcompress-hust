@@ -64,10 +64,10 @@ wheel 提供同一生成器的命令行入口。需要固定启动耗时，或�
 时可使用：
 
 ```bash
-export ASCEND_RT_VISIBLE_DEVICES=6
+export ASCEND_RT_VISIBLE_DEVICES=0
 
 vllm-ascend-kvcompress-calibrate \
-  --model /path/to/Qwen2.5-Coder-14B-Instruct \
+  --model /path/to/Qwen2.5-14B-Instruct \
   --input /path/to/licensed-calibration.txt \
   --output /srv/vllm/calibration/qwen-stats.pt \
   --max-length 32768 \
@@ -77,19 +77,27 @@ vllm-ascend-kvcompress-calibrate \
   --local-files-only
 ```
 
+Qwen3.5-35B-A3B 的 BF16 权重无法装入单张 910B2，因此需暴露两张设备并增加
+`--device-map auto`。服务使用 TP>1 时，启动 hook 会自动选择该分布方式；文件锁
+仍保证只有一个 worker 实际生成产物。
+
 省略 `--input` 时使用内置语料。命令默认复用已有有效 payload。`--force` 只在 CLI
 中提供，并以原子方式替换文件；只应在受控候选路径使用。正确性和长上下文质量通过前，
 建议使用新文件名而不是覆盖上一份已验收产物。
 
 ## 生成算法
 
-生成器为每个受支持 decoder 层挂接 Hugging Face attention 模块的 `q_proj`，将投影
-输出变形为 `[tokens, query_heads, head_dim]`。对于已经验证的 half-split RoPE 布局，
+生成器为每个受支持的全注意力 decoder 层优先挂接投影后的 `q_norm`，否则挂接
+`q_proj`，并将输出变形为 `[tokens, query_heads, head_dim]`。对于已经验证的
+half-split RoPE 布局，
 前后两半分别构成频率分量的实部和虚部，并累计：
 
 - 查询实部均值；
 - 查询虚部均值；
 - 复数查询幅值均值。
+
+部分 RoPE 模型还会保存每个直通维度的 query 均值。只有当没有 `self_attn` 的混合层
+索引与模型配置完全一致时才会跳过这些层；层集合异常会失败关闭。
 
 归约在设备上立即执行，只有很小的和向量移到 CPU。`q_proj` 已经暴露所需的未旋转
 查询，因此不再执行“应用 RoPE 后再数值逆变换”。默认 RoPE 优先从模型读取精确
@@ -97,19 +105,20 @@ vllm-ascend-kvcompress-calibrate \
 `inv_freq` 和 attention scaling，否则生成失败。
 
 当前已验证的模型形状族包括 Llama、Mistral、Qwen2/Qwen2-MoE、
-Qwen3/Qwen3-MoE，RoPE 布局均为 half-split。没有独立 `q_proj` 的融合或自定义
-attention 模块会被拒绝，不进行猜测。
+Qwen3/Qwen3-MoE 和 Qwen3.5/Qwen3.5-MoE，RoPE 布局均为 half-split。没有可用
+`q_norm` 或 `q_proj` 的融合/自定义 attention 模块会被拒绝，不进行猜测。
 
 ## 结构化 payload
 
-0.5 版本写出 schema 2：
+当前生成器写出 schema 3。除 schema 2 字段外，还记录 `rotary_dim`、
+`attention_layer_indices`；部分 RoPE 层另含 `q_pass_mean`：
 
 ```python
 {
     "metadata": {
-        "schema_version": 2,
+        "schema_version": 3,
         "generator": "vllm-ascend-kvcompress-hust",
-        "generator_version": "0.5.0",
+        "generator_version": "0.6.0",
         "model": "/path/or/hf-id",
         "model_revision": "default",
         "model_source_fingerprint": "local-manifest:...",
@@ -122,6 +131,8 @@ attention 模块会被拒绝，不进行猜测。
         "num_attention_heads": 40,
         "num_kv_heads": 8,
         "head_dim": 128,
+        "rotary_dim": 128,
+        "attention_layer_indices": [0, 1, "...", 47],
         "rope_theta": 1000000.0,
         "rope_style": "half",
         "rope_type": "default",
@@ -133,6 +144,7 @@ attention 模块会被拒绝，不进行猜测。
             "q_abs_mean": Tensor[40, 64],
             "freq_scale_sq": Tensor[1, 64],
             "inv_freq": Tensor[64],
+            # 部分 RoPE 还包含 "q_pass_mean": Tensor[40, pass_dim]，
         },
         # 每一层都必须存在。
     },

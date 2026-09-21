@@ -42,7 +42,10 @@ The manager stores one JSON object. `schema_version`, `provider`, `method`, and
     "calibration_max_length": 4096,
     "kv_budget": 8192,
     "recompute_window": 1024,
+    "position_policy": "v3",
+    "protected_prefix_window": 128,
     "protected_recent_window": 512,
+    "position_segments": 8,
     "score_aggregation": "mean",
     "layer_aggregation": "mean",
     "score_chunk_size": 8192,
@@ -62,10 +65,48 @@ the transaction. `0` preserves the legacy always-eligible behavior; `64` is the
 quality-qualified public-benchmark default that removes overhead from the
 32-token retrieval workload.
 
+The standard runtime has equal 128-token scheduler, attention-manager, and
+kernel-cache blocks. For the explicitly supported Qwen3.5 hybrid, Ascend uses
+a 32,768-token cross-group scheduler alignment, may promote the full-attention
+manager page to 2,048 tokens, and retains 128-token kernel blocks. The adapter
+validates the alignment against the LCM of every manager, then expands each
+attention block ID 16:1 before calling a method. The method's maximum physical
+token count must be divisible by the 2,048-token attention page, not by the
+cross-group alignment.
+
 `score_layer_stride=8` uniformly samples six of the 48 calibrated layers for
 selection while all 48 K/V layers are still materialized. On the frozen public
 Qasper and LongBench-v2 sets this setting preserved baseline quality and
 improved the matched end-to-end result compared with the former value `4`.
+
+## V3 position policy
+
+`position_policy=global` retains the legacy global top-k behavior. The opt-in
+`v3` policy implements the paper's three-part position treatment:
+
+1. `protected_prefix_window` tokens at the start are always retained.
+2. `protected_recent_window` tokens at the end are always retained.
+3. The middle context is split into `position_segments` equal ranges. The
+   exact global eviction count is distributed proportionally across those
+   ranges, then each range keeps its own highest-scoring tokens.
+
+The implementation uses integer cumulative quotas, so it always selects
+exactly `kv_budget` positions even when segment lengths are uneven.
+
+## Qwen3.5 hybrid path
+
+Qwen3.5-35B-A3B has 40 text layers arranged as ten repetitions of three
+Gated-DeltaNet layers and one full-attention layer. The method binds only full
+attention layers 3, 7, …, 39 and leaves recurrent-state groups unchanged. Its
+256-dimensional heads use partial RoPE over only 64 dimensions. Calibration
+therefore stores `q_pass_mean` for the remaining 192 dimensions, and fallback
+Torch scoring adds their direct content dot product to the trigonometric term.
+The fused full-RoPE kernel is deliberately bypassed for this layout.
+
+With tensor parallelism, calibration rows are sharded by local KV head and an
+all-reduce maximum synchronizes per-layer scores before selection. TP size must
+divide the model's KV heads. Other hybrid layouts, Mamba modes other than
+`none`, and PP/DP/DCP/PCP remain rejected.
 
 ## Method contract
 

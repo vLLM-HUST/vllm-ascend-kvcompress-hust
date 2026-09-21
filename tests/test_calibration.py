@@ -188,9 +188,54 @@ def test_runner_uses_model_settings_for_missing_artifact(
     assert captured[0].model == "fake/model"
     assert captured[0].revision == "model-revision"
     assert captured[0].device == "npu:0"
+    assert captured[0].device_map is None
     assert captured[0].dtype == "float16"
     assert captured[0].max_length == 1024
     assert captured[0].local_files_only
+
+
+def test_tensor_parallel_runner_uses_auto_calibration_device_map(
+    tmp_path: Path, monkeypatch
+) -> None:
+    output = tmp_path / "stats.pt"
+    selection = SimpleNamespace(
+        method="triattention",
+        method_config={"stats_path": str(output)},
+    )
+    runner = SimpleNamespace(
+        model_config=SimpleNamespace(
+            model="fake/model",
+            tokenizer=None,
+            revision=None,
+            tokenizer_revision=None,
+            trust_remote_code=False,
+            dtype=torch.bfloat16,
+            hf_text_config=_FakeConfig(),
+        ),
+        device=torch.device("npu:0"),
+        vllm_config=SimpleNamespace(
+            parallel_config=SimpleNamespace(tensor_parallel_size=2)
+        ),
+    )
+    captured = []
+
+    def generate(request):
+        captured.append(request)
+        layer_stats = {
+            str(index): {
+                "q_mean_real": torch.zeros(2, 2),
+                "q_mean_imag": torch.zeros(2, 2),
+                "q_abs_mean": torch.ones(2, 2),
+            }
+            for index in range(2)
+        }
+        torch.save({"metadata": {}, "layer_stats": layer_stats}, output)
+        return True
+
+    monkeypatch.setattr(calibration, "generate_calibration_artifact", generate)
+
+    assert calibration.ensure_calibration_for_runner(runner, selection)
+    assert captured[0].device_map == "auto"
 
 
 def test_runner_does_not_generate_when_auto_calibration_is_disabled(

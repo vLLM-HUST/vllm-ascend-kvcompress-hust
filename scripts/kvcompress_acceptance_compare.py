@@ -53,11 +53,49 @@ def _compression_reduction(rows: list[dict[str, Any]]) -> float | None:
     return min(reductions) if reductions else None
 
 
+def _compression_expectation(
+    rows: list[dict[str, Any]], override: str | None = None
+) -> str:
+    """Return the frozen B1 compression expectation, failing closed for old data."""
+    if override is not None:
+        return override
+    expectations = {row.get("compression_evidence_expectation", "auto") for row in rows}
+    if len(expectations) != 1:
+        raise ValueError("B1 files have inconsistent compression evidence expectations")
+    expectation = expectations.pop()
+    if expectation not in {"auto", "required", "optional"}:
+        raise ValueError(f"unsupported B1 compression expectation: {expectation!r}")
+    return expectation
+
+
+def _compression_reduction_gate(
+    rows: list[dict[str, Any]], reduction: float | None, expectation: str | None = None
+) -> tuple[bool, bool]:
+    """Evaluate M3 only when compression is required or actually occurred."""
+    expectation = _compression_expectation(rows, expectation)
+    has_commits = any(row["compression"]["scheduler_commits"] for row in rows)
+    applicable = expectation != "optional" or has_commits
+    passed = not applicable or (reduction is not None and reduction >= 0.20)
+    return applicable, passed
+
+
 def _all_requests_clean(rows: list[dict[str, Any]]) -> bool:
     return all(
         row["metrics"]["failed"] == 0
         and row["metrics"]["silent_truncations"] == 0
         and row["metrics"]["completed"] == row["metrics"]["requests"]
+        for row in rows
+    )
+
+
+def _commit_ack_counts_match(
+    rows: list[dict[str, Any]], acknowledgements_per_commit: int
+) -> bool:
+    if acknowledgements_per_commit <= 0:
+        raise ValueError("acknowledgements_per_commit must be positive")
+    return all(
+        row["compression"]["worker_acks"]
+        == len(row["compression"]["scheduler_commits"]) * acknowledgements_per_commit
         for row in rows
     )
 
@@ -86,7 +124,26 @@ def main() -> int:
     parser.add_argument("--plugin", type=Path, nargs="+", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--max-throughput-regression-percent", type=float, default=1.0)
+    parser.add_argument(
+        "--worker-acks-per-commit",
+        type=int,
+        default=1,
+        help=(
+            "exact worker acknowledgement multiplicity; keep 1 for the frozen "
+            "TP=1 matrix and set 2 for the supplementary Qwen3.5 TP=2 matrix"
+        ),
+    )
+    parser.add_argument(
+        "--compression-evidence",
+        choices=("auto", "required", "optional"),
+        help=(
+            "explicit frozen B1 expectation for legacy evidence that predates "
+            "compression_evidence_expectation; omitted by default to read the raw files"
+        ),
+    )
     args = parser.parse_args()
+    if args.worker_acks_per_commit <= 0:
+        parser.error("worker-acks-per-commit must be positive")
     baseline = _load(args.baseline, "B0")
     plugin = _load(args.plugin, "B1")
     all_rows = baseline + plugin
@@ -114,6 +171,9 @@ def main() -> int:
         for label, rows in (("B0", baseline), ("B1", plugin))
     }
     reduction = _compression_reduction(plugin)
+    reduction_applicable, reduction_passed = _compression_reduction_gate(
+        plugin, reduction, args.compression_evidence
+    )
     minimum_ratio = 1 - args.max_throughput_regression_percent / 100
     is_a3 = all(row["profile"].startswith("A3") for row in all_rows)
     checks = {
@@ -127,12 +187,11 @@ def main() -> int:
             "total_token_throughput", 0
         )
         >= minimum_ratio,
-        "physical_kv_reduction_at_least_twenty_percent": reduction is not None
-        and reduction >= 0.20,
-        "scheduler_worker_commit_counts_match": all(
-            len(row["compression"]["scheduler_commits"])
-            == row["compression"]["worker_acks"]
-            for row in plugin
+        "physical_kv_reduction_at_least_twenty_percent_when_applicable": (
+            reduction_passed
+        ),
+        "scheduler_worker_commit_counts_match": _commit_ack_counts_match(
+            plugin, args.worker_acks_per_commit
         ),
         "a3_window_stability": not is_a3
         or (_a3_stable(baseline) and _a3_stable(plugin)),
@@ -144,6 +203,11 @@ def main() -> int:
         "medians": medians,
         "throughput_ratios": throughput_ratios,
         "quality_accuracy": quality,
+        "compression_evidence_expectation": _compression_expectation(
+            plugin, args.compression_evidence
+        ),
+        "worker_acknowledgements_per_commit": args.worker_acks_per_commit,
+        "physical_kv_reduction_gate_applicable": reduction_applicable,
         "minimum_observed_physical_kv_reduction": reduction,
         "checks": checks,
         "verdict": "pass" if all(checks.values()) else "fail",

@@ -7,5 +7,6 @@ build/
 dist/
 *.egg-info/
 .benchmarks/
+artifacts/.*.lock
 # /artifacts/
 /docs/dev/

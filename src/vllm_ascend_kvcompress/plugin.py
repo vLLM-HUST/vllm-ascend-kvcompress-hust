@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from importlib import import_module
 from importlib.abc import Loader, MetaPathFinder
@@ -24,6 +25,8 @@ _TRITON_GLUON_MODULES = (
     "triton.experimental.gluon.language",
     "triton.experimental.gluon.nvidia",
 )
+_MESSAGE_QUEUE_MODULE = "vllm.distributed.device_communicators.shm_broadcast"
+_MESSAGE_QUEUE_PATCH_MARKER = "_ascend_kvcompress_env_chunk_default"
 
 
 def register() -> None:
@@ -37,6 +40,7 @@ def register() -> None:
         selection.method,
     )
     _prepare_current_triton_runtime()
+    _configure_message_queue_defaults()
 
     from vllm.v1.core.kv_cache_manager import KVCacheManager
     from vllm.v1.core.sched.scheduler import Scheduler
@@ -110,10 +114,20 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
     original_update = runner_cls._update_states
     original_metadata = runner_cls._build_attention_metadata
     original_sample = runner_cls.sample_tokens
+    from .host_compat import qwen_gdn_list_compat_enabled
+
+    gdn_list_compat = qwen_gdn_list_compat_enabled()
+    original_execute_model = (
+        getattr(runner_cls, "execute_model", None) if gdn_list_compat else None
+    )
+    if gdn_list_compat and original_execute_model is None:
+        raise RuntimeError("Qwen GDN list compatibility requires execute_model")
 
     def load_model(runner: Any) -> Any:
         from .calibration import ensure_calibration_for_runner
+        from .host_compat import install_qwen_gdn_list_compat
 
+        install_qwen_gdn_list_compat()
         generated = ensure_calibration_for_runner(runner, selection)
         if generated:
             logger.info(
@@ -129,8 +143,10 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
         result = original_initialize(runner, kv_cache_config)
         # Ascend deep-copies and normalizes the incoming plan before storing
         # the cache config that actually owns the allocated tensors.
-        _install_runtime_slot_mapping_hooks(runner)
         provider.bind_model_runner(runner, runner.kv_cache_config)
+        _install_runtime_slot_mapping_hooks(
+            runner, getattr(provider, "attention_group_index", 0)
+        )
         return result
 
     def update_states(runner: Any, scheduler_output: Any) -> Any:
@@ -157,16 +173,31 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
             provider.compress_scheduled_requests(scheduler_output)
         return output
 
+    def execute_model(runner: Any, *args: Any, **kwargs: Any) -> Any:
+        from .host_compat import clear_qwen_gdn_list_compat_cache
+
+        clear_qwen_gdn_list_compat_cache()
+        assert original_execute_model is not None
+        return original_execute_model(runner, *args, **kwargs)
+
     setattr(runner_cls, f"{_PATCH_MARKER}_original_initialize", original_initialize)
     setattr(runner_cls, f"{_PATCH_MARKER}_original_load_model", original_load_model)
     setattr(runner_cls, f"{_PATCH_MARKER}_original_update", original_update)
     setattr(runner_cls, f"{_PATCH_MARKER}_original_metadata", original_metadata)
     setattr(runner_cls, f"{_PATCH_MARKER}_original_sample", original_sample)
+    if original_execute_model is not None:
+        setattr(
+            runner_cls,
+            f"{_PATCH_MARKER}_original_execute_model",
+            original_execute_model,
+        )
     runner_cls.load_model = load_model
     runner_cls.initialize_kv_cache = initialize_kv_cache
     runner_cls._update_states = update_states
     runner_cls._build_attention_metadata = build_attention_metadata
     runner_cls.sample_tokens = sample_tokens
+    if original_execute_model is not None:
+        runner_cls.execute_model = execute_model
     setattr(runner_cls, _PATCH_MARKER, True)
 
 
@@ -201,7 +232,51 @@ def _prepare_current_triton_runtime() -> None:
         ) from error
 
 
-def _install_runtime_slot_mapping_hooks(runner: Any) -> None:
+def _configure_message_queue_defaults() -> None:
+    """Apply vLLM's explicit MQ chunk-size override to every local queue.
+
+    Current vLLM applies ``VLLM_MQ_MAX_CHUNK_BYTES_MB`` to the scheduler
+    broadcast queue, but its per-worker response queue still constructs
+    ``MessageQueue(1, 1)`` with the 24 MiB Python default.  Ten chunks therefore
+    require 240 MiB of ``/dev/shm`` even when the operator has deliberately
+    selected a smaller chunk for a low-concurrency container.  Align the omitted
+    default with the same opt-in environment variable.  Messages larger than a
+    chunk already use MessageQueue's socket fallback, so this changes only the
+    shared-memory fast-path capacity, not the accepted message size.
+    """
+    configured = os.getenv("VLLM_MQ_MAX_CHUNK_BYTES_MB")
+    if configured is None:
+        return
+    try:
+        chunk_mebibytes = int(configured)
+    except ValueError as error:
+        raise RuntimeError("VLLM_MQ_MAX_CHUNK_BYTES_MB must be an integer") from error
+    if chunk_mebibytes <= 0:
+        raise RuntimeError("VLLM_MQ_MAX_CHUNK_BYTES_MB must be positive")
+
+    queue_cls = import_module(_MESSAGE_QUEUE_MODULE).MessageQueue
+    if queue_cls.__dict__.get(_MESSAGE_QUEUE_PATCH_MARKER, False):
+        return
+    initializer = queue_cls.__init__
+    defaults = initializer.__defaults__
+    # Current MessageQueue defaults are, in order: local_reader_ranks,
+    # max_chunk_bytes, max_chunks, connect_ip. Fail closed if the host seam
+    # changes instead of silently patching the wrong parameter.
+    if defaults is None or len(defaults) != 4 or defaults[2] != 10:
+        raise RuntimeError("unsupported vLLM MessageQueue constructor defaults")
+    updated = list(defaults)
+    updated[1] = chunk_mebibytes * 1024 * 1024
+    initializer.__defaults__ = tuple(updated)
+    setattr(queue_cls, _MESSAGE_QUEUE_PATCH_MARKER, True)
+    logger.info(
+        "Applied VLLM_MQ_MAX_CHUNK_BYTES_MB=%d to worker response queues",
+        chunk_mebibytes,
+    )
+
+
+def _install_runtime_slot_mapping_hooks(
+    runner: Any, attention_group_index: int = 0
+) -> None:
     """Patch the concrete tables allocated by the current Ascend runner.
 
     vLLM-Ascend owns a device-specific BlockTable implementation.  Patching
@@ -211,11 +286,13 @@ def _install_runtime_slot_mapping_hooks(runner: Any) -> None:
     """
     group_table = getattr(getattr(runner, "input_batch", None), "block_table", None)
     block_tables = getattr(group_table, "block_tables", None)
-    if not isinstance(block_tables, list) or len(block_tables) != 1:
-        raise RuntimeError(
-            "Ascend KV compression requires exactly one concrete block table"
-        )
-    block_table = block_tables[0]
+    if (
+        not isinstance(block_tables, list)
+        or attention_group_index < 0
+        or attention_group_index >= len(block_tables)
+    ):
+        raise RuntimeError("Ascend full-attention block table is unavailable")
+    block_table = block_tables[attention_group_index]
     if not callable(getattr(block_table, "compute_slot_mapping", None)):
         raise RuntimeError("Ascend block table does not expose compute_slot_mapping")
     _install_slot_mapping_hook(type(block_table))

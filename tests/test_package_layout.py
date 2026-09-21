@@ -27,6 +27,7 @@ def test_builtin_method_owns_its_implementation_modules() -> None:
         "config.py",
         "method.py",
         "scoring.py",
+        "selection.py",
         "stats.py",
     }
     for method_specific_module in ("cache.py", "scoring.py", "stats.py"):

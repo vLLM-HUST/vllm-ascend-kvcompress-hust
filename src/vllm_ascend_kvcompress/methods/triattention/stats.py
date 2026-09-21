@@ -23,6 +23,8 @@ SUPPORTED_MODEL_TYPES = frozenset(
         "qwen2_moe",
         "qwen3",
         "qwen3_moe",
+        "qwen3_5_text",
+        "qwen3_5_moe_text",
     }
 )
 
@@ -34,6 +36,7 @@ class LayerCalibrationStats:
     q_abs_mean: torch.Tensor
     freq_scale_sq: torch.Tensor | None = None
     inv_freq: torch.Tensor | None = None
+    q_pass_mean: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -44,6 +47,8 @@ class DeviceLayerCalibrationStats:
     freq_scale_sq: torch.Tensor
     omega: torch.Tensor
     rope_style: str
+    rotary_dim: int | None = None
+    q_pass_mean: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -86,7 +91,7 @@ class CalibrationStats:
             reasons.append(
                 f"model_type {model.model_type!r} has no verified RoPE layout"
             )
-        expected_layers = set(range(model.num_layers))
+        expected_layers = set(model.full_attention_layer_indices)
         actual_layers = set(self.layers)
         if actual_layers != expected_layers:
             reasons.append(
@@ -105,6 +110,22 @@ class CalibrationStats:
                 f"calibration head_dim {metadata_head_dim} does not match "
                 f"model head_dim {model.head_dim}"
             )
+        metadata_rotary_dim = self.metadata.get("rotary_dim")
+        if (
+            metadata_rotary_dim is not None
+            and int(metadata_rotary_dim) != model.effective_rotary_dim
+        ):
+            reasons.append(
+                f"calibration rotary_dim {metadata_rotary_dim} does not match "
+                f"model rotary_dim {model.effective_rotary_dim}"
+            )
+        metadata_attention_layers = self.metadata.get("attention_layer_indices")
+        if (
+            metadata_attention_layers is not None
+            and tuple(int(value) for value in metadata_attention_layers)
+            != model.full_attention_layer_indices
+        ):
+            reasons.append("calibration attention_layer_indices do not match the model")
         metadata_model_type = self.metadata.get("model_type")
         if (
             metadata_model_type is not None
@@ -155,7 +176,7 @@ class CalibrationStats:
         rope_type = self.metadata.get("rope_type", "default") or "default"
 
         for layer_idx, layer in self.layers.items():
-            frequency_count = model.head_dim // 2
+            frequency_count = model.effective_rotary_dim // 2
             query_shape = (model.num_attention_heads, frequency_count)
             kv_shape = (model.num_kv_heads, frequency_count)
             for name, tensor in (
@@ -174,6 +195,27 @@ class CalibrationStats:
                     )
             if bool((layer.q_abs_mean < 0).any().item()):
                 reasons.append(f"layer {layer_idx} q_abs_mean contains negative values")
+            pass_dim = model.head_dim - model.effective_rotary_dim
+            if pass_dim:
+                pass_query_shape = (model.num_attention_heads, pass_dim)
+                pass_kv_shape = (model.num_kv_heads, pass_dim)
+                if layer.q_pass_mean is None:
+                    reasons.append(
+                        f"layer {layer_idx} partial RoPE requires q_pass_mean"
+                    )
+                elif tuple(layer.q_pass_mean.shape) not in {
+                    pass_query_shape,
+                    pass_kv_shape,
+                }:
+                    reasons.append(
+                        f"layer {layer_idx} q_pass_mean has shape "
+                        f"{tuple(layer.q_pass_mean.shape)}; expected "
+                        f"{pass_query_shape} or {pass_kv_shape}"
+                    )
+                elif not bool(torch.isfinite(layer.q_pass_mean).all().item()):
+                    reasons.append(
+                        f"layer {layer_idx} q_pass_mean contains non-finite values"
+                    )
             if layer.freq_scale_sq is not None and tuple(
                 layer.freq_scale_sq.shape
             ) not in {(1, frequency_count), query_shape, kv_shape}:
@@ -218,19 +260,34 @@ class CalibrationStats:
         return tuple(reasons)
 
     def to_device(
-        self, model: ModelShape, device: torch.device
+        self,
+        model: ModelShape,
+        device: torch.device,
+        *,
+        tensor_parallel_rank: int = 0,
+        tensor_parallel_size: int = 1,
     ) -> dict[int, DeviceLayerCalibrationStats]:
+        if tensor_parallel_size <= 0 or not (
+            0 <= tensor_parallel_rank < tensor_parallel_size
+        ):
+            raise ValueError("invalid tensor-parallel rank or size")
+        if model.num_kv_heads % tensor_parallel_size:
+            raise ValueError(
+                "TriAttention tensor parallelism requires KV heads divisible "
+                "by tensor-parallel size"
+            )
         group_size = model.num_attention_heads // model.num_kv_heads
-        freq_count = model.head_dim // 2
+        rotary_dim = model.effective_rotary_dim
+        freq_count = rotary_dim // 2
         rope_style = str(self.metadata.get("rope_style", "half"))
         device_layers: dict[int, DeviceLayerCalibrationStats] = {}
         for layer_idx, layer in self.layers.items():
             q_real = layer.q_mean_real.to(device=device, dtype=torch.float32)
             q_imag = layer.q_mean_imag.to(device=device, dtype=torch.float32)
             q_abs = layer.q_abs_mean.to(device=device, dtype=torch.float32)
-            q_real = _group_query_stats(q_real, model, group_size)
-            q_imag = _group_query_stats(q_imag, model, group_size)
-            q_abs = _group_query_stats(q_abs, model, group_size)
+            q_real = _group_query_stats(q_real, model, group_size, freq_count)
+            q_imag = _group_query_stats(q_imag, model, group_size, freq_count)
+            q_abs = _group_query_stats(q_abs, model, group_size, freq_count)
 
             freq_scale = layer.freq_scale_sq
             if freq_scale is None:
@@ -243,16 +300,34 @@ class CalibrationStats:
                 freq_scale.to(device=device, dtype=torch.float32),
                 model,
                 group_size,
+                freq_count,
             )
+
+            q_pass = layer.q_pass_mean
+            if q_pass is not None:
+                q_pass = _group_query_stats(
+                    q_pass.to(device=device, dtype=torch.float32),
+                    model,
+                    group_size,
+                    model.head_dim - rotary_dim,
+                )
+
+            local_kv_heads = model.num_kv_heads // tensor_parallel_size
+            shard_start = tensor_parallel_rank * local_kv_heads
+            shard_stop = shard_start + local_kv_heads
+            q_real = q_real[shard_start:shard_stop].contiguous()
+            q_imag = q_imag[shard_start:shard_stop].contiguous()
+            q_abs = q_abs[shard_start:shard_stop].contiguous()
+            freq_scale = freq_scale[shard_start:shard_stop].contiguous()
+            if q_pass is not None:
+                q_pass = q_pass[shard_start:shard_stop].contiguous()
 
             inv_freq = layer.inv_freq
             if inv_freq is None:
                 inv_freq = _get_metadata_inv_freq(self.metadata, layer_idx)
             if inv_freq is None:
-                exponents = torch.arange(0, model.head_dim, 2, dtype=torch.float32)
-                inv_freq = 1.0 / (
-                    model.rope_theta ** (exponents / float(model.head_dim))
-                )
+                exponents = torch.arange(0, rotary_dim, 2, dtype=torch.float32)
+                inv_freq = 1.0 / (model.rope_theta ** (exponents / float(rotary_dim)))
             omega = inv_freq.to(device=device, dtype=torch.float32).contiguous()
             device_layers[layer_idx] = DeviceLayerCalibrationStats(
                 q_mean_real=q_real,
@@ -261,23 +336,22 @@ class CalibrationStats:
                 freq_scale_sq=freq_scale,
                 omega=omega,
                 rope_style=rope_style,
+                rotary_dim=rotary_dim,
+                q_pass_mean=q_pass,
             )
         return device_layers
 
 
 def _group_query_stats(
-    tensor: torch.Tensor, model: ModelShape, group_size: int
+    tensor: torch.Tensor, model: ModelShape, group_size: int, width: int
 ) -> torch.Tensor:
     """Group query-head rows by KV head, expanding KV-averaged statistics."""
-    frequency_count = model.head_dim // 2
-    if tuple(tensor.shape) == (model.num_attention_heads, frequency_count):
-        return tensor.reshape(
-            model.num_kv_heads, group_size, frequency_count
-        ).contiguous()
-    if tuple(tensor.shape) == (model.num_kv_heads, frequency_count):
+    if tuple(tensor.shape) == (model.num_attention_heads, width):
+        return tensor.reshape(model.num_kv_heads, group_size, width).contiguous()
+    if tuple(tensor.shape) == (model.num_kv_heads, width):
         return (
             tensor.unsqueeze(1)
-            .expand(model.num_kv_heads, group_size, frequency_count)
+            .expand(model.num_kv_heads, group_size, width)
             .contiguous()
         )
     raise ValueError(
@@ -366,6 +440,7 @@ def _load_layer_stats(
         absolute = _as_matrix(entry.get("q_abs_mean"), "q_abs_mean")
         freq_scale = entry.get("freq_scale_sq")
         inv_freq = entry.get("inv_freq")
+        q_pass_mean = entry.get("q_pass_mean")
         layers[layer_idx] = LayerCalibrationStats(
             q_mean_real=real,
             q_mean_imag=imag,
@@ -378,6 +453,11 @@ def _load_layer_stats(
             inv_freq=(
                 inv_freq.detach().to(device="cpu", dtype=torch.float32).flatten()
                 if isinstance(inv_freq, torch.Tensor)
+                else None
+            ),
+            q_pass_mean=(
+                _as_matrix(q_pass_mean, "q_pass_mean")
+                if q_pass_mean is not None
                 else None
             ),
         )

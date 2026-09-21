@@ -12,6 +12,7 @@ from ...config import ASCEND_BLOCK_SIZE, JsonScalar, require_choice, require_int
 
 ScoreAggregation = Literal["mean", "max"]
 LayerAggregation = Literal["mean", "max"]
+PositionPolicy = Literal["global", "v3"]
 
 
 @dataclass(frozen=True)
@@ -27,7 +28,10 @@ class TriAttentionConfig:
     calibration_local_files_only: bool = False
     kv_budget: int = 2048
     recompute_window: int = ASCEND_BLOCK_SIZE
+    position_policy: PositionPolicy = "global"
+    protected_prefix_window: int = 0
     protected_recent_window: int = ASCEND_BLOCK_SIZE
+    position_segments: int = 8
     score_aggregation: ScoreAggregation = "mean"
     layer_aggregation: LayerAggregation = "mean"
     score_chunk_size: int = 512
@@ -52,7 +56,10 @@ class TriAttentionConfig:
             "calibration_local_files_only",
             "kv_budget",
             "recompute_window",
+            "position_policy",
+            "protected_prefix_window",
             "protected_recent_window",
+            "position_segments",
             "score_aggregation",
             "layer_aggregation",
             "score_chunk_size",
@@ -110,9 +117,22 @@ class TriAttentionConfig:
             recompute_window=require_int(
                 method_config, "recompute_window", ASCEND_BLOCK_SIZE
             ),
+            position_policy=cast(
+                PositionPolicy,
+                require_choice(
+                    method_config,
+                    "position_policy",
+                    "global",
+                    {"global", "v3"},
+                ),
+            ),
+            protected_prefix_window=require_int(
+                method_config, "protected_prefix_window", 0
+            ),
             protected_recent_window=require_int(
                 method_config, "protected_recent_window", ASCEND_BLOCK_SIZE
             ),
+            position_segments=require_int(method_config, "position_segments", 8),
             score_aggregation=cast(
                 ScoreAggregation,
                 require_choice(
@@ -152,14 +172,20 @@ class TriAttentionConfig:
                     f"method option {name!r} must be a positive multiple of "
                     f"{ASCEND_BLOCK_SIZE}"
                 )
-        if self.protected_recent_window < 0:
+        for name, value in (
+            ("protected_prefix_window", self.protected_prefix_window),
+            ("protected_recent_window", self.protected_recent_window),
+        ):
+            if value < 0:
+                raise ValueError(f"method option {name!r} must be non-negative")
+            if value > self.kv_budget:
+                raise ValueError(f"method option {name!r} cannot exceed 'kv_budget'")
+        if self.protected_prefix_window + self.protected_recent_window > self.kv_budget:
             raise ValueError(
-                "method option 'protected_recent_window' must be non-negative"
+                "protected prefix and recent windows cannot exceed 'kv_budget'"
             )
-        if self.protected_recent_window > self.kv_budget:
-            raise ValueError(
-                "method option 'protected_recent_window' cannot exceed 'kv_budget'"
-            )
+        if self.position_segments <= 0:
+            raise ValueError("method option 'position_segments' must be positive")
         if self.score_layer_stride <= 0:
             raise ValueError("method option 'score_layer_stride' must be positive")
         if self.min_output_tokens_for_compression < 0:

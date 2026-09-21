@@ -76,10 +76,10 @@ startup time must be predictable or the service account may not write the
 artifact directory:
 
 ```bash
-export ASCEND_RT_VISIBLE_DEVICES=6
+export ASCEND_RT_VISIBLE_DEVICES=0
 
 vllm-ascend-kvcompress-calibrate \
-  --model /path/to/Qwen2.5-Coder-14B-Instruct \
+  --model /path/to/Qwen2.5-14B-Instruct \
   --input /path/to/licensed-calibration.txt \
   --output /srv/vllm/calibration/qwen-stats.pt \
   --max-length 32768 \
@@ -89,6 +89,11 @@ vllm-ascend-kvcompress-calibrate \
   --local-files-only
 ```
 
+For Qwen3.5-35B-A3B, expose two devices and add `--device-map auto`. The model
+is too large for one 910B2 in BF16. When an enabled service uses TP>1, the
+startup hook selects this automatic distribution itself; the file lock still
+ensures that only one worker generates the artifact.
+
 Omit `--input` to use the bundled corpus. The command reuses an existing valid
 payload. `--force` is deliberately CLI-only and atomically replaces it; use
 that flag only when creating a candidate at a controlled path. Prefer a new
@@ -96,8 +101,8 @@ filename until correctness and long-context quality checks pass.
 
 ## Generation algorithm
 
-For each supported decoder layer, the generator hooks the Hugging Face
-attention module's `q_proj`. The projection output is reshaped to
+For each supported full-attention decoder layer, the generator hooks the
+post-projection `q_norm` when available and otherwise `q_proj`. The output is reshaped to
 `[tokens, query_heads, head_dim]`. With the verified half-split RoPE layout,
 the first and second halves form the real and imaginary frequency components.
 The generator accumulates:
@@ -105,6 +110,11 @@ The generator accumulates:
 - mean real query value;
 - mean imaginary query value; and
 - mean complex magnitude.
+
+Partial-RoPE models additionally store the mean query value for every
+pass-through dimension. Hybrid layers without `self_attn` are skipped only when
+their indices exactly match the model configuration; an unexpected layer set
+fails closed.
 
 Reduction happens immediately on the device and only the small sums move to
 CPU. Applying RoPE and then numerically inverting it is unnecessary because
@@ -114,19 +124,22 @@ inverse frequencies are read from the model when available or derived from
 `inv_freq` and attention scaling; otherwise generation fails closed.
 
 The currently validated shape families are Llama, Mistral, Qwen2/Qwen2-MoE,
-and Qwen3/Qwen3-MoE with the half-split layout. Fused/custom attention modules
-without a separate `q_proj` are rejected instead of guessed.
+Qwen3/Qwen3-MoE, and Qwen3.5/Qwen3.5-MoE with the half-split layout.
+Fused/custom attention modules without a usable `q_norm` or `q_proj` are
+rejected instead of guessed.
 
 ## Structured payload
 
-Version 0.5 writes schema 2:
+The current generator writes schema 3. In addition to schema 2 fields it records
+`rotary_dim`, `attention_layer_indices`, and per-layer `q_pass_mean` when RoPE
+is partial:
 
 ```python
 {
     "metadata": {
-        "schema_version": 2,
+        "schema_version": 3,
         "generator": "vllm-ascend-kvcompress-hust",
-        "generator_version": "0.5.0",
+        "generator_version": "0.6.0",
         "model": "/path/or/hf-id",
         "model_revision": "default",
         "model_source_fingerprint": "local-manifest:...",
@@ -139,6 +152,8 @@ Version 0.5 writes schema 2:
         "num_attention_heads": 40,
         "num_kv_heads": 8,
         "head_dim": 128,
+        "rotary_dim": 128,
+        "attention_layer_indices": [0, 1, "...", 47],
         "rope_theta": 1000000.0,
         "rope_style": "half",
         "rope_type": "default",
@@ -150,6 +165,7 @@ Version 0.5 writes schema 2:
             "q_abs_mean": Tensor[40, 64],
             "freq_scale_sq": Tensor[1, 64],
             "inv_freq": Tensor[64],
+            # "q_pass_mean": Tensor[40, pass_dim] for partial RoPE,
         },
         # Every layer is present.
     },

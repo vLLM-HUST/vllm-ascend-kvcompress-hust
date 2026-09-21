@@ -179,15 +179,19 @@ def _format_case(benchmark: str, row: dict[str, Any]) -> tuple[str, list[str], i
     return prompt, [str(value) for value in row["answers"]], int(task["max_tokens"])
 
 
-def _tokenize(tokenizer: Any, prompt: str, limit: int) -> list[int]:
+def _tokenize(
+    tokenizer: Any, prompt: str, limit: int, *, disable_thinking: bool = False
+) -> list[int]:
     messages = [{"role": "user", "content": prompt}]
-    encoded = tokenizer.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=True,
-        truncation=True,
-        max_length=limit + 1,
-    )
+    template_options = {
+        "tokenize": True,
+        "add_generation_prompt": True,
+        "truncation": True,
+        "max_length": limit + 1,
+    }
+    if disable_thinking:
+        template_options["enable_thinking"] = False
+    encoded = tokenizer.apply_chat_template(messages, **template_options)
     if isinstance(encoded, Mapping):
         encoded = encoded["input_ids"]
     return list(encoded)
@@ -241,7 +245,12 @@ def prepare_requests(args: argparse.Namespace) -> None:
             continue
         prompt, _, _ = _format_case(args.benchmark, row)
         prompt_limit = args.max_model_len - max_tokens
-        ids = _tokenize(tokenizer, prompt, prompt_limit)
+        ids = _tokenize(
+            tokenizer,
+            prompt,
+            prompt_limit,
+            disable_thinking=args.disable_thinking,
+        )
         if len(ids) > prompt_limit:
             record["reason"] = "prompt_plus_output_exceeds_max_model_len"
             record["observed_prompt_tokens_lower_bound"] = len(ids)
@@ -281,6 +290,7 @@ def prepare_requests(args: argparse.Namespace) -> None:
         "source": SOURCES[source_name],
         "source_file_sha256": sha256(source_path(args.root, source_name)),
         "tokenizer": str(Path(args.tokenizer).resolve()),
+        "chat_template_enable_thinking": not args.disable_thinking,
         "max_model_len": args.max_model_len,
         "min_input_tokens": args.min_input_tokens,
         "raw_cases": len(raw_rows),
@@ -318,6 +328,14 @@ def main() -> int:
     prepare.add_argument("--limit", type=int, default=0)
     prepare.add_argument("--selection-seed", type=int, default=20260912)
     prepare.add_argument("--local-files-only", action="store_true")
+    prepare.add_argument(
+        "--disable-thinking",
+        action="store_true",
+        help=(
+            "pass enable_thinking=false to model chat templates that support "
+            "reasoning-mode control"
+        ),
+    )
     args = parser.parse_args()
     if args.command == "download":
         download_sources(args)

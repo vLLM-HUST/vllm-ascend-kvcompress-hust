@@ -1,12 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from importlib.machinery import ModuleSpec
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
+import torch
 
 import vllm_ascend_kvcompress.plugin as plugin
+from vllm_ascend_kvcompress.host_compat import (
+    QWEN_GDN_LIST_COMPAT_ENV,
+    install_qwen_gdn_list_compat,
+)
 from vllm_ascend_kvcompress.plugin import (
+    _configure_message_queue_defaults,
     _install_runner_hooks,
     _install_runtime_slot_mapping_hooks,
     _install_slot_mapping_hook,
@@ -97,6 +103,113 @@ def test_current_triton_runtime_preloads_gluon_descriptor_namespace(
     assert imported == list(modules)
 
 
+def test_message_queue_env_override_covers_omitted_worker_default(
+    monkeypatch,
+) -> None:
+    class MessageQueue:
+        def __init__(
+            self,
+            n_reader,
+            n_local_reader,
+            local_reader_ranks=None,
+            max_chunk_bytes=24 * 1024 * 1024,
+            max_chunks=10,
+            connect_ip=None,
+        ):
+            pass
+
+    module = ModuleType("fake_shm_broadcast")
+    module.MessageQueue = MessageQueue
+    monkeypatch.setenv("VLLM_MQ_MAX_CHUNK_BYTES_MB", "4")
+    monkeypatch.setattr(plugin, "import_module", lambda name: module)
+
+    _configure_message_queue_defaults()
+
+    assert MessageQueue.__init__.__defaults__ == (
+        None,
+        4 * 1024 * 1024,
+        10,
+        None,
+    )
+    assert MessageQueue.__dict__[plugin._MESSAGE_QUEUE_PATCH_MARKER]
+
+
+def test_message_queue_env_override_rejects_nonpositive_size(monkeypatch) -> None:
+    monkeypatch.setenv("VLLM_MQ_MAX_CHUNK_BYTES_MB", "0")
+
+    with pytest.raises(RuntimeError, match="must be positive"):
+        _configure_message_queue_defaults()
+
+
+def test_qwen_gdn_list_compat_is_explicitly_opt_in(monkeypatch) -> None:
+    monkeypatch.delenv(QWEN_GDN_LIST_COMPAT_ENV, raising=False)
+    namespace = SimpleNamespace()
+
+    assert not install_qwen_gdn_list_compat(namespace)
+
+
+def test_qwen_gdn_list_compat_converts_tensor_metadata(monkeypatch) -> None:
+    calls = []
+
+    class Operation:
+        default = SimpleNamespace(
+            _schema=(
+                "_C_ascend::npu_causal_conv1d_custom(Tensor output, Tensor x, "
+                "Tensor weight, Tensor conv_state, Tensor? bias_opt, "
+                "int[] query_start_loc_opt, int[] cache_indices_opt, "
+                "int[] initial_state_mode_opt, int[] num_accepted_tokens_opt, "
+                "int activation_mode, int pad_slot_id, int run_mode) -> Tensor"
+            )
+        )
+
+        def __call__(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return "output"
+
+    operation = Operation()
+    namespace = SimpleNamespace(npu_causal_conv1d_custom=operation)
+    monkeypatch.setenv(QWEN_GDN_LIST_COMPAT_ENV, "1")
+
+    assert install_qwen_gdn_list_compat(namespace)
+    with torch.inference_mode():
+        result = namespace.npu_causal_conv1d_custom(
+            "out",
+            "x",
+            "weight",
+            "state",
+            None,
+            torch.tensor([0, 4], dtype=torch.int32),
+            cache_indices_opt=torch.tensor([[7, 8], [9, 10]], dtype=torch.int64),
+            initial_state_mode_opt=None,
+            num_accepted_tokens_opt=torch.tensor([1], dtype=torch.int32),
+            activation_mode=1,
+            pad_slot_id=-1,
+            run_mode=0,
+        )
+
+    assert result == "output"
+    assert calls[0][0][5] == [0, 4]
+    assert calls[0][1]["cache_indices_opt"] == [7, 8, 9, 10]
+    assert calls[0][1]["initial_state_mode_opt"] == []
+    assert calls[0][1]["num_accepted_tokens_opt"] == [1]
+    assert install_qwen_gdn_list_compat(namespace)
+
+
+def test_qwen_gdn_list_compat_leaves_tensor_abi_untouched(monkeypatch) -> None:
+    operation = SimpleNamespace(
+        default=SimpleNamespace(
+            _schema=(
+                "op(Tensor? query_start_loc_opt, Tensor? cache_indices_opt) -> Tensor"
+            )
+        )
+    )
+    namespace = SimpleNamespace(npu_causal_conv1d_custom=operation)
+    monkeypatch.setenv(QWEN_GDN_LIST_COMPAT_ENV, "true")
+
+    assert not install_qwen_gdn_list_compat(namespace)
+    assert namespace.npu_causal_conv1d_custom is operation
+
+
 def test_slot_mapping_hook_is_idempotent() -> None:
     _install_slot_mapping_hook(_BlockTable)
     first = _BlockTable.compute_slot_mapping
@@ -140,7 +253,7 @@ def test_runtime_slot_mapping_hook_rejects_changed_group_layout() -> None:
         },
     )()
 
-    with pytest.raises(RuntimeError, match="exactly one concrete block table"):
+    with pytest.raises(RuntimeError, match="full-attention block table is unavailable"):
         _install_runtime_slot_mapping_hooks(runner)
 
 

@@ -27,7 +27,7 @@ python scripts/kvcompress_long_context_run.py --help
 python scripts/kvcompress_acceptance_compare.py --help
 ```
 
-公开 A3 证据使用另一组工具：固定并校验 LongBench-v2、LongBench 下载文件的哈希，
+补充的公开长上下文证据使用另一组工具：固定并校验 LongBench-v2、LongBench 下载文件的哈希，
 用准确模型 tokenizer 在不截断 prompt 的前提下预处理，通过 OpenAI 兼容服务执行，
 并按 benchmark 任务评分：
 
@@ -46,8 +46,8 @@ python scripts/kvcompress_benchmark_score.py --help
 
 随机数据、截断、复用 prompt 或仅重启热服务都不能替代正式流程。
 `kv-pressure-online` 仅是快速压力 smoke。正式 B0 必须使用规定的官方 vLLM 0.18
-及匹配官方 Ascend 基线；当前宿主中禁用插件/no-compression 的结果只能标记为工程
-兼容性对照。
+及匹配官方 Ascend 基线；当前宿主中加载同一插件但用超阈值禁止压缩的结果只能
+标记为工程兼容性对照，且不得为运行测试修改宿主仓库。
 
 Prefix cache、speculative decoding、KV transfer、量化 KV、BidKV 和已移除的
 宿主优化均是不支持组合，不是调参变量。发布结论必须受已完成矩阵和

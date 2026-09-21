@@ -31,15 +31,22 @@
   禁止静默截断。
 - A2/A3 使用 `FULL_DECODE_ONLY`，capture size 按场景冻结；
   `--enforce-eager` 结果不能作为正式 A2/A3 证据。
-- 采样：temperature 0、top-p 1、top-k -1、min-p 0、penalty 均为 0、n=1、
-  不用 beam、stop 为空、seed 0、流式并回传 usage、启用 special tokens。
+- 服务必须使用 `--generation-config vllm`，不得继承模型目录中的采样默认值。
+- 请求采样：temperature 0、top-p 1、top-k -1、min-p 0、presence/frequency
+  penalty 0、repetition penalty 1（乘法惩罚的中性值）、n=1、不用 beam、
+  stop 为空、seed 0、流式并回传 usage、`add_special_tokens=true`。
 - B0、B1 各至少三次独立冷启动生命周期：start、warm、measure、stop。
   失败、超时和重试都要保留；预声明主指标取中位数。可以增加至多两轮，
   但不能用新增轮次替换失败轮次。
 
 V4.6 正式 B0 是受控方案冻结的官方 vLLM 0.18 和对应官方 vLLM-Ascend。
-当前 HUST 宿主上“关闭插件 B0 / 启用插件 B1”的配对测试只属于工程对照，
-不能替代正式 B0。
+当前 HUST 宿主上的配对测试让 B0/B1 都加载同一插件：B0 以高于服务上限的阈值
+禁止压缩，B1 使用候选预算。它只属于工程对照，不能替代正式 B0。整个流程不得
+修改 `vllm-hust` 或 `vllm-ascend-hust` 宿主仓库。
+
+Qwen3.5-35B-A3B 是补充的工程目标。它使用 TP=2 和“全注意力 +
+Gated-DeltaNet”混合缓存，因此结果必须单独保存，不能替代、放宽或并入冻结的
+Qwen2.5-14B-Instruct 验收矩阵。
 
 ## 本项目选定的交付场景
 
@@ -83,11 +90,13 @@ HBM 采样。
 
 ## 适用性与冲突
 
-Prefix cache、推测解码、KV transfer/P-D 分离、量化 KV、hybrid/MLA/local
-attention、异步调度以及任一并行度大于 1 都会在启动时拒绝。因此当前实现不适用
-A1 的非 chunked 配置和 A4 的 prefix-enabled 配置。当前宿主已不存在 Prefix
-Router、KV Tiering、KNorm、PyramidKV Ascend、SliceGPT 代码，本插件不导入、
-不假设这些旧实现。
+Prefix cache、推测解码、KV transfer/P-D 分离、量化 KV、MLA/local attention、
+异步调度、PP/DP/DCP/PCP 大于 1，以及未识别的混合布局都会在启动时拒绝。唯一的
+混合架构例外是 `mamba_cache_mode=none` 的 Qwen3.5 全注意力 + Gated-DeltaNet；
+TP 只有在大小可整除模型 KV 头数时才允许。这些例外只属于工程范围，不改变正式
+验收的单卡拓扑。当前实现仍不适用 A1 的非 chunked 配置和 A4 的 prefix-enabled
+配置。当前宿主已不存在 Prefix Router、KV Tiering、KNorm、PyramidKV Ascend、
+SliceGPT 代码，本插件不导入、不假设这些旧实现。
 
 ## 数据准备
 
@@ -116,8 +125,9 @@ python scripts/kvcompress_prepare_dataset.py generate-commissioning \
 
 ## 执行与配对比较
 
-先运行一次 `kv-pressure-online` 快速压力冒烟，再对关闭插件的 B0 工程对照和
-启用插件的 B1 分别独立重启服务，执行所有冻结 A2 cell 与 A3。A2 示例：
+先运行一次 `kv-pressure-online` 快速压力冒烟，再对禁止压缩的 B0 工程对照和
+启用候选压缩的 B1 分别独立重启服务，执行所有冻结 A2 cell 与 A3。两组均加载
+插件；B0 的阈值必须严格高于 `max_model_len`。A2 示例：
 
 ```bash
 python scripts/kvcompress_long_context_run.py \
@@ -129,6 +139,13 @@ python scripts/kvcompress_long_context_run.py \
   --result .benchmarks/b1-r1/a2-16k.json
 ```
 
+若某个冻结 cell 的最大物理长度不超过压缩阈值（例如默认 9,216-token
+阈值下的 8K cell），B1 命令必须显式追加
+`--compression-evidence optional`。此模式允许零事务，但一旦出现 scheduler
+commit，仍要求对应 worker acknowledgement。跨过阈值的 cell 保持默认
+`auto`（B1 必须观察到事务）；B0 可用 `--compression-evidence forbidden`
+明确断言无压缩。
+
 B0/B1 各收集三轮后比较：
 
 ```bash
@@ -137,6 +154,18 @@ python scripts/kvcompress_acceptance_compare.py \
   --plugin .benchmarks/b1-r{1,2,3}/a2-16k.json \
   --output .benchmarks/a2-16k-comparison.json
 ```
+
+冻结的 Qwen2.5 TP=1 矩阵保持默认每次提交一个 worker 回执。补充的 Qwen3.5
+TP=2 工程矩阵必须显式追加 `--worker-acks-per-commit 2`，比较器随后严格要求每次
+scheduler 提交恰好收到两个 rank 回执；该参数不能用于放宽 TP=1 标准矩阵。
+
+比较器从 B1 原始结果读取冻结的压缩证据声明。`required`（以及旧证据缺少该字段时
+采用的 fail-closed `auto`）必须满足 M3 的 20% 物理 KV 缩减门槛；若某个
+`optional` cell 三轮都没有压缩事务，则该 cell 的 M3 缩减项标记为“不适用”，
+但质量、吞吐、请求完整性及 commit/ack 配对门槛仍全部执行。`optional` cell
+一旦出现任何压缩事务，M3 缩减门槛立即恢复为必需。
+如果证据由早于该字段的 runner 生成，比较命令必须显式追加
+`--compression-evidence optional`；默认不猜测历史意图，仍按 `auto` 失败关闭。
 
 ## 证据包与放行
 

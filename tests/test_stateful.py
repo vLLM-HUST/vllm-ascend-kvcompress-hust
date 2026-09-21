@@ -2,6 +2,13 @@
 
 from types import SimpleNamespace
 
+import torch
+from vllm.v1.kv_cache_interface import (
+    FullAttentionSpec,
+    KVCacheGroupSpec,
+    MambaSpec,
+)
+
 from vllm_ascend_kvcompress.config import ProviderSelection
 from vllm_ascend_kvcompress.stateful import (
     SchedulerActiveCompression,
@@ -24,7 +31,14 @@ def _selection() -> ProviderSelection:
     )
 
 
-def _scheduler(*, scheduler_module="vllm.v1.core.sched.scheduler", balance=False):
+def _scheduler(
+    *,
+    scheduler_module="vllm.v1.core.sched.scheduler",
+    balance=False,
+    block_size=128,
+    hybrid_model_type=None,
+    attention_block_size=None,
+):
     parallel = SimpleNamespace(
         tensor_parallel_size=1,
         pipeline_parallel_size=1,
@@ -33,19 +47,56 @@ def _scheduler(*, scheduler_module="vllm.v1.core.sched.scheduler", balance=False
         decode_context_parallel_size=1,
     )
     vllm_config = SimpleNamespace(
-        cache_config=SimpleNamespace(enable_prefix_caching=False),
+        cache_config=SimpleNamespace(
+            enable_prefix_caching=False,
+            mamba_cache_mode="none",
+        ),
+        model_config=SimpleNamespace(
+            is_hybrid=hybrid_model_type is not None,
+            hf_text_config=SimpleNamespace(model_type=hybrid_model_type),
+        ),
         speculative_config=None,
         kv_transfer_config=None,
         scheduler_config=SimpleNamespace(async_scheduling=False),
         parallel_config=parallel,
     )
     blocks = [SimpleNamespace(block_id=value) for value in (3, 4, 5)]
-    single_manager = SimpleNamespace(
-        req_to_blocks={"r": blocks}, num_cached_block={"r": 0}
+    if attention_block_size is None:
+        attention_block_size = block_size
+    attention_group = KVCacheGroupSpec(
+        layer_names=["model.layers.0.self_attn"],
+        kv_cache_spec=FullAttentionSpec(
+            block_size=attention_block_size,
+            num_kv_heads=2,
+            head_size=64,
+            dtype=torch.float16,
+        ),
     )
+    single_manager = SimpleNamespace(
+        block_size=attention_block_size,
+        req_to_blocks={"r": blocks},
+        num_cached_block={"r": 0},
+    )
+    groups = [attention_group]
+    single_managers = [single_manager]
+    if hybrid_model_type is not None:
+        groups.append(
+            KVCacheGroupSpec(
+                layer_names=["model.layers.1.linear_attn"],
+                kv_cache_spec=MambaSpec(
+                    block_size=32768,
+                    shapes=((1,),),
+                    dtypes=(torch.float16,),
+                    mamba_cache_mode="none",
+                ),
+            )
+        )
+        single_managers.append(
+            SimpleNamespace(block_size=32768, req_to_blocks={}, num_cached_block={})
+        )
     freed = []
     manager = SimpleNamespace(
-        coordinator=SimpleNamespace(single_type_managers=(single_manager,)),
+        coordinator=SimpleNamespace(single_type_managers=tuple(single_managers)),
         block_pool=SimpleNamespace(free_blocks=lambda values: freed.extend(values)),
     )
     request = SimpleNamespace(
@@ -58,8 +109,8 @@ def _scheduler(*, scheduler_module="vllm.v1.core.sched.scheduler", balance=False
     scheduler_type.__module__ = scheduler_module
     scheduler = scheduler_type(
         vllm_config=vllm_config,
-        block_size=128,
-        kv_cache_config=SimpleNamespace(kv_cache_groups=[object()]),
+        block_size=block_size,
+        kv_cache_config=SimpleNamespace(kv_cache_groups=groups),
         kv_cache_manager=manager,
         requests={"r": request},
         finished_req_ids=set(),
@@ -67,6 +118,56 @@ def _scheduler(*, scheduler_module="vllm.v1.core.sched.scheduler", balance=False
         _balance_enabled=balance,
     )
     return scheduler, single_manager, freed
+
+
+def test_qwen35_scheduler_separates_alignment_from_attention_pages() -> None:
+    scheduler, _, _ = _scheduler(
+        block_size=32768,
+        hybrid_model_type="qwen3_5_moe_text",
+        attention_block_size=2048,
+    )
+    selection = ProviderSelection.from_mapping(
+        {
+            "method": "triattention",
+            "method_config": {
+                "stats_path": "/tmp/stats.pt",
+                "kv_budget": 4096,
+                "recompute_window": 128,
+                "score_chunk_size": 128,
+            },
+        }
+    )
+
+    state = SchedulerCompressionState(scheduler, selection)
+
+    assert state.scheduler_alignment_size == 32768
+    assert state.scheduler_block_size == 2048
+
+
+def test_qwen35_scheduler_rejects_wrong_group_lcm_alignment() -> None:
+    scheduler, _, _ = _scheduler(
+        block_size=16384,
+        hybrid_model_type="qwen3_5_moe_text",
+        attention_block_size=2048,
+    )
+    selection = ProviderSelection.from_mapping(
+        {
+            "method": "triattention",
+            "method_config": {
+                "stats_path": "/tmp/stats.pt",
+                "kv_budget": 4096,
+                "recompute_window": 128,
+                "score_chunk_size": 128,
+            },
+        }
+    )
+
+    try:
+        SchedulerCompressionState(scheduler, selection)
+    except RuntimeError as error:
+        assert "LCM of cache-group block sizes" in str(error)
+    else:
+        raise AssertionError("mismatched scheduler alignment should be rejected")
 
 
 def test_scheduler_arms_then_commits_tail_after_barrier() -> None:

@@ -77,6 +77,7 @@ class CalibrationRequest:
     local_files_only: bool = False
     max_length: int = 4096
     device: str = "npu"
+    device_map: str | None = None
     dtype: str = "bfloat16"
     attn_implementation: str = "eager"
     force: bool = False
@@ -87,24 +88,45 @@ class _LayerAccumulator:
     real_sum: torch.Tensor | None = None
     imag_sum: torch.Tensor | None = None
     abs_sum: torch.Tensor | None = None
+    pass_sum: torch.Tensor | None = None
     count: int = 0
 
-    def add(self, projected: torch.Tensor, heads: int, head_dim: int) -> None:
-        if projected.shape[-1] != heads * head_dim:
+    def add(
+        self,
+        projected: torch.Tensor,
+        heads: int,
+        head_dim: int,
+        rotary_dim: int,
+    ) -> None:
+        expected = heads * head_dim
+        if projected.shape[-1] == expected * 2:
+            # Qwen3.5 q_proj packs the attention-output gate after Q.
+            projected = projected[..., :expected]
+        if projected.shape[-1] == expected:
+            values = projected.detach().reshape(-1, heads, head_dim).float()
+        elif projected.shape[-1] == head_dim and projected.numel() % expected == 0:
+            # Q/K normalization modules commonly expose [..., heads, head_dim].
+            values = projected.detach().reshape(-1, heads, head_dim).float()
+        else:
             raise RuntimeError(
                 "query projection width does not match model attention shape: "
-                f"got {projected.shape[-1]}, expected {heads * head_dim}"
+                f"got {projected.shape[-1]}, expected {expected}"
             )
-        values = projected.detach().reshape(-1, heads, head_dim).float()
-        frequency_count = head_dim // 2
+        frequency_count = rotary_dim // 2
         real = values[..., :frequency_count]
-        imag = values[..., frequency_count:]
+        imag = values[..., frequency_count:rotary_dim]
+        pass_values = values[..., rotary_dim:]
         real_sum = real.sum(dim=0).cpu()
         imag_sum = imag.sum(dim=0).cpu()
         abs_sum = torch.sqrt(real.square() + imag.square()).sum(dim=0).cpu()
         self.real_sum = real_sum if self.real_sum is None else self.real_sum + real_sum
         self.imag_sum = imag_sum if self.imag_sum is None else self.imag_sum + imag_sum
         self.abs_sum = abs_sum if self.abs_sum is None else self.abs_sum + abs_sum
+        if pass_values.numel():
+            pass_sum = pass_values.sum(dim=0).cpu()
+            self.pass_sum = (
+                pass_sum if self.pass_sum is None else self.pass_sum + pass_sum
+            )
         self.count += values.shape[0]
 
 
@@ -128,6 +150,9 @@ def ensure_calibration_for_runner(runner: Any, selection: Any) -> bool:
         else configured_device
     )
     dtype = _dtype_name(getattr(model_config, "dtype", "bfloat16"))
+    runner_config = getattr(runner, "vllm_config", None)
+    parallel_config = getattr(runner_config, "parallel_config", None)
+    tensor_parallel_size = int(getattr(parallel_config, "tensor_parallel_size", 1))
     request = CalibrationRequest(
         model=str(model_config.model),
         tokenizer=(str(model_config.tokenizer) if model_config.tokenizer else None),
@@ -139,6 +164,10 @@ def ensure_calibration_for_runner(runner: Any, selection: Any) -> bool:
         local_files_only=config.calibration_local_files_only,
         max_length=config.calibration_max_length,
         device=device,
+        # A single Qwen3.5-35B-A3B BF16 snapshot is larger than one 910B2.
+        # Let Accelerate distribute the temporary calibration model across the
+        # visible NPUs when the serving topology is already tensor parallel.
+        device_map="auto" if tensor_parallel_size > 1 else None,
         dtype=dtype,
         attn_implementation=config.calibration_attn_implementation,
     )
@@ -174,7 +203,9 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
         ) from error
 
     _prepare_device(request.device)
-    device = torch.device(request.device)
+    input_device = torch.device(
+        "cpu" if request.device_map == "auto" else request.device
+    )
     dtype = _torch_dtype(request.dtype)
     common = {
         "trust_remote_code": request.trust_remote_code,
@@ -214,7 +245,7 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
     load_options: dict[str, Any] = {
         "revision": request.revision,
         "dtype": dtype,
-        "device_map": request.device,
+        "device_map": request.device_map or request.device,
         **common,
     }
     if request.attn_implementation:
@@ -226,17 +257,23 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
         model = AutoModel.from_pretrained(request.model, **load_options)
         model.eval()
         attention_layers = _find_attention_layers(model)
-        if len(attention_layers) != shape.num_layers:
+        actual_layer_indices = tuple(index for index, _ in attention_layers)
+        if actual_layer_indices != shape.full_attention_layer_indices:
             raise RuntimeError(
-                "located attention layer count does not match model config: "
-                f"got {len(attention_layers)}, expected {shape.num_layers}"
+                "located full-attention layers do not match model config: "
+                f"got {actual_layer_indices}, expected "
+                f"{shape.full_attention_layer_indices}"
             )
-        accumulators = [_LayerAccumulator() for _ in attention_layers]
-        for layer_idx, attention in enumerate(attention_layers):
-            projection = getattr(attention, "q_proj", None)
-            if not isinstance(projection, torch.nn.Module):
+        accumulators = {
+            layer_idx: _LayerAccumulator() for layer_idx, _ in attention_layers
+        }
+        for layer_idx, attention in attention_layers:
+            capture_module = getattr(attention, "q_norm", None)
+            if not isinstance(capture_module, torch.nn.Module):
+                capture_module = getattr(attention, "q_proj", None)
+            if not isinstance(capture_module, torch.nn.Module):
                 raise RuntimeError(
-                    f"attention layer {layer_idx} does not expose q_proj"
+                    f"attention layer {layer_idx} exposes neither q_norm nor q_proj"
                 )
 
             def capture(
@@ -251,13 +288,16 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
                         f"attention layer {index} q_proj returned a non-tensor"
                     )
                 accumulators[index].add(
-                    output, shape.num_attention_heads, shape.head_dim
+                    output,
+                    shape.num_attention_heads,
+                    shape.head_dim,
+                    shape.effective_rotary_dim,
                 )
 
-            handles.append(projection.register_forward_hook(capture))
+            handles.append(capture_module.register_forward_hook(capture))
 
         model_inputs = {
-            name: value.to(device)
+            name: value.to(input_device)
             for name, value in encoded.items()
             if isinstance(value, torch.Tensor)
         }
@@ -272,7 +312,7 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
             rope_type,
         )
         layer_stats: dict[str, dict[str, torch.Tensor]] = {}
-        for layer_idx, accumulator in enumerate(accumulators):
+        for layer_idx, accumulator in accumulators.items():
             if (
                 accumulator.count <= 0
                 or accumulator.real_sum is None
@@ -282,19 +322,22 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
                 raise RuntimeError(f"no query values captured for layer {layer_idx}")
             divisor = float(accumulator.count)
             inv_freq, freq_scale_sq = rope_values[layer_idx]
-            layer_stats[str(layer_idx)] = {
+            values = {
                 "q_mean_real": (accumulator.real_sum / divisor).contiguous(),
                 "q_mean_imag": (accumulator.imag_sum / divisor).contiguous(),
                 "q_abs_mean": (accumulator.abs_sum / divisor).contiguous(),
                 "inv_freq": inv_freq,
                 "freq_scale_sq": freq_scale_sq,
             }
+            if accumulator.pass_sum is not None:
+                values["q_pass_mean"] = (accumulator.pass_sum / divisor).contiguous()
+            layer_stats[str(layer_idx)] = values
 
         config_payload = (
             config.to_dict() if hasattr(config, "to_dict") else vars(config)
         )
         metadata = {
-            "schema_version": 2,
+            "schema_version": 3,
             "generator": "vllm-ascend-kvcompress-hust",
             "generator_version": __version__,
             "transformers_version": transformers_version,
@@ -319,6 +362,8 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
             "num_attention_heads": shape.num_attention_heads,
             "num_kv_heads": shape.num_kv_heads,
             "head_dim": shape.head_dim,
+            "rotary_dim": shape.effective_rotary_dim,
+            "attention_layer_indices": list(shape.full_attention_layer_indices),
             "rope_theta": shape.rope_theta,
             "rope_style": "half",
             "rope_type": rope_type,
@@ -337,7 +382,7 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
             handle.remove()
         del model
         gc.collect()
-        _empty_device_cache(request.device)
+        _empty_device_cache(request.device, all_devices=request.device_map == "auto")
 
 
 def _load_payload(payload: Mapping[str, Any]) -> CalibrationStats:
@@ -423,38 +468,60 @@ def _atomic_torch_save(payload: Mapping[str, Any], output: Path) -> None:
         raise
 
 
-def _find_attention_layers(model: torch.nn.Module) -> list[torch.nn.Module]:
-    backbone = getattr(model, "model", model)
+def _find_attention_layers(
+    model: torch.nn.Module,
+) -> list[tuple[int, torch.nn.Module]]:
+    backbone = _find_transformer_backbone(model)
     layers = getattr(backbone, "layers", None)
-    if layers is None:
-        raise RuntimeError("cannot locate transformer layers at model.layers")
-    attention_layers: list[torch.nn.Module] = []
+    assert layers is not None
+    attention_layers: list[tuple[int, torch.nn.Module]] = []
     for layer_idx, layer in enumerate(list(layers)):
         attention = getattr(layer, "self_attn", None)
-        if not isinstance(attention, torch.nn.Module):
-            raise RuntimeError(f"transformer layer {layer_idx} has no self_attn")
-        attention_layers.append(attention)
+        if isinstance(attention, torch.nn.Module):
+            attention_layers.append((layer_idx, attention))
     return attention_layers
+
+
+def _find_transformer_backbone(model: torch.nn.Module) -> torch.nn.Module:
+    """Locate text decoder layers through common causal/VLM wrappers."""
+    candidates = [model]
+    seen: set[int] = set()
+    while candidates:
+        candidate = candidates.pop(0)
+        if id(candidate) in seen:
+            continue
+        seen.add(id(candidate))
+        if isinstance(getattr(candidate, "layers", None), torch.nn.ModuleList):
+            return candidate
+        for name in ("model", "language_model", "text_model"):
+            child = getattr(candidate, name, None)
+            if isinstance(child, torch.nn.Module):
+                candidates.append(child)
+    raise RuntimeError("cannot locate transformer decoder layers")
 
 
 def _extract_rope_values(
     model: torch.nn.Module,
-    attention_layers: Sequence[torch.nn.Module],
+    attention_layers: Sequence[tuple[int, torch.nn.Module]],
     shape: ModelShape,
     rope_type: str,
-) -> list[tuple[torch.Tensor, torch.Tensor]]:
-    backbone = getattr(model, "model", model)
+) -> dict[int, tuple[torch.Tensor, torch.Tensor]]:
+    backbone = _find_transformer_backbone(model)
     shared_rotary = getattr(backbone, "rotary_emb", None)
-    values: list[tuple[torch.Tensor, torch.Tensor]] = []
-    frequency_count = shape.head_dim // 2
-    for layer_idx, attention in enumerate(attention_layers):
+    values: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+    frequency_count = shape.effective_rotary_dim // 2
+    for layer_idx, attention in attention_layers:
         rotary = getattr(attention, "rotary_emb", shared_rotary)
         inv_freq = getattr(rotary, "inv_freq", None)
         if isinstance(inv_freq, torch.Tensor):
             inv_freq = inv_freq.detach().float().cpu().flatten()
         elif rope_type == "default":
-            exponents = torch.arange(0, shape.head_dim, 2, dtype=torch.float32)
-            inv_freq = 1.0 / (shape.rope_theta ** (exponents / shape.head_dim))
+            exponents = torch.arange(
+                0, shape.effective_rotary_dim, 2, dtype=torch.float32
+            )
+            inv_freq = 1.0 / (
+                shape.rope_theta ** (exponents / shape.effective_rotary_dim)
+            )
         else:
             raise RuntimeError(
                 f"scaled RoPE layer {layer_idx} does not expose exact inv_freq"
@@ -468,22 +535,27 @@ def _extract_rope_values(
         scale = torch.as_tensor(scaling, dtype=torch.float32).cpu().flatten()
         if scale.numel() == 1:
             scale = scale.expand(frequency_count)
-        elif scale.numel() == shape.head_dim:
+        elif scale.numel() in {shape.head_dim, shape.effective_rotary_dim}:
             scale = scale[:frequency_count]
         elif scale.numel() != frequency_count:
             raise RuntimeError(
                 f"layer {layer_idx} attention scaling has {scale.numel()} values"
             )
-        values.append((inv_freq.contiguous(), scale.square().unsqueeze(0).contiguous()))
+        values[layer_idx] = (
+            inv_freq.contiguous(),
+            scale.square().unsqueeze(0).contiguous(),
+        )
     return values
 
 
 def _model_shape_from_hf_config(config: Any) -> ModelShape:
-    wrapper = type("ModelConfig", (), {"hf_text_config": config})()
+    text_config = getattr(config, "text_config", config)
+    wrapper = type("ModelConfig", (), {"hf_text_config": text_config})()
     return model_shape_from_config(wrapper)
 
 
 def _rope_type(config: Any) -> str:
+    config = getattr(config, "text_config", config)
     parameters = getattr(config, "rope_parameters", None)
     scaling = getattr(config, "rope_scaling", None)
     raw = parameters if isinstance(parameters, Mapping) else scaling
@@ -523,11 +595,20 @@ def _prepare_device(device: str) -> None:
             raise RuntimeError("NPU calibration requires torch-npu") from error
 
 
-def _empty_device_cache(device: str) -> None:
+def _empty_device_cache(device: str, *, all_devices: bool = False) -> None:
     if device.startswith("npu") and hasattr(torch, "npu"):
-        torch.npu.empty_cache()
+        current = torch.npu.current_device()
+        devices = range(torch.npu.device_count()) if all_devices else (current,)
+        for index in devices:
+            torch.npu.set_device(index)
+            torch.npu.empty_cache()
+        torch.npu.set_device(current)
     elif device.startswith("cuda") and torch.cuda.is_available():
-        torch.cuda.empty_cache()
+        current = torch.cuda.current_device()
+        devices = range(torch.cuda.device_count()) if all_devices else (current,)
+        for index in devices:
+            with torch.cuda.device(index):
+                torch.cuda.empty_cache()
 
 
 def _torch_dtype(value: str) -> torch.dtype:
@@ -594,6 +675,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-length", type=int, default=4096)
     parser.add_argument("--device", default="npu")
     parser.add_argument(
+        "--device-map",
+        choices=("auto",),
+        help="Distribute a large temporary calibration model across visible devices.",
+    )
+    parser.add_argument(
         "--dtype", choices=("float16", "bfloat16", "float32"), default="bfloat16"
     )
     parser.add_argument(
@@ -620,6 +706,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         local_files_only=args.local_files_only,
         max_length=args.max_length,
         device=args.device,
+        device_map=args.device_map,
         dtype=args.dtype,
         attn_implementation=args.attn_implementation,
         force=args.force,
