@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from ...config import ASCEND_BLOCK_SIZE, JsonScalar, require_choice, require_int
+from ..base import MethodRuntimeSpec
 
 ScoreAggregation = Literal["mean", "max"]
 LayerAggregation = Literal["mean", "max"]
@@ -41,6 +42,16 @@ class TriAttentionConfig:
     @property
     def compression_threshold_tokens(self) -> int:
         return self.kv_budget + self.recompute_window
+
+    @property
+    def runtime_spec(self) -> MethodRuntimeSpec:
+        return MethodRuntimeSpec(
+            requires_private_destination=True,
+            compression_threshold_tokens=self.compression_threshold_tokens,
+            required_recompute_tokens=self.recompute_window,
+            max_physical_num_tokens=self.kv_budget,
+            min_output_tokens_for_compression=self.min_output_tokens_for_compression,
+        )
 
     @classmethod
     def from_method_config(
@@ -196,6 +207,10 @@ class TriAttentionConfig:
             raise ValueError(
                 "method option 'calibration_max_length' must be at least 128"
             )
+
+
+def triattention_runtime_spec(options: Mapping[str, JsonScalar]) -> MethodRuntimeSpec:
+    return TriAttentionConfig.from_method_config(options).runtime_spec
 
 
 def _require_bool(options: Mapping[str, JsonScalar], name: str, default: bool) -> bool:

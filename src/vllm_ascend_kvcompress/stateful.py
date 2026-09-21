@@ -10,8 +10,12 @@ from typing import Any
 from vllm.logger import logger
 
 from .config import ProviderSelection
-from .methods.triattention.config import TriAttentionConfig
-from .provider import _allowed_scheduler_block_sizes, _find_full_attention_group
+from .methods import get_method_runtime_spec
+from .provider import (
+    _allowed_scheduler_block_sizes,
+    _find_full_attention_group,
+    _validate_method_runtime_spec,
+)
 
 _STATE_ATTRIBUTE = "_ascend_kvcompress_scheduler_state_v3"
 _OFFSETS_ATTRIBUTE = "_ascend_kvcompress_active_offsets_v3"
@@ -48,15 +52,12 @@ class SchedulerCompressionState:
     """Mirror worker transactions across the synchronous execution barrier."""
 
     def __init__(self, scheduler: Any, selection: ProviderSelection) -> None:
-        if selection.method != "triattention":
-            raise ValueError(
-                f"scheduler adapter does not support method {selection.method!r}"
-            )
-        config = TriAttentionConfig.from_method_config(selection.method_config)
+        spec = get_method_runtime_spec(selection.method, selection.method_config)
+        _validate_method_runtime_spec(selection.method, spec)
         self.scheduler = scheduler
-        self.threshold = config.compression_threshold_tokens
-        self.budget = config.kv_budget
-        self.min_output_tokens = config.min_output_tokens_for_compression
+        self.threshold = spec.compression_threshold_tokens
+        self.budget = spec.max_physical_num_tokens
+        self.min_output_tokens = spec.min_output_tokens_for_compression
         # Scheduler.block_size is the LCM alignment across every hybrid cache
         # group; it can be larger than the full-attention manager page.
         self.scheduler_alignment_size = int(scheduler.block_size)

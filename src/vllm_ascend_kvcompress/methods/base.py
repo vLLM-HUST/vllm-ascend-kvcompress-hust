@@ -84,6 +84,10 @@ class CompressionResult:
 class KVCompressionMethod(ABC):
     """Algorithm boundary beneath the common vLLM/Ascend lifecycle adapter."""
 
+    def reset_requests(self, request_ids: set[str]) -> None:
+        """Discard observations for finished, preempted, or resumed requests."""
+        del request_ids
+
     @property
     @abstractmethod
     def name(self) -> str:

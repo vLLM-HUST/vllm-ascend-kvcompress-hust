@@ -73,3 +73,36 @@ def test_registry_rejects_factory_contract_violation() -> None:
 
     with pytest.raises(TypeError, match="expected KVCompressionMethod"):
         registry.create("broken", {}, SimpleNamespace(), _shape())
+
+
+def test_scheduler_runtime_spec_does_not_construct_worker_method() -> None:
+    registry = MethodRegistry()
+
+    def worker_factory(options, config, shape):
+        raise AssertionError("scheduler must not initialize worker resources")
+
+    registry.register(
+        "test_method",
+        worker_factory,
+        runtime_spec_factory=lambda options: MethodRuntimeSpec(True, 256, 128, 128),
+    )
+    assert registry.runtime_spec("test_method", {}).max_physical_num_tokens == 128
+
+
+def test_scheduler_rejects_method_without_runtime_spec_factory() -> None:
+    registry = MethodRegistry()
+    registry.register("test_method", lambda options, config, shape: _Method())
+    with pytest.raises(ValueError, match="scheduler"):
+        registry.runtime_spec("test_method", {})
+
+
+def test_builtin_scheduler_specs_match_workers_without_calibration(tmp_path) -> None:
+    from vllm_ascend_kvcompress.methods import get_method_runtime_spec
+
+    spec = get_method_runtime_spec("vato", {"kv_budget": 128})
+    assert spec == MethodRuntimeSpec(True, 256, 128, 128)
+    # This path must remain usable before automatic calibration runs in workers.
+    spec = get_method_runtime_spec(
+        "triattention", {"stats_path": str(tmp_path / "missing.pt")}
+    )
+    assert spec == MethodRuntimeSpec(True, 2176, 128, 2048)

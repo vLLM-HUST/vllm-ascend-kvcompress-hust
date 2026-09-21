@@ -26,6 +26,10 @@ class _RecordingMethod:
 
     def __init__(self) -> None:
         self.last_request: CompressionRequest | None = None
+        self.reset_ids: set[str] = set()
+
+    def reset_requests(self, request_ids: set[str]) -> None:
+        self.reset_ids.update(request_ids)
 
     def compress(self, request: CompressionRequest) -> CompressionResult:
         self.last_request = request

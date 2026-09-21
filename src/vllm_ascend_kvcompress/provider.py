@@ -42,7 +42,7 @@ class ActiveCompression:
 
 
 class AscendKVCompressionProvider:
-    """Own one model runner's TriAttention state and compacted length mapping."""
+    """Own one model runner's compression state and compacted length mapping."""
 
     def __init__(self, vllm_config: Any, selection: ProviderSelection) -> None:
         self.vllm_config = vllm_config
@@ -210,6 +210,7 @@ class AscendKVCompressionProvider:
         reset_ids = set(scheduler_output.finished_req_ids)
         reset_ids.update(getattr(scheduler_output, "preempted_req_ids", ()))
         reset_ids.update(scheduler_output.scheduled_cached_reqs.resumed_req_ids)
+        self.method.reset_requests(reset_ids)
         for request_id in reset_ids:
             self.pending.pop(request_id, None)
             self.active.pop(request_id, None)

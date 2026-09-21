@@ -87,15 +87,7 @@ class TriAttentionMethod(KVCompressionMethod):
 
     @property
     def runtime_spec(self) -> MethodRuntimeSpec:
-        return MethodRuntimeSpec(
-            requires_private_destination=True,
-            compression_threshold_tokens=self.config.compression_threshold_tokens,
-            required_recompute_tokens=self.config.recompute_window,
-            max_physical_num_tokens=self.config.kv_budget,
-            min_output_tokens_for_compression=(
-                self.config.min_output_tokens_for_compression
-            ),
-        )
+        return self.config.runtime_spec
 
     def compatibility_reasons(self, worker: Any) -> tuple[str, ...]:
         del worker

@@ -8,11 +8,12 @@ from importlib.metadata import entry_points
 from typing import Any, TypeAlias
 
 from ..config import JsonScalar
-from .base import KVCompressionMethod, ModelShape
+from .base import KVCompressionMethod, MethodRuntimeSpec, ModelShape
 
 MethodFactory: TypeAlias = Callable[
     [Mapping[str, JsonScalar], Any, ModelShape], KVCompressionMethod
 ]
+RuntimeSpecFactory: TypeAlias = Callable[[Mapping[str, JsonScalar]], MethodRuntimeSpec]
 METHOD_ENTRY_POINT_GROUP = "vllm_ascend_kvcompress.methods"
 
 
@@ -21,14 +22,47 @@ class MethodRegistry:
 
     def __init__(self) -> None:
         self._factories: dict[str, MethodFactory] = {}
+        self._runtime_spec_factories: dict[str, RuntimeSpecFactory] = {}
 
-    def register(self, name: str, factory: MethodFactory) -> None:
+    def register(
+        self,
+        name: str,
+        factory: MethodFactory,
+        *,
+        runtime_spec_factory: RuntimeSpecFactory | None = None,
+    ) -> None:
         normalized = _normalize_name(name)
         if normalized in self._factories:
             raise ValueError(f"compression method {normalized!r} is already registered")
         if not callable(factory):
             raise TypeError("compression method factory must be callable")
+        if runtime_spec_factory is None:
+            runtime_spec_factory = getattr(factory, "runtime_spec_factory", None)
+        if runtime_spec_factory is not None and not callable(runtime_spec_factory):
+            raise TypeError("scheduler runtime spec factory must be callable")
         self._factories[normalized] = factory
+        if runtime_spec_factory is not None:
+            self._runtime_spec_factories[normalized] = runtime_spec_factory
+
+    def runtime_spec(
+        self,
+        name: str,
+        options: Mapping[str, JsonScalar],
+    ) -> MethodRuntimeSpec:
+        """Parse scheduler limits without loading artifacts or worker resources."""
+        normalized = _normalize_name(name)
+        factory = self._runtime_spec_factories.get(normalized)
+        if factory is None:
+            raise ValueError(
+                f"compression method {normalized!r} has no scheduler "
+                "runtime spec factory"
+            )
+        spec = factory(options)
+        if not isinstance(spec, MethodRuntimeSpec):
+            raise TypeError(
+                "scheduler runtime spec factory must return MethodRuntimeSpec"
+            )
+        return spec
 
     def create(
         self,
@@ -65,9 +99,22 @@ METHOD_REGISTRY = MethodRegistry()
 _ENTRY_POINTS_LOADED = False
 
 
-def register_method(name: str, factory: MethodFactory) -> None:
+def register_method(
+    name: str,
+    factory: MethodFactory,
+    *,
+    runtime_spec_factory: RuntimeSpecFactory | None = None,
+) -> None:
     """Register an in-process compression method factory."""
-    METHOD_REGISTRY.register(name, factory)
+    METHOD_REGISTRY.register(name, factory, runtime_spec_factory=runtime_spec_factory)
+
+
+def get_method_runtime_spec(
+    name: str,
+    options: Mapping[str, JsonScalar],
+) -> MethodRuntimeSpec:
+    load_method_entry_points()
+    return METHOD_REGISTRY.runtime_spec(name, options)
 
 
 def load_method_entry_points() -> None:
