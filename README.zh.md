@@ -3,8 +3,8 @@
 [English](README.md) | 简体中文
 
 面向与上游对齐的 vLLM-HUST、vLLM-Ascend-HUST 的独立 TriAttention KV-cache
-压缩插件。当前工作树在 0.6 相位预计算版本上新增论文 V3 位置策略和实验性的
-Qwen3.5 混合模型路径，且不修改两个宿主仓库。
+压缩插件。0.7 版本新增论文 V3 位置策略和实验性的 Qwen3.5 混合模型路径，且不修改
+两个宿主仓库。
 
 > 状态：实验性候选版本。插件包生命周期、Ascend 算子 smoke、完整三轮冷启动 A2
 > 工程矩阵，以及有边界的 LongBench-v2/LongBench 公开质量检查均已通过。已完成的
@@ -71,7 +71,7 @@ Ascend 宿主使用 32,768-token 跨组 scheduler 对齐、2,048-token 全注意
 宿主和 Extension Manager 就绪后，安装插件时不要改动宿主包：
 
 ```bash
-python -m pip install --no-deps vllm-ascend-kvcompress-hust==0.6.0
+python -m pip install --no-deps vllm-ascend-kvcompress-hust==0.7.0
 ```
 
 全新环境需先从项目组认可的软件源单独安装 `vllm-hust-ext`，再执行上述命令。

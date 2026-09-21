@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vllm-ascend-kvcompress-hust"
-version = "0.6.0"
+version = "0.7.0"
 description = "TriAttention KV-cache compression plugin for vLLM Ascend"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"

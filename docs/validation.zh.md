@@ -41,7 +41,7 @@ Qwen3.5 的旧 `int[]` GDN ABI 兼容桥必须显式启用，并严格匹配已�
 
 | 组件 | 已验证值 |
 | --- | --- |
-| 插件 | 基于 `33b936d9d09d` 的 0.6.0 工作树 |
+| 插件 | 基于 `de038e7` 的 0.7.0 发布候选 |
 | vLLM-HUST | `6cdc0304a8ba`，`0.28.1.post1.dev260` |
 | vLLM-Ascend-HUST | `5901bedbb718`，`0.25.1rc2.dev232+hust.20260903.4.g5901bedbb` |
 | Python / torch / torch-npu | 3.11.16 / 2.10 / 2.10.post2 |

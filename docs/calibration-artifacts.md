@@ -139,7 +139,7 @@ is partial:
     "metadata": {
         "schema_version": 3,
         "generator": "vllm-ascend-kvcompress-hust",
-        "generator_version": "0.6.0",
+        "generator_version": "0.7.0",
         "model": "/path/or/hf-id",
         "model_revision": "default",
         "model_source_fingerprint": "local-manifest:...",

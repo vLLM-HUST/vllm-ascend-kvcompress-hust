@@ -14,7 +14,7 @@ version identical; run CPU, package, NPU, lifecycle, and declared service
 tests; freeze host/model/calibration/data provenance; and review the complete
 diff. PyPI files are immutable, so any code change requires a new version.
 
-Version 0.6.0 is an experimental release. The current validation supports a
+Version 0.7.0 is an experimental release. The current validation supports a
 bounded engineering-performance statement but not formal V4.6 or production
 claims.
 
@@ -37,11 +37,11 @@ Then inspect exactly the candidate files:
 
 ```bash
 python -m zipfile -l \
-  dist/vllm_ascend_kvcompress_hust-0.6.0-py3-none-any.whl
+  dist/vllm_ascend_kvcompress_hust-0.7.0-py3-none-any.whl
 python -m twine check \
-  dist/vllm_ascend_kvcompress_hust-0.6.0-py3-none-any.whl \
-  dist/vllm_ascend_kvcompress_hust-0.6.0.tar.gz
-sha256sum dist/vllm_ascend_kvcompress_hust-0.6.0*
+  dist/vllm_ascend_kvcompress_hust-0.7.0-py3-none-any.whl \
+  dist/vllm_ascend_kvcompress_hust-0.7.0.tar.gz
+sha256sum dist/vllm_ascend_kvcompress_hust-0.7.0*
 ```
 
 The wheel must contain code, `LICENSE`, `NOTICE`, and
@@ -60,7 +60,7 @@ source checkout on `PYTHONPATH`:
 
 ```bash
 python -m pip install --no-deps \
-  dist/vllm_ascend_kvcompress_hust-0.6.0-py3-none-any.whl
+  dist/vllm_ascend_kvcompress_hust-0.7.0-py3-none-any.whl
 vllm-hust-ext extension validate org.vllm-hust.ascend-kvcompress
 vllm-hust-ext extension configure org.vllm-hust.ascend-kvcompress \
   --file /absolute/path/triattention.json
@@ -91,12 +91,12 @@ organization/project. Do not pass the token on the command line or commit it:
 ```bash
 export UV_PUBLISH_TOKEN='<read from the secret store>'
 uv publish --check-url https://pypi.org/simple \
-  dist/vllm_ascend_kvcompress_hust-0.6.0-py3-none-any.whl \
-  dist/vllm_ascend_kvcompress_hust-0.6.0.tar.gz
+  dist/vllm_ascend_kvcompress_hust-0.7.0-py3-none-any.whl \
+  dist/vllm_ascend_kvcompress_hust-0.7.0.tar.gz
 unset UV_PUBLISH_TOKEN
 ```
 
 If the protected publisher uses Twine instead, set `TWINE_USERNAME=__token__`
 and `TWINE_PASSWORD` from the secret store, then upload the same two explicit
-files. Finally install 0.6.0 from production PyPI without cache, verify hashes,
+files. Finally install 0.7.0 from production PyPI without cache, verify hashes,
 manager discovery, enablement, `/health`, and one correctness case.

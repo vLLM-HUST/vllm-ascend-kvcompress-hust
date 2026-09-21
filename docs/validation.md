@@ -46,7 +46,7 @@ is schema-gated to the validated host binary.
 
 | Component | Validated value |
 | --- | --- |
-| Plugin | 0.6.0 working tree based on `33b936d9d09d` |
+| Plugin | 0.7.0 release candidate based on `de038e7` |
 | vLLM-HUST | `6cdc0304a8ba`, `0.28.1.post1.dev260` |
 | vLLM-Ascend-HUST | `5901bedbb718`, `0.25.1rc2.dev232+hust.20260903.4.g5901bedbb` |
 | Python / torch / torch-npu | 3.11.16 / 2.10 / 2.10.post2 |

@@ -118,7 +118,7 @@ Qwen3/Qwen3-MoE 和 Qwen3.5/Qwen3.5-MoE，RoPE 布局均为 half-split。没有�
     "metadata": {
         "schema_version": 3,
         "generator": "vllm-ascend-kvcompress-hust",
-        "generator_version": "0.6.0",
+        "generator_version": "0.7.0",
         "model": "/path/or/hf-id",
         "model_revision": "default",
         "model_source_fingerprint": "local-manifest:...",

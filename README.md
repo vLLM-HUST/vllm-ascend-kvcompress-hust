@@ -5,8 +5,7 @@ English | [简体中文](README.zh.md)
 An independently packaged TriAttention KV-cache compression plugin for the
 upstream-aligned vLLM-HUST and vLLM-Ascend-HUST stacks. The current working tree
 adds the paper's V3 position policy and an experimental Qwen3.5 hybrid-model
-path on top of the 0.6 phase-precompute release, without changing either host
-repository.
+path in the 0.7 release, without changing either host repository.
 
 > Status: experimental release candidate. Package lifecycle, Ascend kernel
 > smoke, the complete three-cold-start A2 engineering matrix, and bounded public
@@ -87,7 +86,7 @@ After the host and Extension Manager are present, install the plugin without
 changing host packages:
 
 ```bash
-python -m pip install --no-deps vllm-ascend-kvcompress-hust==0.6.0
+python -m pip install --no-deps vllm-ascend-kvcompress-hust==0.7.0
 ```
 
 For a fresh environment, install `vllm-hust-ext` separately from its approved
