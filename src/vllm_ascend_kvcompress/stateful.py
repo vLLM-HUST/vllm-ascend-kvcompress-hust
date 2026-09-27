@@ -127,8 +127,6 @@ class SchedulerCompressionState:
             )
         if bool(getattr(scheduler, "_balance_enabled", False)):
             reasons.append("Ascend balance scheduling must be disabled")
-        if config.speculative_config is not None:
-            reasons.append("speculative decoding is unsupported")
         if config.kv_transfer_config is not None:
             reasons.append("KV transfer is unsupported")
         parallel = config.parallel_config
@@ -317,7 +315,10 @@ class SchedulerCompressionState:
         coordinator = self.scheduler.kv_cache_manager.coordinator
         single_manager = coordinator.single_type_managers[self.attention_group_index]
         transactions: dict[str, tuple[int, ...]] = {}
+        speculative_requests = getattr(output, "scheduled_spec_decode_tokens", {})
         for request_id in output.num_scheduled_tokens:
+            if speculative_requests.get(request_id):
+                continue
             if request_id in self.pending:
                 continue
             request = self.scheduler.requests.get(request_id)
