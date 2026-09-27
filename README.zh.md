@@ -175,7 +175,7 @@ Qwen2.5-14B-Instruct 作为标准发布模型的定位。
 
 | 功能 | 0.6 状态 | 行为 |
 | --- | --- | --- |
-| Prefix cache | 冲突 | 启动拒绝，必须禁用 |
+| Prefix cache | 实验性 | 压缩写入调度器预留的私有目标块，收到 model output 后再替换请求 block table |
 | Speculative decoding | 冲突 | 启动拒绝 |
 | KV transfer / 分离式 P/D | 冲突 | 启动拒绝 |
 | 量化 KV | 冲突 | 启动拒绝，仅支持稠密 BF16/FP16 |

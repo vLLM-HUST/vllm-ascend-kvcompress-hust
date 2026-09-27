@@ -10,6 +10,7 @@ from vllm.v1.kv_cache_interface import (
 )
 
 from vllm_ascend_kvcompress.config import ProviderSelection
+from vllm_ascend_kvcompress.provider import SCHEDULER_TRANSACTIONS_ATTRIBUTE
 from vllm_ascend_kvcompress.stateful import (
     SchedulerActiveCompression,
     SchedulerCompressionState,
@@ -41,6 +42,8 @@ def _scheduler(
     attention_block_size=None,
     async_scheduling=False,
     max_concurrent_batches=None,
+    prefix_caching=False,
+    allocation_fails=False,
 ):
     if async_scheduling and scheduler_module == "vllm.v1.core.sched.scheduler":
         scheduler_module = "vllm.v1.core.sched.async_scheduler"
@@ -53,7 +56,7 @@ def _scheduler(
     )
     vllm_config = SimpleNamespace(
         cache_config=SimpleNamespace(
-            enable_prefix_caching=False,
+            enable_prefix_caching=prefix_caching,
             mamba_cache_mode="none",
         ),
         model_config=SimpleNamespace(
@@ -102,9 +105,22 @@ def _scheduler(
             SimpleNamespace(block_size=32768, req_to_blocks={}, num_cached_block={})
         )
     freed = []
+    next_block_id = 100
+
+    def get_new_blocks(count):
+        if allocation_fails:
+            raise ValueError("insufficient free blocks")
+        return [
+            SimpleNamespace(block_id=next_block_id + value, ref_cnt=1, block_hash=None)
+            for value in range(count)
+        ]
+
     manager = SimpleNamespace(
         coordinator=SimpleNamespace(single_type_managers=tuple(single_managers)),
-        block_pool=SimpleNamespace(free_blocks=lambda values: freed.extend(values)),
+        block_pool=SimpleNamespace(
+            free_blocks=lambda values: freed.extend(values),
+            get_new_blocks=get_new_blocks,
+        ),
     )
     request = SimpleNamespace(
         request_id="r", num_computed_tokens=300, num_prompt_tokens=300, max_tokens=128
@@ -243,6 +259,89 @@ def test_async_scheduler_honors_larger_batch_queue_before_release() -> None:
 
     state.after_model_output()
     assert [block.block_id for block in freed] == [5, 4]
+
+
+def test_prefix_caching_uses_private_destination_blocks() -> None:
+    scheduler, manager, freed = _scheduler(prefix_caching=True)
+    state = SchedulerCompressionState(scheduler, _selection())
+    output = SimpleNamespace(
+        num_scheduled_tokens={"r": 44},
+        finished_req_ids=set(),
+        preempted_req_ids=set(),
+    )
+
+    state.after_schedule(output)
+
+    assert getattr(output, SCHEDULER_TRANSACTIONS_ATTRIBUTE) == {"r": (100,)}
+    assert [block.block_id for block in manager.req_to_blocks["r"]] == [3, 4, 5]
+
+    state.before_schedule()
+
+    assert [block.block_id for block in manager.req_to_blocks["r"]] == [100]
+    assert [block.block_id for block in freed] == [5, 4, 3]
+    assert manager.num_cached_block["r"] == 0
+
+
+def test_prefix_caching_skips_compression_when_private_allocation_fails() -> None:
+    scheduler, manager, freed = _scheduler(prefix_caching=True, allocation_fails=True)
+    state = SchedulerCompressionState(scheduler, _selection())
+    output = SimpleNamespace(
+        num_scheduled_tokens={"r": 44},
+        finished_req_ids=set(),
+        preempted_req_ids=set(),
+    )
+
+    state.after_schedule(output)
+
+    assert getattr(output, SCHEDULER_TRANSACTIONS_ATTRIBUTE) == {}
+    assert not state.pending
+    assert [block.block_id for block in manager.req_to_blocks["r"]] == [3, 4, 5]
+    assert not freed
+
+
+def test_prefix_caching_preemption_releases_uncommitted_destination() -> None:
+    scheduler, _, freed = _scheduler(prefix_caching=True)
+    state = SchedulerCompressionState(scheduler, _selection())
+    state.after_schedule(
+        SimpleNamespace(
+            num_scheduled_tokens={"r": 44},
+            finished_req_ids=set(),
+            preempted_req_ids=set(),
+        )
+    )
+
+    state.after_schedule(
+        SimpleNamespace(
+            num_scheduled_tokens={},
+            finished_req_ids=set(),
+            preempted_req_ids={"r"},
+        )
+    )
+
+    assert not state.pending
+    assert [block.block_id for block in freed] == [100]
+
+
+def test_async_prefix_commit_releases_source_growth_after_output_barrier() -> None:
+    scheduler, manager, freed = _scheduler(prefix_caching=True, async_scheduling=True)
+    state = SchedulerCompressionState(scheduler, _selection())
+    state.after_schedule(
+        SimpleNamespace(
+            num_scheduled_tokens={"r": 44},
+            finished_req_ids=set(),
+            preempted_req_ids=set(),
+        )
+    )
+    manager.req_to_blocks["r"].append(SimpleNamespace(block_id=6))
+
+    state.after_model_output()
+
+    assert [block.block_id for block in manager.req_to_blocks["r"]] == [100]
+    assert not freed
+
+    state.after_model_output()
+
+    assert [block.block_id for block in freed] == [6, 5, 4, 3]
 
 
 def test_async_finished_request_discards_unacknowledged_transaction() -> None:
