@@ -12,15 +12,25 @@ Extension Manager ID 为 `org.vllm-hust.ascend-kvcompress`。
 生命周期及声明的服务测试；冻结宿主、模型、校准、数据来源；审核完整 diff。PyPI
 文件不可覆盖，任何代码变更都必须提升版本。
 
-0.7.0 是实验性发布版本。当前验收仅支持有边界的工程性能结论，不支持 V4.6 正式
-通过或生产可用声明。
-
-0.8.0 工作树**尚未发布**。发布门槛以当前 [Frontier 规程](frontier-benchmarking.zh.md)
+0.8.0 仍为实验性版本。当前验证仅支持有边界的工程性能结论，不支持生产可用或
+官网正式成绩的声明。发布门槛以当前 [Frontier 规程](frontier-benchmarking.zh.md)
 为准：同步宿主的匹配运行时、262,144 上下文下 APC/MTP2/async/
 FULL_AND_PIECEWISE/align 的完整服务检查、官方 SWE 和 AgentX 两项 900 秒
 工作负载均有可审计的 B0/B1 配对，并且至少一项 Frontier 负载协议有效且取得
 正收益；另一项若退化须如实披露。历史 V4.6 记录不能代替这些结果。
-用户确认发布前，不得修改版本号或上传 PyPI。
+用户确认发布前，不得修改版本号或上传 PyPI。用户于 2026-09-27 请求发布。
+合并后 AgentX 900 秒配对的总输出吞吐提升 11.18%、解码 P90 提升 5.27%；
+SWE 配对协议有效，但相应指标下降 2.95% 和 1.34%。两项均未实际达到 256K
+prompt，也均非官网正式提交。
+
+精确的 0.8.0 wheel 在锁定的 CANN 9.1/PyTorch 2.13 环境中通过 Ascend 内核与
+插件自带 GDN 回退算子数值短测。使用该 wheel 的 Qwen2.5-14B-Instruct
+FP16/TP=1 服务在 NPU 0、`--enforce-eager` 下返回 `/health` 200；一次
+10,843-token 的事实检索输入正确回答“42”，调度器与 worker 均确认物理 KV
+压缩到 8,192 token。相同宿主的默认图编译启动**未通过**：AOT 路径在初始化
+缓存时出现 `AssertionError: expected OutputCode, got GraphModuleImpl`。
+因此这次追加的 wheel 服务短测只验证 eager 路径，不代表 Qwen2.5 图编译
+模式验收，也不改变上述 Frontier 结果的性质。
 
 ## 构建与检查
 
@@ -40,11 +50,11 @@ python -m build --no-isolation --outdir dist
 
 ```bash
 python -m zipfile -l \
-  dist/vllm_ascend_kvcompress_hust-0.7.0-py3-none-any.whl
+  dist/vllm_ascend_kvcompress_hust-0.8.0-py3-none-any.whl
 python -m twine check \
-  dist/vllm_ascend_kvcompress_hust-0.7.0-py3-none-any.whl \
-  dist/vllm_ascend_kvcompress_hust-0.7.0.tar.gz
-sha256sum dist/vllm_ascend_kvcompress_hust-0.7.0*
+  dist/vllm_ascend_kvcompress_hust-0.8.0-py3-none-any.whl \
+  dist/vllm_ascend_kvcompress_hust-0.8.0.tar.gz
+sha256sum dist/vllm_ascend_kvcompress_hust-0.8.0*
 ```
 
 wheel 必须包含代码、`LICENSE`、`NOTICE` 和
@@ -60,7 +70,7 @@ HTML 榜单及其生成的浏览器数据 bundle；`docs/evidence` 只可包含�
 
 ```bash
 python -m pip install --no-deps \
-  dist/vllm_ascend_kvcompress_hust-0.7.0-py3-none-any.whl
+  dist/vllm_ascend_kvcompress_hust-0.8.0-py3-none-any.whl
 vllm-hust-ext extension validate org.vllm-hust.ascend-kvcompress
 vllm-hust-ext extension configure org.vllm-hust.ascend-kvcompress \
   --file /absolute/path/triattention.json
@@ -88,11 +98,11 @@ Triton-Ascend、NumPy 或 OpenCV 加入插件核心依赖。加速器宿主由�
 ```bash
 export UV_PUBLISH_TOKEN='<从密钥存储读取>'
 uv publish --check-url https://pypi.org/simple \
-  dist/vllm_ascend_kvcompress_hust-0.7.0-py3-none-any.whl \
-  dist/vllm_ascend_kvcompress_hust-0.7.0.tar.gz
+  dist/vllm_ascend_kvcompress_hust-0.8.0-py3-none-any.whl \
+  dist/vllm_ascend_kvcompress_hust-0.8.0.tar.gz
 unset UV_PUBLISH_TOKEN
 ```
 
 若受保护发布器使用 Twine，则从密钥存储设置 `TWINE_USERNAME=__token__` 和
-`TWINE_PASSWORD`，上传同样两个明确文件。最后从正式 PyPI 无缓存安装 0.7.0，
+`TWINE_PASSWORD`，上传同样两个明确文件。最后从正式 PyPI 无缓存安装 0.8.0，
 核对哈希、Manager 发现/启用、`/health` 和一个正确性用例。

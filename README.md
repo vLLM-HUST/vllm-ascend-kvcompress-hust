@@ -3,13 +3,13 @@
 English | [简体中文](README.zh.md)
 
 An independently packaged TriAttention KV-cache compression plugin for the
-upstream-aligned vLLM-HUST and vLLM-Ascend-HUST stacks. The published 0.7
-release added the paper's V3 position policy and experimental Qwen3.5 support.
-The unreleased 0.8 candidate adapts to the synchronized hosts without
+upstream-aligned vLLM-HUST and vLLM-Ascend-HUST stacks. The 0.7 release added
+the paper's V3 position policy and experimental Qwen3.5 support. Version 0.8
+adapts to the synchronized hosts without
 changing their source repositories.
 
-> Status: 0.8 development candidate, merged and retested, not yet published or
-> release-qualified. On merged source commit `17ffdc7`, Qwen3.5 BF16/TP=2
+> Status: 0.8.0 has bounded engineering validation, not production or formal
+> leaderboard qualification. On merged source commit `17ffdc7`, Qwen3.5 BF16/TP=2
 > passed separate official AgentX and SWE C4/900-second B0/B1 protocols at
 > 262,144 configured context. AgentX output throughput improved **11.18%** and
 > decode P90 **5.27%**, while TTFT P95 worsened **16.06%**. SWE, with real
@@ -20,7 +20,6 @@ changing their source repositories.
 > result, not a formal one-hour AgentX result, semantic-quality certification,
 > or official website submission. MTP2 is experimental and rejected by default;
 > both AgentX arms disabled it under that workload's forced-acceptance rule.
-> Publication remains subject to user approval.
 > See the [current frontier protocol](docs/frontier-benchmarking.md). The
 > [0.7 validation record](docs/validation.md) remains historical.
 
@@ -58,7 +57,7 @@ and [calibration artifacts](docs/calibration-artifacts.md).
 
 | Component | Supported line | Validated snapshot |
 | --- | --- | --- |
-| vLLM-HUST / `vllm` | `>=0.29.1.post1.dev0,<0.30` (0.8 candidate) | `fc06902b7d` (`0.29.1.post1.dev843+gfc06902b7.empty`) |
+| vLLM-HUST / `vllm` | `>=0.29.1.post1.dev0,<0.30` (0.8.0) | `fc06902b7d` (`0.29.1.post1.dev843+gfc06902b7.empty`) |
 | vLLM-Ascend-HUST / `vllm-ascend` | `>=0.25.1rc2.dev0,<0.26` | `5422a07c4` (`0.25.1rc2.dev616+hust.20260903.4.g5422a07c4`) |
 | Extension Manager | `>=0.2.0.dev0,<0.3` | installed `0.2.0.dev0` |
 | Python | `>=3.10,<3.15` | 3.11.16 |
@@ -92,11 +91,11 @@ vLLM line requires `opencv-python-headless>=4.13`, whose available wheels
 require NumPy 2. Downgrading OpenCV to 4.9 violates the vLLM requirement. Use
 the matched Triton-Ascend 3.6 host stack instead.
 
-The following installs the published 0.7 package, **not** this 0.8 development
-candidate. It is not the validated installation command for the 0.29 host:
+After provisioning the matched host stack, install version 0.8.0 without
+re-resolving hardware-specific dependencies:
 
 ```bash
-python -m pip install --no-deps vllm-ascend-kvcompress-hust==0.7.0
+python -m pip install --no-deps vllm-ascend-kvcompress-hust==0.8.0
 ```
 
 For a fresh environment, install `vllm-hust-ext` separately from its approved
@@ -218,7 +217,7 @@ does not change Qwen2.5-14B-Instruct as the standard release model.
 
 ## Conflict matrix
 
-| Feature | 0.8 candidate status | Behavior |
+| Feature | 0.8.0 status | Behavior |
 | --- | --- | --- |
 | Prefix cache | Official C4 pairs protocol-valid | Private destination blocks preserve shared source hashes; Qwen3.5 SWE regressed, AgentX min-512 improved throughput |
 | Speculative decoding | Experimental | Opt-in MTP2 served both SWE 900-second arms with real acceptance; default startup guard remains |

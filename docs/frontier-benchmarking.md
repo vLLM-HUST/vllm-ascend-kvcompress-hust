@@ -1,8 +1,8 @@
-# Frontier benchmark protocol (0.8 candidate)
+# Frontier benchmark protocol (0.8.0)
 
 English | [简体中文](frontier-benchmarking.zh.md)
 
-This protocol replaces the former V4.6 A2/A3 matrix as the project's current leaderboard target. Earlier results remain historical evidence and must not be pooled with the new workloads. A paired AgentX 900-second smoke has reproduced a positive throughput result on merged source commit `17ffdc7`; release remains subject to user approval.
+This protocol replaces the former V4.6 A2/A3 matrix as the project's current leaderboard target. Earlier results remain historical evidence and must not be pooled with the new workloads. A paired AgentX 900-second smoke reproduced a positive throughput result on merged source commit `17ffdc7`; the SWE regression is disclosed below. These local results are not an official website submission.
 
 For SWE run qualification and any later submission to the official website, follow the [Frontier submission guide](https://github.com/vLLM-HUST/vllm-hust-website/blob/codex/frontier-submission-example/data/examples/frontier-submission/README.md). In particular, run a 60-second C4 protocol check before the separate 900-second measurement, preserve the raw `summary.json` and `config.json`, and map `output_tokens_per_second` to total `metrics.output_tps` (the website divides by chip count). A local run or a point on this plugin's HTML page does not automatically publish an official website point. MTP in SWE must use actual generated tokens and observed acceptance, not the historical AgentX synthetic sampler or fixed acceptance length.
 

@@ -3,10 +3,10 @@
 [English](README.md) | 简体中文
 
 面向与上游对齐的 vLLM-HUST、vLLM-Ascend-HUST 的独立 TriAttention KV-cache
-压缩插件。已发布的 0.7 版加入论文 V3 位置策略与实验性 Qwen3.5 支持；未发布的
-0.8 候选版适配同步后的宿主，且不修改宿主源码仓库。
+压缩插件。0.7 版加入论文 V3 位置策略与实验性 Qwen3.5 支持；0.8 版适配同步后
+的宿主，且不修改宿主源码仓库。
 
-> 状态：0.8 开发候选版已合入并复测，尚未发布或完成版本验收。合并源码提交
+> 状态：0.8.0 具备有边界的工程验证，但不宣称生产可用或正式榜单验收。合并源码提交
 > `17ffdc7` 上，Qwen3.5 BF16/TP=2 在配置 262,144 上下文的官方 AgentX 与
 > SWE C4／900 秒 B0/B1 配对均协议有效。AgentX 总输出吞吐提升 **11.18%**、
 > 解码 P90 提升 **5.27%**，TTFT P95 则变差 **16.06%**。SWE 在真实 MTP2、
@@ -15,7 +15,7 @@
 > 实际最长输入约为 AgentX 169K、SWE 75K，并非实测 256K。这是本地
 > 900 秒工程结果，不是一小时 AgentX 正式成绩、语义质量认证或官网提交。
 > MTP2 仍为默认拒绝启动的实验功能；AgentX 两侧按强制接受率规则关闭 MTP。
-> 打包发布仍待用户确认。详见
+> 详见
 > [当前前沿测试协议](docs/frontier-benchmarking.zh.md)；
 > [0.7 验收记录](docs/validation.zh.md)仅作为历史资料。
 
@@ -77,11 +77,10 @@ Ascend 宿主使用 32,768-token 跨组 scheduler 对齐、2,048-token 全注意
 `opencv-python-headless>=4.13`，其可用 wheel 要求 NumPy 2；把 OpenCV 降到
 4.9 又会违反 vLLM 的依赖约束。应使用宿主栈配套的 Triton-Ascend 3.6。
 
-以下命令安装已发布的 0.7 包，**不是**当前 0.8 开发候选版，也不是 0.29 宿主的
-已验证安装命令：
+先部署经过匹配验证的宿主栈，再安装 0.8.0，且不重新解析硬件相关依赖：
 
 ```bash
-python -m pip install --no-deps vllm-ascend-kvcompress-hust==0.7.0
+python -m pip install --no-deps vllm-ascend-kvcompress-hust==0.8.0
 ```
 
 全新环境需先从项目组认可的软件源单独安装 `vllm-hust-ext`，再执行上述命令。

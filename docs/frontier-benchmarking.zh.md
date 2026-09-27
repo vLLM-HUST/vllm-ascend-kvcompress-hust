@@ -2,7 +2,7 @@
 
 [English](frontier-benchmarking.md) | 简体中文
 
-本规程替代旧 V4.6 A2/A3 作为当前项目的刷榜目标；旧结果保留为历史证据，不能与新工作负载合并。AgentX 的 900 秒配对吞吐正结果已在合并源码提交 `17ffdc7` 上复现；版本发布仍待用户确认。
+本规程替代旧 V4.6 A2/A3 作为当前项目的刷榜目标；旧结果保留为历史证据，不能与新工作负载合并。AgentX 的 900 秒配对吞吐正结果已在合并源码提交 `17ffdc7` 上复现；SWE 退化如下披露。本地结果不等于官网正式提交。
 
 SWE 的测试资格及将来向官网提交成绩，按[Frontier 成绩提交指南](https://github.com/vLLM-HUST/vllm-hust-website/blob/codex/frontier-submission-example/data/examples/frontier-submission/README.md)执行：先做独立的 C4／60 秒协议检查，再测 900 秒；保留原始 `summary.json`、`config.json`，将 `output_tokens_per_second` 填为总吞吐 `metrics.output_tps`（官网再按卡数相除）。本地测试或插件 HTML 页面上的点不会自动登上官网。SWE 使用 MTP 时必须保留真实生成 token 和实测接受率，不能套用历史 AgentX 的 synthetic sampler 或固定接受长度。
 
@@ -234,4 +234,4 @@ B1 的 60 秒短测与 900 秒窗口合计有 99 次调度提交、198 次 TP-ra
 同源码严格配对及原始报告哈希见
 [合并后 SWE 负结果证据](evidence/kvcompress-qwen35-20260927-swe-postmerge-negative-pair.json)。
 协议有效和真实 MTP 接受率不代表正收益，也不测 SWE 任务成功率。既有
-Qwen2.5 标准发布测试保留为历史记录；0.8 打包发布仍待用户确认。
+Qwen2.5 标准发布测试保留为历史记录；这些本地测试不等于官网正式提交。
