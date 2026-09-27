@@ -13,6 +13,7 @@ from vllm_ascend_kvcompress.config import ProviderSelection
 from vllm_ascend_kvcompress.stateful import (
     SchedulerActiveCompression,
     SchedulerCompressionState,
+    SchedulerDeferredRelease,
     _install_manager_hooks,
 )
 
@@ -38,7 +39,11 @@ def _scheduler(
     block_size=128,
     hybrid_model_type=None,
     attention_block_size=None,
+    async_scheduling=False,
+    max_concurrent_batches=None,
 ):
+    if async_scheduling and scheduler_module == "vllm.v1.core.sched.scheduler":
+        scheduler_module = "vllm.v1.core.sched.async_scheduler"
     parallel = SimpleNamespace(
         tensor_parallel_size=1,
         pipeline_parallel_size=1,
@@ -57,9 +62,11 @@ def _scheduler(
         ),
         speculative_config=None,
         kv_transfer_config=None,
-        scheduler_config=SimpleNamespace(async_scheduling=False),
+        scheduler_config=SimpleNamespace(async_scheduling=async_scheduling),
         parallel_config=parallel,
     )
+    if max_concurrent_batches is not None:
+        vllm_config.max_concurrent_batches = max_concurrent_batches
     blocks = [SimpleNamespace(block_id=value) for value in (3, 4, 5)]
     if attention_block_size is None:
         attention_block_size = block_size
@@ -102,9 +109,12 @@ def _scheduler(
     request = SimpleNamespace(
         request_id="r", num_computed_tokens=300, num_prompt_tokens=300, max_tokens=128
     )
-    scheduler_name = (
-        "BalanceScheduler" if "vllm_ascend" in scheduler_module else "Scheduler"
-    )
+    if "vllm_ascend" in scheduler_module:
+        scheduler_name = "BalanceScheduler"
+    elif scheduler_module.endswith("async_scheduler"):
+        scheduler_name = "AsyncScheduler"
+    else:
+        scheduler_name = "Scheduler"
     scheduler_type = type(scheduler_name, (SimpleNamespace,), {})
     scheduler_type.__module__ = scheduler_module
     scheduler = scheduler_type(
@@ -187,6 +197,73 @@ def test_scheduler_arms_then_commits_tail_after_barrier() -> None:
     assert state.active["r"] == SchedulerActiveCompression(300, 128)
 
 
+def test_async_scheduler_commits_on_output_and_defers_tail_release() -> None:
+    scheduler, manager, freed = _scheduler(
+        scheduler_module="vllm.v1.core.sched.async_scheduler",
+        async_scheduling=True,
+    )
+    state = SchedulerCompressionState(scheduler, _selection())
+    output = SimpleNamespace(
+        num_scheduled_tokens={"r": 44},
+        finished_req_ids=set(),
+        preempted_req_ids=set(),
+    )
+
+    state.after_schedule(output)
+    state.before_schedule()
+
+    assert [block.block_id for block in manager.req_to_blocks["r"]] == [3, 4, 5]
+    assert not freed
+
+    state.after_model_output()
+
+    assert [block.block_id for block in manager.req_to_blocks["r"]] == [3]
+    assert state.active["r"] == SchedulerActiveCompression(300, 128)
+    assert not freed
+
+    state.after_model_output()
+
+    assert [block.block_id for block in freed] == [5, 4]
+
+
+def test_async_scheduler_honors_larger_batch_queue_before_release() -> None:
+    scheduler, _, freed = _scheduler(async_scheduling=True, max_concurrent_batches=3)
+    state = SchedulerCompressionState(scheduler, _selection())
+    state.after_schedule(
+        SimpleNamespace(
+            num_scheduled_tokens={"r": 44},
+            finished_req_ids=set(),
+            preempted_req_ids=set(),
+        )
+    )
+
+    state.after_model_output()
+    state.after_model_output()
+    assert not freed
+
+    state.after_model_output()
+    assert [block.block_id for block in freed] == [5, 4]
+
+
+def test_async_finished_request_discards_unacknowledged_transaction() -> None:
+    scheduler, manager, freed = _scheduler(async_scheduling=True)
+    state = SchedulerCompressionState(scheduler, _selection())
+    state.after_schedule(
+        SimpleNamespace(
+            num_scheduled_tokens={"r": 44},
+            finished_req_ids=set(),
+            preempted_req_ids=set(),
+        )
+    )
+    scheduler.requests.clear()
+
+    state.after_model_output()
+
+    assert not state.pending
+    assert [block.block_id for block in manager.req_to_blocks["r"]] == [3, 4, 5]
+    assert not freed
+
+
 def test_manager_allocation_temporarily_uses_physical_length() -> None:
     class Manager:
         def allocate_slots(self, request):
@@ -208,6 +285,33 @@ def test_manager_allocation_temporarily_uses_physical_length() -> None:
     assert result == "allocated"
     assert manager.seen == 128
     assert request.num_computed_tokens == 300
+
+
+def test_manager_free_releases_async_tail_on_abort() -> None:
+    freed = []
+
+    class Manager:
+        block_pool = SimpleNamespace(free_blocks=lambda values: freed.extend(values))
+
+        def allocate_slots(self, request):
+            return None
+
+        def free(self, request):
+            return request.request_id
+
+    _install_manager_hooks(Manager)
+    manager = Manager()
+    request = SimpleNamespace(request_id="r")
+    tail = (SimpleNamespace(block_id=5), SimpleNamespace(block_id=4))
+    manager._ascend_kvcompress_deferred_releases_v3 = {
+        "r": [
+            SchedulerDeferredRelease(request_id="r", blocks=tail, remaining_outputs=1)
+        ]
+    }
+
+    assert manager.free(request) == "r"
+    assert [block.block_id for block in freed] == [5, 4]
+    assert not manager._ascend_kvcompress_deferred_releases_v3
 
 
 def test_finished_request_discards_pending_state() -> None:

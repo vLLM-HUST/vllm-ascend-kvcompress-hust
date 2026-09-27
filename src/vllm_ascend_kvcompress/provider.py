@@ -402,8 +402,6 @@ def _common_compatibility_reasons(vllm_config: Any, runner: Any) -> tuple[str, .
         reasons.append("speculative decoding is unsupported")
     if vllm_config.kv_transfer_config is not None:
         reasons.append("KV transfer is unsupported")
-    if bool(getattr(vllm_config.scheduler_config, "async_scheduling", False)):
-        reasons.append("asynchronous scheduling is unsupported")
     model_config = vllm_config.model_config
     if bool(getattr(model_config, "is_hybrid", False)):
         text_config = getattr(model_config, "hf_text_config", None)
