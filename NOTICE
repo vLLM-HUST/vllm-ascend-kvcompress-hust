@@ -8,5 +8,14 @@ https://github.com/WeianMao/triattention/tree/a4bc3c8f709db60f016ef42c3feb290fd0
 
 The implementation uses the provider-neutral KV-cache compression contracts
 from vLLM-HUST and the out-of-tree platform conventions from
-vLLM-Ascend-HUST. It does not copy the CUDA or Triton runtime kernels.
+vLLM-Ascend-HUST. It does not copy TriAttention's CUDA or Triton runtime
+kernels.
+
+The plugin-owned Qwen GDN output Triton kernel is adapted from the
+vLLM-Ascend-HUST flash-linear-attention-derived chunk output kernel.
+Copyright (c) 2023-2025 Songlin Yang and Yu Zhang and vLLM contributors.
+The original flash-linear-attention code is MIT-licensed; its required notice
+is retained in LICENSES/flash-linear-attention-MIT.txt. This plugin adaptation
+is for the missing Qwen GDN output registration only and does not redistribute
+AscendC/Catlass device kernels.
 

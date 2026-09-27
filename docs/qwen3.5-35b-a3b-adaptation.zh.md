@@ -2,10 +2,11 @@
 
 [English](qwen3.5-35b-a3b-adaptation.md) | 简体中文
 
-更新日期：2026-09-20。该模型是工程适配目标，不改变标准验收模型。日常发布测试仍按
-[验收要求](kv-compress-test-requirements.zh.md)使用
-`Qwen/Qwen2.5-14B-Instruct`。之所以额外覆盖 Qwen3.5，是因为其“全注意力 +
-Gated-DeltaNet”混合架构可作为后续相关 Intern-S2 适配的前置验证。
+更新日期：2026-09-27。Qwen3.5-35B-A3B BF16 是当前
+[前沿刷榜规程](frontier-benchmarking.zh.md)的正式模型 cohort 之一；此前以
+`Qwen/Qwen2.5-14B-Instruct` 为标准模型的
+[V4.6 验收要求](kv-compress-test-requirements.zh.md)已归档，不再作为 0.8 发布门槛。
+其“全注意力 + Gated-DeltaNet”混合架构也可作为后续相关 Intern-S2 适配的前置验证。
 
 ## 冻结模型身份
 
@@ -39,10 +40,11 @@ Hugging Face 端点不可用时，通过 ModelScope 的 Qwen 官方镜像下载�
 
 ## 运行时适配
 
-插件只为 Qwen3.5 接受“一个全注意力 KV 组 + 可选 Mamba/GDN 组”，并要求
-`mamba_cache_mode=none`。scheduler 与 worker 提交只截断全注意力 block table。
+插件只为 Qwen3.5 接受“一个全注意力 KV 组 + 可选 Mamba/GDN 组”，支持
+`mamba_cache_mode=none` 或 `align`。scheduler 与 worker 提交只更改全注意力 block table。
 slot 位置和 attention length 使用压缩后的物理视图，语义 RoPE 位置与 GDN 状态推进
-保持不变。
+保持不变。`align` 路径与前缀缓存写时复制提交已通过 TP=2/eager 有界 NPU 冒烟测试，
+但尚未完成正式负载验证。
 
 已验证的 Ascend 宿主暴露三层不同粒度：32,768-token 跨组 scheduler 对齐（所有
 cache manager block size 的最小公倍数）、2,048-token 全注意力 manager 页，以及
@@ -51,18 +53,26 @@ table 做压缩；评分和物化时把每个 2,048-token attention ID 展开为
 ID。`kv_budget` 必须能被 2,048 整除，但无需被 32,768-token scheduler 对齐整除。
 其他布局会在启动时拒绝。
 
-当前已验证的宿主组合运行该模型时必须带 `--enforce-eager`，并且存在二进制/源码
-ABI 不一致：已安装的 GDN 因果卷积算子把四个元数据参数声明为不可选 `int[]`，当前
-Python 调用点却传入设备 tensor，并用 `None` 表示缺省值。设置
+较早的 2026-09-20 宿主快照要求 `--enforce-eager`，且二进制/源码 ABI 不一致：
+已安装的 GDN 因果卷积算子把四个元数据参数声明为不可选 `int[]`，Python 调用点却
+传入设备 tensor，并用 `None` 表示缺省值。设置
 `VLLM_ASCEND_KVCOMPRESS_QWEN_GDN_LIST_COMPAT=1` 后，插件只为这一精确旧 schema
-启用显式兼容桥：把 tensor 转成整数列表，把二维 cache-index 表按行优先展平，并把
-缺省元数据映射为空列表。原生 `Tensor?` schema 保持不变，任何未知 schema 都会
-fail closed。全程无需修改宿主仓库。只有在新宿主版本已验证源码与二进制对齐后，
-才应移除该环境变量和 eager 限制。
+启用显式兼容桥：把 tensor 转成整数列表；在实验性 MTP2 非推测 prefill 路径，
+二维 cache-index 表仅取目标状态首列；把缺省元数据映射为空列表。推测卷积则由插件
+内部参考实现处理扩展滚动状态与已接受 token 偏移。原生 `Tensor?` schema 保持不变，任何未知 schema 都会
+fail closed。全程无需修改宿主仓库。同步后的 2026-09-27 Ascend 宿主已暴露
+Tensor 元数据 ABI；配套 CANN 9.1/PyTorch 2.13 环境下，该模型不使用
+`--enforce-eager` 即完成配置 262,144 上下文与 FULL_AND_PIECEWISE 图捕获，
+官方 SWE C4／60 秒协议短测通过。兼容桥开关可保留，但对 Tensor schema 不起作用；
+SWE 900 秒配对仍为负结果；同源码 AgentX 900 秒配对采用最短输出 512-token
+门槛后，总吞吐提升 11.85%、解码 P90 提升 5.31%，但 TTFT P95 变差
+20.60%。详见[Frontier 测试](frontier-benchmarking.zh.md)及其局限。
 
 部分 RoPE 校准会在旋转前采集归一化 query head。64 个旋转维度使用 TriAttention
-面向未来位置的三角评分；192 个直通维度加入校准后的直接 Q·K 内容项。该模型不会
-使用只适用于完整 RoPE 的融合评分算子。TP=2 时，各 rank 评分自己的本地 KV 头，
+面向未来位置的三角评分；192 个直通维度加入校准后的直接 Q·K 内容项。插件自有的
+分页键融合评分算子现可同时处理两部分；数值 NPU 检查已通过，32,768-token 单层
+微基准提升 10.08 倍；新的 SWE 官方配对缩小了端到端退化，但尚未扭转。
+TP=2 时，各 rank 评分自己的本地 KV 头，
 再以最大值 all-reduce 得到完全相同的 token 选择。
 
 V3 会保护开头 128 个和最近 512 个 token，把中间上下文切成 8 段，并为每段分配
@@ -83,7 +93,8 @@ python -m vllm_ascend_kvcompress.calibration \
   --dtype bfloat16 --attn-implementation eager --local-files-only
 ```
 
-使用
+以下 B0/B1 配方属于 2026-09-20 历史测试：使用 `mamba_cache_mode=none`，关闭
+APC 与异步调度，不是当前 0.8 验收启动命令。使用
 [`examples/qwen3.5-35b-a3b-triattention.json`](../examples/qwen3.5-35b-a3b-triattention.json)
 配置插件，再启动 B1：
 
@@ -120,12 +131,27 @@ B0 必须独立重启，但仍加载同一插件及模型绑定统计；把 `kv_
 因此该设置只缩小共享内存快速路径，不限制消息大小。不受 64 MiB 限制的部署应省略
 此变量并保留上游默认值。
 
-## 测试状态与范围
+## 当前 0.8 工程状态
 
-当前工作树已通过 114 项单元/契约测试，另有 1 项环境跳过。TP=2 的 16K 服务冒烟
+2026-09-27，同步后的宿主在 Qwen3.5 BF16/TP=2/eager、16,384-token 上限、
+`mamba_cache_mode=align`、APC 和异步调度下完成四个非思考检索请求。答案均正确，
+每个请求有一次压缩提交和两个 TP rank 回执；第二个相同请求新增 8,192 个服务端
+prefix-hit token。两个不同请求由并发客户端提交，但尚未证明设备 batch 重叠。
+详见[机器可读冒烟记录](evidence/kvcompress-qwen35-20260927-async-apc-align-smoke.json)
+和[当前前沿测试协议](frontier-benchmarking.zh.md)。早期显式 MTP2 诊断的首条请求在
+`aclnnCausalConv1d` 失败；修正目标状态列映射和扩展滚动卷积状态后，7K 未压缩对照
+以及三条 10K 压缩检索均答对，三次压缩均有双 TP 回执。MTP2 仍默认拒绝启动，
+只能显式作为实验功能开启；图模式、262,144-token 上下文和官方 900 秒负载未验证。
+CPU 测试通过 135 项，另有 1 项环境跳过。详见
+[MTP2 诊断](evidence/kvcompress-qwen35-20260927-mtp2-diagnostic.json)与
+[修复后工程冒烟](evidence/kvcompress-qwen35-20260927-mtp2-apc-align-smoke.json)。
+
+## 历史 0.7 测试状态与范围
+
+2026-09-20 的工作树通过 114 项单元/契约测试，另有 1 项环境跳过。TP=2 的 16K 服务冒烟
 已在两组完成：B0 保留全部 16,384 个输入 token；B1 把 16,384 个语义 token 提交为
 8,192 个物理 token；两组均生成完整 1,024 个强制输出 token、命中 oracle，且无
-静默截断。模型级结论仍以公开长上下文和标准 A2/A3 套件为准。由于本目标使用 TP=2、
+静默截断。当时的模型级结论以公开长上下文和标准 A2/A3 套件为准。由于本目标使用 TP=2、
 eager、显式旧 ABI 兼容桥和混合注意力，其结果属于工程证据，不能标为 V4.6 正式
 验收。结果统一发布到 [HTML 榜单](benchmark-leaderboard.html)，并链接机器可读证据
 和明确限制。

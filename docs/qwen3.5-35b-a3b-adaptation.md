@@ -2,12 +2,12 @@
 
 English | [简体中文](qwen3.5-35b-a3b-adaptation.zh.md)
 
-Updated: 2026-09-20. This is an engineering adaptation target, not a change to
-the standard acceptance model. Routine release testing continues to use
-`Qwen/Qwen2.5-14B-Instruct` as specified by
-[the acceptance requirements](kv-compress-test-requirements.md). Qwen3.5 is
-covered because its full-attention/Gated-DeltaNet hybrid is a useful precursor
-to the related Intern-S2 architecture.
+Updated: 2026-09-27. Qwen3.5-35B-A3B BF16 is a current official model cohort
+under the [frontier leaderboard protocol](frontier-benchmarking.md). The older
+[V4.6 acceptance requirements](kv-compress-test-requirements.md), which used
+`Qwen/Qwen2.5-14B-Instruct` as the standard model, are archived and no longer
+gate the 0.8 release. Qwen3.5's full-attention/Gated-DeltaNet hybrid also
+provides a useful precursor to the related Intern-S2 architecture.
 
 ## Frozen model identity
 
@@ -45,10 +45,11 @@ budget; mixing the two modes invalidates a B0/B1 comparison.
 ## Runtime adaptation
 
 The plugin accepts exactly one full-attention KV group plus optional Mamba/GDN
-groups for Qwen3.5, with `mamba_cache_mode=none`. Scheduler and worker commits
-truncate only the full-attention block table. Slot positions and attention
+groups for Qwen3.5, with `mamba_cache_mode=none` or `align`. Scheduler and worker
+commits change only the full-attention block table. Slot positions and attention
 lengths use the compacted physical view, while semantic RoPE positions and GDN
-state progression remain unchanged.
+state progression remain unchanged. The `align` path and prefix-cache copy-on-
+write commit passed a bounded TP=2/eager NPU smoke, not a full workload.
 
 The validated Ascend host exposes three distinct granularities: a 32,768-token
 cross-group scheduler alignment (the LCM of all cache managers), a 2,048-token
@@ -59,22 +60,34 @@ scoring/materialization. `kv_budget` must be divisible by 2,048, but does not
 need to be divisible by the 32,768-token scheduler alignment. Other layouts
 fail closed.
 
-The validated host combination currently requires `--enforce-eager`. It also
-contains a binary/source ABI mismatch: the installed GDN causal-convolution
-operator declares four non-optional `int[]` metadata inputs, while the current
-Python call site supplies device tensors and uses `None` for absent metadata.
+The earlier 2026-09-20 host snapshot required `--enforce-eager` and contained
+a binary/source ABI mismatch: its installed GDN causal-convolution operator
+declared four non-optional `int[]` metadata inputs, while Python supplied
+device tensors and used `None` for absent metadata.
 Set `VLLM_ASCEND_KVCOMPRESS_QWEN_GDN_LIST_COMPAT=1` to enable the plugin-owned,
 opt-in bridge for exactly that legacy schema. The bridge converts tensors to
-integer lists, flattens the two-dimensional cache-index table in row-major
-order, and maps absent metadata to an empty list. A native `Tensor?` schema is
+integer lists, uses only the target-state column of a two-dimensional MTP2
+cache-index table during experimental non-speculative prefill, and maps absent
+metadata to an empty list. Plugin-owned speculative convolution handles the
+extended rolling state and accepted-token offset. A native `Tensor?` schema is
 left untouched and every unknown schema fails closed. No host repository patch
-is required. Remove the environment variable and eager restriction only after
-validating an aligned host source/binary release.
+is required. The synchronized 2026-09-27 Ascend host now exposes the Tensor
+metadata ABI. With the isolated CANN 9.1/PyTorch 2.13 environment, the same
+model reached 262,144 configured context and captured FULL_AND_PIECEWISE
+graphs without `--enforce-eager`; the official SWE C4/60-second protocol check
+passed. The bridge flag may remain set but is a no-op for the Tensor schema.
+The SWE 900-second pairs remained negative, while a same-source AgentX
+900-second pair with a 512-token minimum output gate improved output
+throughput by 11.85% and decode P90 by 5.31%; TTFT P95 worsened 20.60%.
+See [Frontier benchmarking](frontier-benchmarking.md) for the full limits.
 
 Partial-RoPE calibration captures normalized query heads before rotation. The
 64 rotated dimensions use TriAttention's trigonometric future-position score;
 the 192 pass-through dimensions add their calibrated direct Q·K contribution.
-The full-RoPE fused scoring kernel is not used for this model. With TP=2, each
+The plugin's fused paged-key scorer now handles both terms for this model;
+its numerical NPU test passed and a 32,768-token single-layer microbenchmark
+improved 10.08×. A fresh official SWE pair narrowed but did not reverse the
+end-to-end regression. With TP=2, each
 rank scores its local KV head and an all-reduce maximum produces the same token
 selection on both ranks.
 
@@ -97,7 +110,9 @@ python -m vllm_ascend_kvcompress.calibration \
   --dtype bfloat16 --attn-implementation eager --local-files-only
 ```
 
-Configure the plugin with
+The following B0/B1 recipe records the historical 2026-09-20 suite; it uses
+`mamba_cache_mode=none` with APC and async scheduling disabled. It is not the
+current 0.8 qualification launch. Configure the plugin with
 [`examples/qwen3.5-35b-a3b-triattention.json`](../examples/qwen3.5-35b-a3b-triattention.json),
 then launch the B1 service:
 
@@ -139,14 +154,34 @@ the chunk size still use the socket path, so this reduces only the shared-memory
 fast-path capacity and does not cap message size. Deployments without the
 64 MiB constraint should omit the variable and retain the upstream default.
 
-## Test status and scope
+## Current 0.8 engineering status
 
-The current worktree passes 114 unit/contract tests with one environment skip.
+On 2026-09-27, the synchronized hosts served Qwen3.5 BF16/TP=2/eager with a
+16,384-token limit, `mamba_cache_mode=align`, APC, and async scheduling enabled.
+Four non-thinking retrieval requests returned their expected codes, each with
+one compression commit and one acknowledgement from each TP rank. The second
+identical request added 8,192 server-side prefix-hit tokens. The two distinct
+requests were submitted by concurrent clients, but overlapping device batches
+were not established. See the [machine-readable smoke record](evidence/kvcompress-qwen35-20260927-async-apc-align-smoke.json)
+and [frontier protocol](frontier-benchmarking.md). An early opt-in MTP2 trial
+failed its first request in `aclnnCausalConv1d`. After correcting the target
+cache-column mapping and extended rolling convolution state, one uncompressed
+7K control and three compressed 10K retrieval requests all answered correctly,
+with two TP acknowledgements per compression. MTP2 remains rejected by default
+and is available only as an explicit experiment. Graph execution, 262,144-token
+context, and the official 900-second workloads remain untested. See the
+[diagnostic failure](evidence/kvcompress-qwen35-20260927-mtp2-diagnostic.json)
+and [later engineering smoke](evidence/kvcompress-qwen35-20260927-mtp2-apc-align-smoke.json).
+The CPU suite passes 135 tests with one environment skip.
+
+## Historical 0.7 test status and scope
+
+The 2026-09-20 worktree passed 114 unit/contract tests with one environment skip.
 The 16K TP=2 service smoke completed in both arms: B0 retained all 16,384 input
 tokens, while B1 committed 16,384 semantic tokens to 8,192 physical tokens;
 both produced all 1,024 forced output tokens, matched the oracle, and reported
-no silent truncation. The public-long-context and standard A2/A3 suites remain
-the governing model-level tests. Because this target uses TP=2, eager execution,
+no silent truncation. The public-long-context and standard A2/A3 suites were
+the historical model-level tests. Because this target used TP=2, eager execution,
 the explicit legacy-ABI bridge, and hybrid attention, its results are
 engineering evidence and cannot be labeled formal V4.6 acceptance. Results are
 published in the

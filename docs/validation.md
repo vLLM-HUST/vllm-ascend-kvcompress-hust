@@ -1,6 +1,9 @@
-# Working-Tree Validation Record
+# Historical 2026-09-20 Working-Tree Validation Record
 
 English | [简体中文](validation.zh.md)
+
+> **Historical archive.** This snapshot predates the 0.8 Frontier protocol and
+> is not a current release acceptance result. See [the active protocol](frontier-benchmarking.md).
 
 Date: 2026-09-20. Verdict: **partial engineering PASS, not formal V4.6
 acceptance**. The complete A2 commissioning matrix and the three public quality

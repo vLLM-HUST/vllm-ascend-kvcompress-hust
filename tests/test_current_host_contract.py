@@ -15,7 +15,7 @@ def _parameter_names(callable_object: object) -> tuple[str, ...]:
 
 
 def test_installed_host_versions_are_in_the_validated_lines() -> None:
-    assert version("vllm") in SpecifierSet(">=0.28.1.post1.dev0,<0.29")
+    assert version("vllm") in SpecifierSet(">=0.29.1.post1.dev0,<0.30")
     assert version("vllm-ascend") in SpecifierSet(">=0.25.1rc2.dev0,<0.26")
     assert version("vllm-hust-ext") in SpecifierSet(">=0.2.0.dev0,<0.3")
 

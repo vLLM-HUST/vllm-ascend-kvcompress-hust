@@ -15,6 +15,13 @@ Extension Manager ID 为 `org.vllm-hust.ascend-kvcompress`。
 0.7.0 是实验性发布版本。当前验收仅支持有边界的工程性能结论，不支持 V4.6 正式
 通过或生产可用声明。
 
+0.8.0 工作树**尚未发布**。发布门槛以当前 [Frontier 规程](frontier-benchmarking.zh.md)
+为准：同步宿主的匹配运行时、262,144 上下文下 APC/MTP2/async/
+FULL_AND_PIECEWISE/align 的完整服务检查、官方 SWE 和 AgentX 两项 900 秒
+工作负载均有可审计的 B0/B1 配对，并且至少一项 Frontier 负载协议有效且取得
+正收益；另一项若退化须如实披露。历史 V4.6 记录不能代替这些结果。
+用户确认发布前，不得修改版本号或上传 PyPI。
+
 ## 构建与检查
 
 优先采用 BidKV 的 `uv` 流程：

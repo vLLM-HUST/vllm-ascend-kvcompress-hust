@@ -2,6 +2,9 @@
 
 [English](benchmarking.md) | 简体中文
 
+> **历史归档。** 本 V4.6 衍生规程不再是 0.8 发布门槛；当前规程见
+> [Frontier 刷榜](frontier-benchmarking.zh.md)。
+
 从 HUST V4.6 交付方案提取的项目专项规范见
 [KV 压缩测试要求](kv-compress-test-requirements.zh.md)，其优先级高于下述简要流程。
 

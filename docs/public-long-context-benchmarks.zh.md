@@ -2,6 +2,9 @@
 
 [English](public-long-context-benchmarks.md) | 简体中文
 
+> **历史归档。** 2026-09-20 的公开实验（含负性能结果）继续保留，但不属于
+> 当前 0.8 Frontier cohort。请见[Frontier 刷榜规程](frontier-benchmarking.zh.md)。
+
 更新日期：2026-09-20。本记录在合成 commissioning 测试之外，覆盖三个公开长上下文/
 KV 场景。它是同宿主工程对照，不是 V4.6 官方基线正式验收，也不替代 30 分钟 A3
 稳定性测试。

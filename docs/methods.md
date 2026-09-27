@@ -4,7 +4,7 @@ English | [简体中文](methods.zh.md)
 
 ## Runtime layers
 
-Version 0.6 is a self-contained plugin and does not use the removed
+Since version 0.6, this is a self-contained plugin and does not use the removed
 vLLM-HUST compression lifecycle:
 
 1. `plugin.py` is the opt-in `vllm.general_plugins` entry point. It patches
@@ -91,7 +91,11 @@ improved the matched end-to-end result compared with the former value `4`.
    ranges, then each range keeps its own highest-scoring tokens.
 
 The implementation uses integer cumulative quotas, so it always selects
-exactly `kv_budget` positions even when segment lengths are uneven.
+exactly `kv_budget` positions even when segment lengths are uneven. For
+equal-width middle segments on an NPU, it batches all segment top-k operations
+into one call and caches the small, shape-dependent index plan; uneven or
+zero-quota shapes retain the original per-segment path. This changes execution
+cost, not the quota rule or protected positions.
 
 ## Qwen3.5 hybrid path
 
@@ -99,14 +103,18 @@ Qwen3.5-35B-A3B has 40 text layers arranged as ten repetitions of three
 Gated-DeltaNet layers and one full-attention layer. The method binds only full
 attention layers 3, 7, …, 39 and leaves recurrent-state groups unchanged. Its
 256-dimensional heads use partial RoPE over only 64 dimensions. Calibration
-therefore stores `q_pass_mean` for the remaining 192 dimensions, and fallback
-Torch scoring adds their direct content dot product to the trigonometric term.
-The fused full-RoPE kernel is deliberately bypassed for this layout.
+therefore stores `q_pass_mean` for the remaining 192 dimensions. The plugin's
+fused paged-key scorer now adds this direct content dot product to the rotary
+trigonometric score in one NPU kernel; its Torch fallback remains available for
+non-mean aggregation. The fused partial-RoPE path passed numerical checks on
+an Ascend NPU. A subsequent official SWE pair narrowed but did not reverse
+the performance regression; see [Frontier benchmarking](frontier-benchmarking.md).
 
 With tensor parallelism, calibration rows are sharded by local KV head and an
 all-reduce maximum synchronizes per-layer scores before selection. TP size must
-divide the model's KV heads. Other hybrid layouts, Mamba modes other than
-`none`, and PP/DP/DCP/PCP remain rejected.
+divide the model's KV heads. Qwen3.5's `mamba_cache_mode=align` is supported
+through the plugin's transaction-aware cache handling, alongside `none`;
+other hybrid layouts and PP/DP/DCP/PCP remain rejected.
 
 ## Method contract
 

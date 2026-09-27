@@ -3,13 +3,26 @@
 [English](README.md) | 简体中文
 
 面向与上游对齐的 vLLM-HUST、vLLM-Ascend-HUST 的独立 TriAttention KV-cache
-压缩插件。0.7 版本新增论文 V3 位置策略和实验性的 Qwen3.5 混合模型路径，且不修改
-两个宿主仓库。
+压缩插件。已发布的 0.7 版加入论文 V3 位置策略与实验性 Qwen3.5 支持；未发布的
+0.8 工作树适配同步后的宿主，且不修改宿主源码仓库。
 
-> 状态：实验性候选版本。插件包生命周期、Ascend 算子 smoke、完整三轮冷启动 A2
-> 工程矩阵，以及有边界的 LongBench-v2/LongBench 公开质量检查均已通过。已完成的
-> A3 矩阵未通过最少完成数和六窗口吞吐 CV 门槛；V4.6 官方 B0、获授权生产数据及
-> 通过稳定性矩阵仍是发布门槛。详见[验收记录](docs/validation.zh.md)。
+> 状态：0.8 开发候选版，尚未发布或完成验收。匹配的 CANN 9.1/PyTorch 2.13
+> 宿主已在 Qwen3.5 BF16/TP=2、配置 262,144-token 上下文时启用 APC、align、
+> 异步调度、显式 MTP2 与 FULL_AND_PIECEWISE 图。官方 SWE C4／60 秒协议短测
+> 通过，服务端确有前缀命中和双 rank 压缩回执。官方 SWE C4 两侧 900 秒窗口
+> 均协议有效；AgentX C4 两侧 900 秒也通过协议检查。但压缩使 SWE 与 AgentX
+> 总输出吞吐分别下降 7.88% 和 8.46%。Qwen3.5 部分 RoPE 融合评分已通过
+> NPU 数值冒烟与微基准；新的 SWE 900 秒配对把 1,024-token 重评分间隔下的
+> 吞吐退化缩小至 2.75%，另测的 4,096-token 候选仍退化 3.00%。批量 V3
+> 选词与五层评分的单独质量冒烟为 4/4，但 SWE 同源码配对吞吐仍退化
+> 2.95%；将压缩输出门槛提高到 512 的另一组 SWE 配对仍退化 4.22%。
+> 同一门槛的 AgentX C4／900 秒新配对，总输出吞吐提升 11.85%、解码 P90
+> 提升 5.31%，但 TTFT P95 变差 20.60%。这是本地 900 秒正收益点，
+> 不是一小时正式成绩或版本验收；仍待合入后复测与用户确认。
+> MTP2 仍是默认拒绝启动的实验性功能；AgentX 两侧按其
+> 强制接受率规则均关闭 MTP。详见
+> [当前前沿测试协议](docs/frontier-benchmarking.zh.md)；
+> [0.7 验收记录](docs/validation.zh.md)仅作为历史资料。
 
 ## 归属与维护
 
@@ -41,14 +54,15 @@ wheel/sdist。仓库中仅供开发使用的统计产物缺少完整模型/数�
 
 | 组件 | 支持版本 | 已验证快照 |
 | --- | --- | --- |
-| vLLM-HUST / `vllm` | `>=0.28.1.post1.dev0,<0.29` | `6cdc0304a8`（`0.28.1.post1.dev260`） |
-| vLLM-Ascend-HUST / `vllm-ascend` | `>=0.25.1rc2.dev0,<0.26` | `5901bedbb7`（`0.25.1rc2.dev232+hust.20260903.4.g5901bedbb`） |
-| Extension Manager | `>=0.2.0.dev0,<0.3` | `cf1ea71e3e` |
+| vLLM-HUST / `vllm` | `>=0.29.1.post1.dev0,<0.30`（0.8 候选） | `fc06902b7d`（`0.29.1.post1.dev843+gfc06902b7.empty`） |
+| vLLM-Ascend-HUST / `vllm-ascend` | `>=0.25.1rc2.dev0,<0.26` | `5422a07c4`（`0.25.1rc2.dev616+hust.20260903.4.g5422a07c4`） |
+| Extension Manager | `>=0.2.0.dev0,<0.3` | 已安装 `0.2.0.dev0` |
 | Python | `>=3.10,<3.15` | 3.11.16 |
 
 标准验收拓扑仍为单 Ascend NPU、v1 调度器与 `NPUModelRunner`、单一全注意力
 KV 组、block size 128、稠密 BF16/FP16 K/V。Qwen3.5 text/MoE 混合模型额外支持
-一个全注意力组加 Gated-DeltaNet 状态组，且要求 `mamba_cache_mode=none`；只有 TP
+一个全注意力组加 Gated-DeltaNet 状态组，支持 `mamba_cache_mode=none` 或
+`align`；只有 TP
 大小可整除 KV 头数时才允许张量并行（Qwen3.5-35B-A3B 为 TP=2）。已验证的
 Ascend 宿主使用 32,768-token 跨组 scheduler 对齐、2,048-token 全注意力页和
 128-token attention 内核缓存块；插件会校验这三层粒度，并按 16:1 展开注意力
@@ -63,12 +77,13 @@ Ascend 宿主使用 32,768-token 跨组 scheduler 对齐、2,048-token 全注意
 统一部署；宿主兼容范围由 Extension Manager 清单和启动检查约束。这样安装插件时
 也不会让 pip 重新解析已经部署好的整套宿主环境。
 
-当前支持的 vLLM 0.28 / vLLM-Ascend 0.25 版本线不能混入 Triton-Ascend 3.2.2。
+当前 vLLM 0.29 / vLLM-Ascend 0.25 开发版本线不能混入 Triton-Ascend 3.2.2。
 旧 Triton wheel 锁定 NumPy 1.26.4，而当前 vLLM 要求
 `opencv-python-headless>=4.13`，其可用 wheel 要求 NumPy 2；把 OpenCV 降到
 4.9 又会违反 vLLM 的依赖约束。应使用宿主栈配套的 Triton-Ascend 3.6。
 
-宿主和 Extension Manager 就绪后，安装插件时不要改动宿主包：
+以下命令安装已发布的 0.7 包，**不是**当前 0.8 开发候选版，也不是 0.29 宿主的
+已验证安装命令：
 
 ```bash
 python -m pip install --no-deps vllm-ascend-kvcompress-hust==0.7.0
@@ -123,11 +138,11 @@ vllm serve /path/to/model --block-size 128 --no-enable-prefix-caching
 Qwen3.5-35B-A3B 使用专用的
 [Qwen3.5 示例配置](examples/qwen3.5-35b-a3b-triattention.json)与 TP=2。服务加载
 权重前，临时校准模型会自动分布到可见 NPU。详见
-[Qwen3.5 适配说明](docs/qwen3.5-35b-a3b-adaptation.zh.md)。当前已验证宿主的 GDN
-自定义算子仍暴露旧式不可选 `int[]` 元数据 ABI，因此 Qwen3.5 还需使用
-`--enforce-eager` 和显式的
-`VLLM_ASCEND_KVCOMPRESS_QWEN_GDN_LIST_COMPAT=1` 兼容桥。该桥只匹配精确旧
-schema，不修改任一宿主仓库。
+[Qwen3.5 适配说明](docs/qwen3.5-35b-a3b-adaptation.zh.md)。较早宿主快照的
+GDN 自定义算子仍使用旧式 `int[]` 元数据 ABI，需 `--enforce-eager` 与显式
+`VLLM_ASCEND_KVCOMPRESS_QWEN_GDN_LIST_COMPAT=1` 兼容桥；同步后的宿主已暴露
+Tensor ABI，且无需 `--enforce-eager` 即完成 FULL_AND_PIECEWISE 图捕获。
+兼容桥仅在精确旧 schema 上生效，不修改任一宿主仓库。
 
 ## 运行时与长上下文优化
 
@@ -173,15 +188,15 @@ Qwen2.5-14B-Instruct 作为标准发布模型的定位。
 
 ## 冲突矩阵
 
-| 功能 | 0.6 状态 | 行为 |
+| 功能 | 0.8 工作树状态 | 行为 |
 | --- | --- | --- |
-| Prefix cache | 冲突 | 启动拒绝，必须禁用 |
-| Speculative decoding | 冲突 | 启动拒绝 |
+| Prefix cache | SWE C4 配对协议有效 | Qwen3.5/TP=2/align/图模式确有服务端命中，但吞吐退化 |
+| Speculative decoding | 实验性 | 显式 MTP2 完成 SWE 两侧 900 秒窗口且有真实接受率；默认启动保护仍生效 |
 | KV transfer / 分离式 P/D | 冲突 | 启动拒绝 |
 | 量化 KV | 冲突 | 启动拒绝，仅支持稠密 BF16/FP16 |
-| Qwen3.5 全注意力 + Gated-DeltaNet 混合架构 | 实验支持 | `mamba_cache_mode=none`；只压缩全注意力 KV |
+| Qwen3.5 全注意力 + Gated-DeltaNet 混合架构 | 实验支持 | `mamba_cache_mode=none` 或 `align`；只压缩全注意力 KV |
 | 其他 hybrid / MLA / sliding / local attention | 冲突 | 启动拒绝 |
-| 异步调度 | 冲突 | 启动拒绝 |
+| 异步调度 | SWE C4 配对协议有效 | Qwen3.5/TP=2/APC/align/图模式完成两侧 900 秒；性能未通过 |
 | TP > 1 | 条件支持 | 必须整除 KV 头数；各 rank 同步评分 |
 | PP/DP/DCP/PCP > 1 | 冲突 | 启动拒绝 |
 | BidKV 或其他调度器 | 冲突 | 要求标准 v1 调度器；拒绝实际启用的平衡调度 |
@@ -197,12 +212,14 @@ Qwen2.5-14B-Instruct 作为标准发布模型的定位。
 2,048 token，`kv_budget` 还必须能被 2,048 整除；不要求被 scheduler 的
 32,768-token 跨组对齐整除。
 
-- [当前验收记录](docs/validation.zh.md)
-- [从 V4.6 提取的测试要求](docs/kv-compress-test-requirements.zh.md)
-- [验收规程](docs/benchmarking.zh.md)
-- [公开长上下文 Benchmark](docs/public-long-context-benchmarks.zh.md)
-- [HTML 测试榜单](docs/benchmark-leaderboard.html)
+- [文档导航（当前与历史）](docs/README.zh.md)
+- [2026-09-20 历史工程验证记录](docs/validation.zh.md)
+- [历史 V4.6 派生测试要求](docs/kv-compress-test-requirements.zh.md)
+- [历史 A2/A3 规程](docs/benchmarking.zh.md)
+- [历史公开长上下文 Benchmark](docs/public-long-context-benchmarks.zh.md)
+- [HTML 测试榜单（Frontier 实测点与历史证据）](docs/benchmark-leaderboard.html)
 - [Qwen3.5-35B-A3B 适配](docs/qwen3.5-35b-a3b-adaptation.zh.md)
+- [当前 0.8 前沿测试协议与工程证据](docs/frontier-benchmarking.zh.md)
 - [打包与发布](docs/packaging-and-release.zh.md)
 - [方法扩展 API](docs/methods.zh.md)
 - [校准产物](docs/calibration-artifacts.zh.md)

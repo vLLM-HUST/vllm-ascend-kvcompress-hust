@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import os
 import sys
+from contextlib import nullcontext
+from contextvars import ContextVar
 from importlib import import_module
 from importlib.abc import Loader, MetaPathFinder
 from importlib.machinery import ModuleSpec, PathFinder
@@ -14,7 +16,11 @@ from typing import Any
 from vllm.logger import logger
 
 from .config import extension_enabled, load_runtime_selection
-from .provider import RUNNER_PROVIDER_ATTRIBUTE, AscendKVCompressionProvider
+from .provider import (
+    RUNNER_PROVIDER_ATTRIBUTE,
+    AscendKVCompressionProvider,
+    _supports_mtp2,
+)
 
 _PATCH_MARKER = "_ascend_kvcompress_patch_v3"
 _RUNNER_MODULE = "vllm_ascend.worker.model_runner_v1"
@@ -27,6 +33,9 @@ _TRITON_GLUON_MODULES = (
 )
 _MESSAGE_QUEUE_MODULE = "vllm.distributed.device_communicators.shm_broadcast"
 _MESSAGE_QUEUE_PATCH_MARKER = "_ascend_kvcompress_env_chunk_default"
+_METADATA_PROVIDER: ContextVar[AscendKVCompressionProvider | None] = ContextVar(
+    "ascend_kvcompress_metadata_provider", default=None
+)
 
 
 def register() -> None:
@@ -62,6 +71,9 @@ class _RunnerPatchLoader(Loader):
         return create(spec) if create is not None else None
 
     def exec_module(self, module: ModuleType) -> None:
+        from .host_compat import install_removed_routed_experts_types
+
+        install_removed_routed_experts_types()
         self.wrapped.exec_module(module)
         _install_runner_hooks(module.NPUModelRunner, self.selection)
 
@@ -102,6 +114,22 @@ def _install_lazy_runner_hook(selection: Any) -> None:
 def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
     if runner_cls.__dict__.get(_PATCH_MARKER, False):
         return
+    if (
+        runner_cls.__module__ == _RUNNER_MODULE
+        and runner_cls.__name__ == "NPUModelRunner"
+    ):
+        from .host_compat import (
+            install_dcp_length_alias,
+            install_removed_async_output_routing_field,
+            install_removed_output_routing_field,
+            install_step3p5_fp32_linear_alias,
+        )
+
+        install_step3p5_fp32_linear_alias()
+        install_dcp_length_alias()
+        install_removed_output_routing_field()
+        install_removed_async_output_routing_field()
+        _install_gdn_metadata_hook()
     # Current vLLM folded the legacy ``xdrope_section`` check into
     # ``uses_mrope`` while the aligned Ascend runner still reads this old
     # attribute in three paths.  Supply the neutral legacy value only when the
@@ -109,6 +137,11 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
     # ``uses_mrope`` on this validated vLLM line.
     if not hasattr(runner_cls, "uses_xdrope_dim"):
         runner_cls.uses_xdrope_dim = 0
+    # The current Ascend runner reads this flag even when routed-expert
+    # capture is disabled. Its initializer only sets the flag in the enabled
+    # branch, while this plugin explicitly rejects that optional output.
+    if not hasattr(runner_cls, "routed_experts_initialized"):
+        runner_cls.routed_experts_initialized = False
     original_initialize = runner_cls.initialize_kv_cache
     original_load_model = runner_cls.load_model
     original_update = runner_cls._update_states
@@ -127,7 +160,22 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
         from .calibration import ensure_calibration_for_runner
         from .host_compat import install_qwen_gdn_list_compat
 
-        install_qwen_gdn_list_compat()
+        install_qwen_gdn_list_compat(
+            mtp2_reference_fallback=_supports_mtp2(getattr(runner, "vllm_config", None))
+        )
+        model_config = getattr(
+            getattr(runner, "vllm_config", None), "model_config", None
+        )
+        hf_config = getattr(model_config, "hf_config", None)
+        model_type = str(getattr(hf_config, "model_type", ""))
+        if model_type.startswith("qwen3_5"):
+            # Load the host's native registrations first. Only fill the
+            # missing GDN output op; never shadow a newer Ascend binary.
+            import_module("vllm_ascend.vllm_ascend_C")
+            from .qwen_gdn_ops import install_missing_chunk_output_op
+
+            if install_missing_chunk_output_op():
+                logger.info("Using plugin-owned Triton Qwen GDN output operator")
         generated = ensure_calibration_for_runner(runner, selection)
         if generated:
             logger.info(
@@ -136,11 +184,25 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
             )
         return original_load_model(runner)
 
-    def initialize_kv_cache(runner: Any, kv_cache_config: Any) -> Any:
+    def initialize_kv_cache(
+        runner: Any, kv_cache_config: Any, *args: Any, **kwargs: Any
+    ) -> Any:
         provider = AscendKVCompressionProvider(runner.vllm_config, selection)
         provider.validate_host(runner)
         setattr(runner, RUNNER_PROVIDER_ATTRIBUTE, provider)
-        result = original_initialize(runner, kv_cache_config)
+        from .host_compat import (
+            install_removed_model_routing_flag,
+            qwen_mtp2_cache_binding_bridge,
+        )
+
+        install_removed_model_routing_flag(runner.vllm_config)
+        bridge = (
+            qwen_mtp2_cache_binding_bridge()
+            if _supports_mtp2(runner.vllm_config)
+            else nullcontext()
+        )
+        with bridge:
+            result = original_initialize(runner, kv_cache_config, *args, **kwargs)
         # Ascend deep-copies and normalizes the incoming plan before storing
         # the cache config that actually owns the allocated tensors.
         provider.bind_model_runner(runner, runner.kv_cache_config)
@@ -162,7 +224,11 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
         provider = getattr(runner, RUNNER_PROVIDER_ATTRIBUTE, None)
         if provider is not None:
             provider.apply_physical_attention_lengths()
-        return original_metadata(runner, *args, **kwargs)
+        token = _METADATA_PROVIDER.set(provider)
+        try:
+            return original_metadata(runner, *args, **kwargs)
+        finally:
+            _METADATA_PROVIDER.reset(token)
 
     def sample_tokens(runner: Any, grammar_output: Any) -> Any:
         state = runner.execute_model_state
@@ -199,6 +265,33 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
     if original_execute_model is not None:
         runner_cls.execute_model = execute_model
     setattr(runner_cls, _PATCH_MARKER, True)
+
+
+def _install_gdn_metadata_hook() -> None:
+    """Keep recurrent GDN metadata in semantic space during hybrid builds."""
+    from vllm_ascend.ops.gdn_attn_builder import AscendGDNAttentionMetadataBuilder
+
+    marker = "_ascend_kvcompress_semantic_lengths_v4"
+    if AscendGDNAttentionMetadataBuilder.__dict__.get(marker, False):
+        return
+    original = AscendGDNAttentionMetadataBuilder.build
+
+    def build(
+        builder: Any,
+        common_prefix_len: int,
+        common_attn_metadata: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        provider = _METADATA_PROVIDER.get()
+        if provider is not None:
+            common_attn_metadata = provider.semantic_gdn_metadata(common_attn_metadata)
+        return original(
+            builder, common_prefix_len, common_attn_metadata, *args, **kwargs
+        )
+
+    AscendGDNAttentionMetadataBuilder.build = build
+    setattr(AscendGDNAttentionMetadataBuilder, marker, True)
 
 
 def _prepare_current_triton_runtime() -> None:

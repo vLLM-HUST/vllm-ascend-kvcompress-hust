@@ -3,6 +3,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from vllm_ascend_kvcompress.methods.base import ModelShape
@@ -12,7 +13,11 @@ from vllm_ascend_kvcompress.methods.triattention import (
     TriAttentionMethod,
 )
 from vllm_ascend_kvcompress.methods.triattention import method as triattention_method
-from vllm_ascend_kvcompress.methods.triattention.selection import select_keep_indices
+from vllm_ascend_kvcompress.methods.triattention.selection import (
+    _select_v3_batched,
+    _v3_batched_plan,
+    select_keep_indices,
+)
 
 
 def test_qwen35_gqa_width_is_invariant_under_tensor_parallel_sharding() -> None:
@@ -74,6 +79,56 @@ def test_v3_uses_exact_proportional_quota_with_uneven_segments() -> None:
 
     assert keep.numel() == 13
     assert {0, 1, 17, 18}.issubset(set(keep.tolist()))
+
+
+@pytest.mark.parametrize(
+    ("tokens", "budget", "prefix", "recent", "segments"),
+    [
+        (32768, 8192, 128, 512, 8),
+        (32768, 8192, 256, 512, 8),
+        (32, 17, 0, 0, 4),
+        (32, 18, 2, 2, 4),
+        (32, 31, 0, 0, 4),
+    ],
+)
+def test_batched_v3_matches_per_segment_selection(
+    tokens: int, budget: int, prefix: int, recent: int, segments: int
+) -> None:
+    torch.manual_seed(28)
+    scores = torch.randperm(tokens, dtype=torch.long).float()
+    expected = select_keep_indices(
+        scores,
+        budget=budget,
+        protected_prefix=prefix,
+        protected_recent=recent,
+        segments=segments,
+        policy="v3",
+    )
+    actual = _select_v3_batched(
+        scores,
+        budget=budget,
+        prefix=prefix,
+        recent=recent,
+        segments=segments,
+    )
+    assert actual is not None
+    torch.testing.assert_close(actual, expected)
+
+
+def test_batched_v3_defers_uneven_segments_to_existing_path() -> None:
+    assert (
+        _select_v3_batched(
+            torch.arange(19).float(), budget=13, prefix=2, recent=2, segments=8
+        )
+        is None
+    )
+
+
+def test_batched_v3_sorts_topk_only_when_quotas_differ() -> None:
+    unequal = _v3_batched_plan(torch.device("cpu"), 32, 17, 0, 0, 4)
+    equal = _v3_batched_plan(torch.device("cpu"), 32, 16, 0, 0, 4)
+    assert unequal is not None and unequal.sorted_topk
+    assert equal is not None and not equal.sorted_topk
 
 
 def test_global_policy_preserves_legacy_topk_behavior() -> None:
@@ -217,7 +272,10 @@ def test_selection_does_not_add_unsampled_layers(monkeypatch) -> None:
     assert scored_layers == 6
 
 
-def test_selection_prepares_phases_once_for_all_scoring_layers(monkeypatch) -> None:
+@pytest.mark.parametrize("partial_rope", [False, True])
+def test_selection_prepares_phases_once_for_all_scoring_layers(
+    monkeypatch, partial_rope: bool
+) -> None:
     method = object.__new__(TriAttentionMethod)
     method.config = TriAttentionConfig(
         stats_path=Path("unused.pt"),
@@ -232,11 +290,13 @@ def test_selection_prepares_phases_once_for_all_scoring_layers(monkeypatch) -> N
         q_mean_imag=torch.zeros((1, 1, 1)),
         omega=torch.ones(1),
         rope_style="half",
+        rotary_dim=2 if partial_rope else None,
+        q_pass_mean=torch.ones((1, 1, 2)) if partial_rope else None,
     )
     method.layer_caches = tuple(
         TriAttentionLayerCache(
             name=f"layer.{index}",
-            k_cache=torch.empty(0),
+            k_cache=torch.empty((2, 128, 1, 4 if partial_rope else 2)),
             v_cache=torch.empty(0),
             stats=stats,
             frequency_scale=torch.ones((1, 1, 1)),
@@ -265,7 +325,8 @@ def test_selection_prepares_phases_once_for_all_scoring_layers(monkeypatch) -> N
 
     def fake_score(*args, output: torch.Tensor | None = None, **kwargs) -> bool:
         nonlocal score_calls
-        del kwargs
+        assert kwargs["rotary_dim"] == (2 if partial_rope else None)
+        assert (kwargs["q_pass_mean"] is not None) is partial_rope
         score_calls += 1
         target = output if output is not None else args[9]
         target.zero_()

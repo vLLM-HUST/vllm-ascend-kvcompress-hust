@@ -2,6 +2,11 @@
 
 English | [简体中文](kv-compress-test-requirements.zh.md)
 
+> **Historical archive.** V4.6 is retired as the active project gate for 0.8;
+> follow the [Frontier benchmark protocol](frontier-benchmarking.md). The
+> Qwen2.5 matrix below remains reproducible historical evidence, not the
+> current official leaderboard workload.
+
 This document specializes the controlled **vLLM-HUST Standard Delivery Test
 Plan V4.6** for this plugin. The source PDF is
 `vllm-hust-benchmark/docs/assets/vLLM-HUST标准交付测试方案_V4.6.pdf`

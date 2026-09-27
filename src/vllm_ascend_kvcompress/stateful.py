@@ -11,7 +11,12 @@ from vllm.logger import logger
 
 from .config import ProviderSelection
 from .methods.triattention.config import TriAttentionConfig
-from .provider import _allowed_scheduler_block_sizes, _find_full_attention_group
+from .provider import (
+    _allowed_scheduler_block_sizes,
+    _find_full_attention_group,
+    _supports_mtp2,
+)
+from .transaction import PLAN_ATTRIBUTE, CompressionPlan
 
 _STATE_ATTRIBUTE = "_ascend_kvcompress_scheduler_state_v3"
 _OFFSETS_ATTRIBUTE = "_ascend_kvcompress_active_offsets_v3"
@@ -19,6 +24,7 @@ _PATCH_MARKER = "_ascend_kvcompress_manager_patch_v3"
 _SUPPORTED_SCHEDULER_TYPES = frozenset(
     {
         ("vllm.v1.core.sched.scheduler", "Scheduler"),
+        ("vllm.v1.core.sched.async_scheduler", "AsyncScheduler"),
         (
             "vllm_ascend.patch.platform.patch_balance_schedule",
             "BalanceScheduler",
@@ -27,11 +33,12 @@ _SUPPORTED_SCHEDULER_TYPES = frozenset(
 )
 
 
-@dataclass(frozen=True)
+@dataclass
 class SchedulerPendingCompression:
-    semantic_anchor: int
-    physical_anchor: int
-    block_ids: tuple[int, ...]
+    plan: CompressionPlan
+    reserved_blocks: tuple[Any, ...]
+    ready: bool = False
+    previous_eligible_step: int | None = None
 
 
 @dataclass(frozen=True)
@@ -64,8 +71,13 @@ class SchedulerCompressionState:
         self.pending: dict[str, SchedulerPendingCompression] = {}
         self.active: dict[str, SchedulerActiveCompression] = {}
         self.attention_group_index = 0
+        self.async_scheduling = bool(
+            getattr(scheduler.vllm_config.scheduler_config, "async_scheduling", False)
+        )
         self._validate_host()
         setattr(scheduler.kv_cache_manager, _OFFSETS_ATTRIBUTE, self.active)
+        self._install_attention_cache_hook()
+        self._install_attention_length_hooks()
         logger.info(
             "Ascend KV compression scheduler bound threshold_tokens=%d "
             "target_tokens=%d min_output_tokens=%d scheduler_alignment=%d "
@@ -90,14 +102,13 @@ class SchedulerCompressionState:
             )
         if bool(getattr(scheduler, "_balance_enabled", False)):
             reasons.append("Ascend balance scheduling must be disabled")
-        if bool(config.cache_config.enable_prefix_caching):
-            reasons.append("prefix caching must be disabled")
-        if config.speculative_config is not None:
-            reasons.append("speculative decoding is unsupported")
+        if config.speculative_config is not None and not _supports_mtp2(config):
+            reasons.append(
+                "speculative decoding is unqualified; experimental Qwen3.5 "
+                "MTP2 requires mamba_cache_mode='align' and explicit opt-in"
+            )
         if config.kv_transfer_config is not None:
             reasons.append("KV transfer is unsupported")
-        if bool(getattr(config.scheduler_config, "async_scheduling", False)):
-            reasons.append("asynchronous scheduling is unsupported")
         parallel = config.parallel_config
         for name, attr in (
             ("pipeline parallel", "pipeline_parallel_size"),
@@ -146,11 +157,12 @@ class SchedulerCompressionState:
                         "compression target must be divisible by full-attention "
                         f"logical block size {self.scheduler_block_size}"
                     )
-        if (
-            len(scheduler.kv_cache_config.kv_cache_groups) > 1
-            and getattr(config.cache_config, "mamba_cache_mode", "none") != "none"
-        ):
-            reasons.append("hybrid compression requires mamba_cache_mode='none'")
+        if len(scheduler.kv_cache_config.kv_cache_groups) > 1 and getattr(
+            config.cache_config, "mamba_cache_mode", "none"
+        ) not in {"none", "align"}:
+            reasons.append(
+                "hybrid compression requires mamba_cache_mode='none' or 'align'"
+            )
         if reasons:
             raise RuntimeError(
                 "Ascend KV compression is incompatible with this scheduler:\n- "
@@ -158,10 +170,10 @@ class SchedulerCompressionState:
             )
 
     def before_schedule(self) -> None:
-        """Free the compacted tail only after the prior worker step completed."""
+        """Commit only plans whose model output has crossed the worker barrier."""
         scheduler = self.scheduler
         for request_id in tuple(scheduler.finished_req_ids):
-            self.pending.pop(request_id, None)
+            self._discard_pending(request_id)
             self.active.pop(request_id, None)
         manager = scheduler.kv_cache_manager
         single_managers = manager.coordinator.single_type_managers
@@ -169,54 +181,167 @@ class SchedulerCompressionState:
             raise RuntimeError("full-attention cache manager is unavailable")
         cache_manager = single_managers[self.attention_group_index]
         for request_id, pending in tuple(self.pending.items()):
+            if not pending.ready:
+                continue
             if request_id not in scheduler.requests:
-                self.pending.pop(request_id, None)
+                self._discard_pending(request_id)
                 continue
             blocks = cache_manager.req_to_blocks.get(request_id)
             if blocks is None:
-                self.pending.pop(request_id, None)
+                self._discard_pending(request_id)
                 continue
-            keep = len(pending.block_ids)
-            actual_prefix = tuple(block.block_id for block in blocks[:keep])
-            if actual_prefix != pending.block_ids:
+            plan = pending.plan
+            actual_source = tuple(block.block_id for block in blocks)
+            if actual_source != plan.source_block_ids:
+                self._discard_pending(request_id)
                 raise RuntimeError(
                     f"request {request_id!r} block table changed before "
                     "compression commit"
                 )
-            tail = blocks[keep:]
-            source_block_count = len(blocks)
-            del blocks[keep:]
-            manager.block_pool.free_blocks(reversed(tail))
+            source_blocks = tuple(blocks)
+            blocks[:] = pending.reserved_blocks
+            manager.block_pool.free_blocks(reversed(source_blocks))
             if hasattr(cache_manager, "num_cached_block"):
-                cache_manager.num_cached_block[request_id] = min(
-                    int(cache_manager.num_cached_block.get(request_id, 0)), keep
-                )
+                # Private compressed KV has no valid prefix hash for the
+                # request's original semantic token sequence.
+                cache_manager.num_cached_block[request_id] = 0
             self.active[request_id] = SchedulerActiveCompression(
-                pending.semantic_anchor, pending.physical_anchor
+                plan.semantic_anchor, plan.physical_anchor
             )
+            request = scheduler.requests[request_id]
+            if pending.previous_eligible_step is not None:
+                request.next_decode_eligible_step = pending.previous_eligible_step
             logger.info(
                 "KV compression scheduler commit request_id=%s "
                 "semantic_tokens=%d physical_tokens=%d source_blocks=%d "
                 "destination_blocks=%d released_blocks=%d",
                 request_id,
-                pending.semantic_anchor,
-                pending.physical_anchor,
-                source_block_count,
-                keep,
-                len(tail),
+                plan.semantic_anchor,
+                plan.physical_anchor,
+                len(plan.source_block_ids),
+                len(plan.destination_block_ids),
+                len(plan.source_block_ids),
             )
             self.pending.pop(request_id, None)
+
+    def after_output(self, output: Any) -> None:
+        """Acknowledge writes only after vLLM has accepted worker output."""
+        for request_id, plan in getattr(output, PLAN_ATTRIBUTE, {}).items():
+            pending = self.pending.get(request_id)
+            if pending is not None and pending.plan == plan:
+                pending.ready = True
+
+    def _discard_pending(self, request_id: str) -> None:
+        pending = self.pending.pop(request_id, None)
+        if pending is None:
+            return
+        self.scheduler.kv_cache_manager.block_pool.free_blocks(
+            reversed(pending.reserved_blocks)
+        )
+        request = self.scheduler.requests.get(request_id)
+        if request is not None and pending.previous_eligible_step is not None:
+            request.next_decode_eligible_step = pending.previous_eligible_step
+
+    def _install_attention_cache_hook(self) -> None:
+        """Do not register private compressed KV under original token hashes."""
+        cache_manager = (
+            self.scheduler.kv_cache_manager.coordinator.single_type_managers[
+                self.attention_group_index
+            ]
+        )
+        original = getattr(cache_manager, "cache_blocks", None)
+        if original is None:
+            return
+
+        def cache_blocks(request: Any, *args: Any, **kwargs: Any) -> Any:
+            if request.request_id in self.active:
+                return None
+            return original(request, *args, **kwargs)
+
+        cache_manager.cache_blocks = cache_blocks
+
+    def _install_attention_length_hooks(self) -> None:
+        """Translate lengths only for full attention, never for Mamba state.
+
+        KVCacheManager passes the same token counts to all cache groups. After
+        compression, that is correct for Mamba/GDN but full attention needs
+        the compacted count. Keep Request's semantic count untouched.
+        """
+        cache_manager = (
+            self.scheduler.kv_cache_manager.coordinator.single_type_managers[
+                self.attention_group_index
+            ]
+        )
+
+        def physical(request_id: str, tokens: int) -> int:
+            active = self.active.get(request_id)
+            return max(0, tokens - active.removed_tokens) if active else tokens
+
+        original_count = getattr(cache_manager, "get_num_blocks_to_allocate", None)
+        if original_count is not None:
+
+            def get_num_blocks_to_allocate(
+                request_id: str,
+                num_tokens: int,
+                new_computed_blocks: Any,
+                total_computed_tokens: int,
+                num_local_computed_tokens: int,
+                num_tokens_main_model: int,
+                apply_admission_cap: bool = False,
+            ) -> Any:
+                return original_count(
+                    request_id,
+                    physical(request_id, num_tokens),
+                    new_computed_blocks,
+                    physical(request_id, total_computed_tokens),
+                    physical(request_id, num_local_computed_tokens),
+                    physical(request_id, num_tokens_main_model),
+                    apply_admission_cap=apply_admission_cap,
+                )
+
+            cache_manager.get_num_blocks_to_allocate = get_num_blocks_to_allocate
+
+        original_allocate = getattr(cache_manager, "allocate_new_blocks", None)
+        if original_allocate is not None:
+
+            def allocate_new_blocks(
+                request_id: str, num_tokens: int, num_tokens_main_model: int
+            ) -> Any:
+                return original_allocate(
+                    request_id,
+                    physical(request_id, num_tokens),
+                    physical(request_id, num_tokens_main_model),
+                )
+
+            cache_manager.allocate_new_blocks = allocate_new_blocks
+
+        original_skip = getattr(cache_manager, "remove_skipped_blocks", None)
+        if original_skip is not None:
+
+            def remove_skipped_blocks(
+                request_id: str,
+                processed_computed_tokens: int,
+                num_prompt_tokens: int | None = None,
+            ) -> Any:
+                return original_skip(
+                    request_id,
+                    physical(request_id, processed_computed_tokens),
+                    num_prompt_tokens,
+                )
+
+            cache_manager.remove_skipped_blocks = remove_skipped_blocks
 
     def after_schedule(self, output: Any) -> None:
         """Arm the same deterministic transaction the worker performs."""
         reset_ids = set(getattr(output, "preempted_req_ids", ()))
         reset_ids.update(output.finished_req_ids)
         for request_id in reset_ids:
-            self.pending.pop(request_id, None)
+            self._discard_pending(request_id)
             self.active.pop(request_id, None)
 
         coordinator = self.scheduler.kv_cache_manager.coordinator
         single_manager = coordinator.single_type_managers[self.attention_group_index]
+        plans: dict[str, CompressionPlan] = {}
         for request_id in output.num_scheduled_tokens:
             if request_id in self.pending:
                 continue
@@ -238,17 +363,44 @@ class SchedulerCompressionState:
                 physical = active.physical_anchor + semantic - active.semantic_anchor
             if physical < self.threshold:
                 continue
+            if self.scheduler.vllm_config.speculative_config is not None and active:
+                # A decode step's optimistic MTP length can roll back after
+                # acceptance. Initial prompt compression has no draft KV.
+                continue
             blocks = single_manager.req_to_blocks.get(request_id, ())
             keep = _blocks_for_tokens(self.budget, self.scheduler_block_size)
             if len(blocks) < keep:
                 raise RuntimeError(
                     f"request {request_id!r} has too few scheduler blocks"
                 )
-            self.pending[request_id] = SchedulerPendingCompression(
+            pool = self.scheduler.kv_cache_manager.block_pool
+            if pool.get_num_free_blocks() < keep:
+                logger.warning(
+                    "Skipping KV compression for request %s: %d private "
+                    "destination blocks unavailable",
+                    request_id,
+                    keep,
+                )
+                continue
+            destination = tuple(pool.get_new_blocks(keep))
+            plan = CompressionPlan(
                 semantic_anchor=semantic,
                 physical_anchor=self.budget,
-                block_ids=tuple(block.block_id for block in blocks[:keep]),
+                source_block_ids=tuple(block.block_id for block in blocks),
+                destination_block_ids=tuple(block.block_id for block in destination),
             )
+            previous_step = None
+            if self.async_scheduling:
+                previous_step = int(request.next_decode_eligible_step)
+                request.next_decode_eligible_step = 1 << 62
+            self.pending[request_id] = SchedulerPendingCompression(
+                plan=plan,
+                reserved_blocks=destination,
+                previous_eligible_step=previous_step,
+            )
+            plans[request_id] = plan
+        if plans:
+            setattr(output, PLAN_ATTRIBUTE, plans)
 
 
 def _request_max_tokens(request: Any) -> int:
@@ -272,6 +424,7 @@ def install_stateful_compression_hooks(
         return
     original_init = scheduler_cls.__init__
     original_schedule = scheduler_cls.schedule
+    original_update_from_output = scheduler_cls.update_from_output
 
     def initialize(scheduler: Any, *args: Any, **kwargs: Any) -> None:
         original_init(scheduler, *args, **kwargs)
@@ -286,37 +439,38 @@ def install_stateful_compression_hooks(
         state.after_schedule(output)
         return output
 
+    def update_from_output(
+        scheduler: Any, scheduler_output: Any, *args: Any, **kwargs: Any
+    ) -> Any:
+        result = original_update_from_output(
+            scheduler, scheduler_output, *args, **kwargs
+        )
+        getattr(scheduler, _STATE_ATTRIBUTE).after_output(scheduler_output)
+        return result
+
     setattr(scheduler_cls, f"{marker}_original_init", original_init)
     setattr(scheduler_cls, f"{marker}_original_schedule", original_schedule)
+    setattr(
+        scheduler_cls,
+        f"{marker}_original_update_from_output",
+        original_update_from_output,
+    )
     scheduler_cls.__init__ = initialize
     scheduler_cls.schedule = schedule
+    scheduler_cls.update_from_output = update_from_output
     setattr(scheduler_cls, marker, True)
 
 
 def _install_manager_hooks(manager_cls: type[Any]) -> None:
     if manager_cls.__dict__.get(_PATCH_MARKER, False):
         return
-    original_allocate = manager_cls.allocate_slots
     original_free = manager_cls.free
-
-    def allocate_slots(manager: Any, request: Any, *args: Any, **kwargs: Any) -> Any:
-        active = getattr(manager, _OFFSETS_ATTRIBUTE, {}).get(request.request_id)
-        if active is None:
-            return original_allocate(manager, request, *args, **kwargs)
-        semantic = int(request.num_computed_tokens)
-        request.num_computed_tokens = semantic - active.removed_tokens
-        try:
-            return original_allocate(manager, request, *args, **kwargs)
-        finally:
-            request.num_computed_tokens = semantic
 
     def free(manager: Any, request: Any) -> Any:
         getattr(manager, _OFFSETS_ATTRIBUTE, {}).pop(request.request_id, None)
         return original_free(manager, request)
 
-    setattr(manager_cls, f"{_PATCH_MARKER}_original_allocate", original_allocate)
     setattr(manager_cls, f"{_PATCH_MARKER}_original_free", original_free)
-    manager_cls.allocate_slots = allocate_slots
     manager_cls.free = free
     setattr(manager_cls, _PATCH_MARKER, True)
 

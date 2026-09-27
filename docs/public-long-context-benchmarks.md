@@ -2,6 +2,10 @@
 
 English | [简体中文](public-long-context-benchmarks.zh.md)
 
+> **Historical archive.** These 2026-09-20 public experiments remain visible,
+> including negative performance results, but are not the current 0.8 Frontier
+> cohorts. See [Frontier benchmarking](frontier-benchmarking.md).
+
 Updated: 2026-09-20. This record supplements the synthetic commissioning test
 with three public long-context/KV scenarios. It is a same-host engineering
 comparison, not formal V4.6 official-baseline acceptance or the 30-minute A3

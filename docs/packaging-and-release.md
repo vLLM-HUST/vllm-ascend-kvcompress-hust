@@ -18,6 +18,15 @@ Version 0.7.0 is an experimental release. The current validation supports a
 bounded engineering-performance statement but not formal V4.6 or production
 claims.
 
+The 0.8.0 working tree is **not released**. Its release gate is the current
+[Frontier protocol](frontier-benchmarking.md): matched synchronized host runtime,
+complete 262,144-context APC/MTP2/async/FULL_AND_PIECEWISE/align service checks,
+auditable B0/B1 runs for both official 900-second SWE and AgentX workloads, and
+at least one positive, protocol-valid Frontier workload result. Disclose any
+regression in the other workload. Historical V4.6 records do not substitute
+for those results. Do not
+change the version or upload to PyPI until the user confirms the release.
+
 ## Build and inspect
 
 Prefer the BidKV `uv` workflow:

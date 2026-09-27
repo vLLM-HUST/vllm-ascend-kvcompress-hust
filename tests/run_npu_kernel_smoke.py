@@ -173,6 +173,53 @@ def main() -> None:
         precomputed_output.cpu(), expected_scores.cpu(), rtol=2e-3, atol=2e-3
     )
 
+    # Qwen3.5 rotates only the first part of each key. The fused path must
+    # include the direct Q·K contribution from the remaining dimensions.
+    partial_q_real = q_real[..., :2].contiguous()
+    partial_q_imag = q_imag[..., :2].contiguous()
+    partial_q_abs = q_abs[..., :2].contiguous()
+    partial_frequency_scale = frequency_scale[..., :2].contiguous()
+    partial_extra = extra_coefficient[..., :2].contiguous()
+    q_pass_mean = torch.linspace(-0.3, 0.5, 16, device=device).view(2, 2, 4)
+    partial_stats = DeviceLayerCalibrationStats(
+        q_mean_real=partial_q_real,
+        q_mean_imag=partial_q_imag,
+        q_abs_mean=partial_q_abs,
+        freq_scale_sq=partial_frequency_scale.square(),
+        omega=omega[:2].contiguous(),
+        rope_style="half",
+        rotary_dim=4,
+        q_pass_mean=q_pass_mean,
+    )
+    partial_expected = score_post_rope_keys(
+        keys,
+        partial_stats,
+        round_start=300,
+        offsets=future_offsets,
+        aggregation="mean",
+    )
+    partial_output = torch.empty_like(output)
+    assert score_paged_keys_mean_precomputed(
+        score_cache,
+        score_source,
+        partial_q_real,
+        partial_q_imag,
+        partial_frequency_scale,
+        partial_extra,
+        phase_cos[1, :2],
+        phase_sin[1, :2],
+        256,
+        partial_output,
+        block_size,
+        "half",
+        q_pass_mean=q_pass_mean,
+        rotary_dim=4,
+    )
+    torch.npu.synchronize()
+    torch.testing.assert_close(
+        partial_output.cpu(), partial_expected.cpu(), rtol=2e-3, atol=2e-3
+    )
+
     head_mean = output.mean(dim=-1)
     head_variance = output.var(dim=-1, correction=0)
     aggregate = torch.empty(256, dtype=torch.float32, device=device)

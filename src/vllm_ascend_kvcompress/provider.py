@@ -9,6 +9,7 @@ at startup and kept in :mod:`vllm_ascend_kvcompress.plugin`.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,6 +21,7 @@ from .methods import create_method
 from .methods.base import CompressionRequest, LayerCache, MethodRuntimeSpec, ModelShape
 from .methods.triattention.kernels import shift_positions
 from .model import model_shape_from_config
+from .transaction import PLAN_ATTRIBUTE
 
 RUNNER_PROVIDER_ATTRIBUTE = "_ascend_kvcompress_provider_v3"
 
@@ -70,6 +72,8 @@ class AscendKVCompressionProvider:
         self._request_offsets_cpu: torch.Tensor | None = None
         self._request_offsets_device: torch.Tensor | None = None
         self._physical_positions: torch.Tensor | None = None
+        self._semantic_seq_lens_device: torch.Tensor | None = None
+        self._semantic_seq_lens_cpu: torch.Tensor | None = None
         self._offset_row_snapshot: tuple[int, ...] = ()
         self._has_active_rows = False
         self._physical_lengths_applied = False
@@ -189,13 +193,17 @@ class AscendKVCompressionProvider:
         self._physical_positions = torch.empty(
             runner.max_num_tokens, dtype=torch.int64, device=runner.device
         )
+        self._semantic_seq_lens_device = torch.empty_like(runner.seq_lens)
+        self._semantic_seq_lens_cpu = torch.empty_like(runner.optimistic_seq_lens_cpu)
         setattr(attention_block_table, RUNNER_PROVIDER_ATTRIBUTE, self)
         logger.info(
-            "Ascend KV compression cache bound method=%s layers=%d "
+            "Ascend KV compression cache bound method=%s "
+            "materialization_layers=%d calibrated_scoring_layers=%d "
             "threshold_tokens=%d target_tokens=%d min_output_tokens=%d "
             "logical_block_size=%d cache_block_size=%d",
             self.method.name,
             len(self.layer_caches),
+            len(getattr(self.method, "layer_caches", self.layer_caches)),
             self.runtime_spec.compression_threshold_tokens,
             self.runtime_spec.max_physical_num_tokens,
             self.runtime_spec.min_output_tokens_for_compression,
@@ -215,6 +223,12 @@ class AscendKVCompressionProvider:
             self.active.pop(request_id, None)
 
         for request_id, pending in tuple(self.pending.items()):
+            # An async scheduler can execute other requests while this
+            # compression output is still in flight. The scheduler freezes
+            # this request until acknowledgement, so its next scheduled step
+            # is the commit boundary on the worker too.
+            if request_id not in scheduler_output.num_scheduled_tokens:
+                continue
             request = self.runner.requests.get(request_id)
             if request is None:
                 self.pending.pop(request_id, None)
@@ -250,7 +264,11 @@ class AscendKVCompressionProvider:
         """Run deterministic in-place transactions after the attention step."""
         if self.runner is None or not self.layer_caches:
             raise RuntimeError("Ascend KV compression provider is not cache-bound")
+        plans = getattr(scheduler_output, PLAN_ATTRIBUTE, {})
         for request_id, scheduled in scheduler_output.num_scheduled_tokens.items():
+            plan = plans.get(request_id)
+            if plan is None:
+                continue
             if request_id in self.pending:
                 continue
             request = self.runner.requests.get(request_id)
@@ -269,6 +287,11 @@ class AscendKVCompressionProvider:
                     continue
             else:
                 physical = active.physical_anchor + semantic - active.semantic_anchor
+            if semantic != plan.semantic_anchor:
+                raise RuntimeError(
+                    f"request {request_id!r} semantic length disagrees with "
+                    "the scheduler compression plan"
+                )
             if physical < self.runtime_spec.compression_threshold_tokens:
                 continue
             if self.attention_group_index >= len(request.block_ids):
@@ -284,15 +307,28 @@ class AscendKVCompressionProvider:
                 raise RuntimeError(
                     f"request {request_id!r} has too few blocks for compression"
                 )
-            destination_ids = source_ids[:required_blocks]
+            if source_ids != plan.source_block_ids:
+                raise RuntimeError(
+                    f"request {request_id!r} source block table disagrees "
+                    "with the scheduler compression plan"
+                )
+            destination_ids = plan.destination_block_ids
+            if len(destination_ids) != required_blocks or (
+                set(destination_ids) & set(source_ids)
+            ):
+                raise RuntimeError(
+                    f"request {request_id!r} requires private destination blocks"
+                )
             source_device = _expand_scheduler_block_ids(
                 source_ids,
                 self.cache_blocks_per_scheduler_block,
                 self.runner.device,
             )
-            destination_device = source_device[
-                : required_blocks * self.cache_blocks_per_scheduler_block
-            ]
+            destination_device = _expand_scheduler_block_ids(
+                destination_ids,
+                self.cache_blocks_per_scheduler_block,
+                self.runner.device,
+            )
             result = self.method.compress(
                 CompressionRequest(
                     request_id=request_id,
@@ -344,14 +380,39 @@ class AscendKVCompressionProvider:
             self.runner is None
             or self._request_offsets_cpu is None
             or self._request_offsets_device is None
+            or self._semantic_seq_lens_device is None
+            or self._semantic_seq_lens_cpu is None
         ):
             raise RuntimeError("compression length buffers are not initialized")
         num_reqs = self.runner.input_batch.num_reqs
+        self._semantic_seq_lens_device[:num_reqs].copy_(self.runner.seq_lens[:num_reqs])
+        self._semantic_seq_lens_cpu[:num_reqs].copy_(
+            self.runner.optimistic_seq_lens_cpu[:num_reqs]
+        )
         self.runner.seq_lens[:num_reqs].sub_(self._request_offsets_device[:num_reqs])
         self.runner.optimistic_seq_lens_cpu[:num_reqs].sub_(
             self._request_offsets_cpu[:num_reqs]
         )
         self._physical_lengths_applied = True
+
+    def semantic_gdn_metadata(self, metadata: Any) -> Any:
+        """Give GDN its original recurrent positions, not attention offsets."""
+        if not self._physical_lengths_applied:
+            return metadata
+        if (
+            self._semantic_seq_lens_device is None
+            or self._semantic_seq_lens_cpu is None
+        ):
+            raise RuntimeError("semantic GDN length buffers are not initialized")
+        from dataclasses import replace
+
+        num_reqs = metadata.num_reqs
+        return replace(
+            metadata,
+            seq_lens=self._semantic_seq_lens_device[:num_reqs],
+            _seq_lens_cpu=self._semantic_seq_lens_cpu[:num_reqs],
+            seq_lens_cpu_upper_bound=self._semantic_seq_lens_cpu[:num_reqs],
+        )
 
     def _sync_request_offset_rows(self) -> None:
         if (
@@ -380,11 +441,39 @@ class AscendKVCompressionProvider:
         self._has_active_rows = any(offsets)
 
 
+def _supports_mtp2(vllm_config: Any) -> bool:
+    """Gate the unqualified MTP2 path behind explicit experimental opt-in.
+
+    Compression is armed only at the exact prompt boundary; subsequent
+    speculative decode steps cannot trigger another transaction because their
+    optimistic KV tail can roll back after acceptance. The attention manager
+    sees physical lengths, while Mamba state remains in semantic length space.
+    """
+    speculative = getattr(vllm_config, "speculative_config", None)
+    if speculative is None:
+        return False
+    if os.getenv("VLLM_ASCEND_KVCOMPRESS_EXPERIMENTAL_MTP2") != "1":
+        return False
+    model = vllm_config.model_config
+    text_config = getattr(model, "hf_text_config", None)
+    return (
+        getattr(speculative, "method", None) == "mtp"
+        and getattr(speculative, "num_speculative_tokens", None) == 2
+        and not getattr(speculative, "num_speculative_tokens_per_batch_size", None)
+        and bool(getattr(model, "is_hybrid", False))
+        and getattr(text_config, "model_type", None)
+        in {"qwen3_5_text", "qwen3_5_moe_text"}
+        and getattr(vllm_config.cache_config, "mamba_cache_mode", None) == "align"
+    )
+
+
 def _common_compatibility_reasons(vllm_config: Any, runner: Any) -> tuple[str, ...]:
     reasons: list[str] = []
     cache_config = vllm_config.cache_config
-    if bool(cache_config.enable_prefix_caching):
-        reasons.append("prefix caching must be disabled")
+    # Prefix hits may share immutable source blocks with other requests. The
+    # scheduler reserves disjoint destination blocks and swaps the requesting
+    # row only after the worker has copied into them; its cache_blocks hook
+    # also prevents private compacted KV from receiving semantic prefix hashes.
     block_size = int(cache_config.block_size)
     allowed_block_sizes = _allowed_scheduler_block_sizes(vllm_config)
     if block_size not in allowed_block_sizes:
@@ -398,12 +487,17 @@ def _common_compatibility_reasons(vllm_config: Any, runner: Any) -> tuple[str, .
         "float16",
     }:
         reasons.append("quantized KV cache is unsupported")
-    if vllm_config.speculative_config is not None:
-        reasons.append("speculative decoding is unsupported")
+    if vllm_config.speculative_config is not None and not _supports_mtp2(vllm_config):
+        reasons.append(
+            "speculative decoding is unqualified; experimental Qwen3.5 MTP2 "
+            "requires mamba_cache_mode='align' and explicit opt-in"
+        )
     if vllm_config.kv_transfer_config is not None:
         reasons.append("KV transfer is unsupported")
-    if bool(getattr(vllm_config.scheduler_config, "async_scheduling", False)):
-        reasons.append("asynchronous scheduling is unsupported")
+    # The scheduler adapter freezes a request after arming its private-block
+    # copy. It makes the block-table switch only after the accepted worker
+    # output has acknowledged the transaction, so another in-flight batch
+    # cannot decode from a half-written destination.
     model_config = vllm_config.model_config
     if bool(getattr(model_config, "is_hybrid", False)):
         text_config = getattr(model_config, "hf_text_config", None)
@@ -412,12 +506,20 @@ def _common_compatibility_reasons(vllm_config: Any, runner: Any) -> tuple[str, .
             reasons.append(
                 "only Qwen3.5-style full-attention/Gated-DeltaNet hybrids are supported"
             )
-        if getattr(cache_config, "mamba_cache_mode", "none") != "none":
-            reasons.append("hybrid compression requires mamba_cache_mode='none'")
+        if getattr(cache_config, "mamba_cache_mode", "none") not in {
+            "none",
+            "align",
+        }:
+            reasons.append(
+                "hybrid compression requires mamba_cache_mode='none' or 'align'"
+            )
     if bool(getattr(model_config, "use_mla", False)):
         reasons.append("MLA cache layouts are unsupported")
     if bool(getattr(model_config, "is_encoder_decoder", False)):
         reasons.append("encoder-decoder models are unsupported")
+    aux_output_config = getattr(vllm_config, "aux_output_config", None)
+    if bool(getattr(aux_output_config, "enable_return_routed_experts", False)):
+        reasons.append("routed-expert output is unsupported on this host ABI")
     parallel = vllm_config.parallel_config
     tensor_parallel_size = int(getattr(parallel, "tensor_parallel_size", 1))
     text_config = getattr(model_config, "hf_text_config", None)

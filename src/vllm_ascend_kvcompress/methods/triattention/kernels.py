@@ -128,6 +128,7 @@ def _score_paged_keys_mean_kernel(
     source_block_ids_ptr,
     q_real_ptr,
     q_imag_ptr,
+    q_pass_ptr,
     frequency_scale_ptr,
     extra_coefficient_ptr,
     phase_cos_ptr,
@@ -142,8 +143,11 @@ def _score_paged_keys_mean_kernel(
     output_head_stride,
     BLOCK_SIZE: tl.constexpr,
     ROPE_STYLE: tl.constexpr,
+    ROTARY_DIM: tl.constexpr,
+    PASS_DIM: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_F: tl.constexpr,
+    BLOCK_P: tl.constexpr,
 ):
     query_head = tl.program_id(0)
     token_offsets = tl.program_id(1) * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -218,9 +222,24 @@ def _score_paged_keys_mean_kernel(
     )
     key_abs = tl.sqrt(key_real * key_real + key_imag * key_imag)
     extra = tl.sum(key_abs * extra_coefficient[None, :] * scale[None, :], axis=1)
+    score = base_score + extra
+    if PASS_DIM > 0:
+        pass_offsets = tl.arange(0, BLOCK_P)
+        pass_mask = pass_offsets < PASS_DIM
+        q_pass = tl.load(
+            q_pass_ptr + query_head * PASS_DIM + pass_offsets,
+            mask=pass_mask,
+            other=0.0,
+        ).to(tl.float32)
+        key_pass = tl.load(
+            k_cache_ptr + cache_base + ROTARY_DIM + pass_offsets[None, :],
+            mask=token_mask[:, None] & pass_mask[None, :],
+            other=0.0,
+        ).to(tl.float32)
+        score += tl.sum(key_pass * q_pass[None, :], axis=1)
     tl.store(
         output_ptr + query_head * output_head_stride + token_offsets,
-        base_score + extra,
+        score,
         mask=token_mask,
     )
 
@@ -238,13 +257,34 @@ def score_paged_keys_mean_precomputed(
     output: torch.Tensor,
     block_size: int,
     rope_style: str,
+    *,
+    q_pass_mean: torch.Tensor | None = None,
+    rotary_dim: int | None = None,
 ) -> bool:
-    """Score paged post-RoPE keys using precomputed future-query phases."""
+    """Score full- or partial-RoPE paged keys with precomputed query phases."""
     if k_cache.device.type != "npu":
         return False
     if not _triton_available():
         raise RuntimeError("triton-ascend is unavailable or failed to import")
     kv_heads, queries_per_kv, frequency_count = q_real.shape
+    effective_rotary_dim = 2 * frequency_count if rotary_dim is None else rotary_dim
+    head_dim = k_cache.shape[-1]
+    if effective_rotary_dim != 2 * frequency_count or not (
+        0 < effective_rotary_dim <= head_dim
+    ):
+        raise ValueError("rotary_dim must match the calibrated frequency count")
+    pass_dim = head_dim - effective_rotary_dim
+    if pass_dim:
+        if q_pass_mean is None or q_pass_mean.shape != (
+            kv_heads,
+            queries_per_kv,
+            pass_dim,
+        ):
+            raise ValueError("partial-RoPE scoring requires matching q_pass_mean")
+        if not q_pass_mean.is_contiguous():
+            raise ValueError("q_pass_mean must be contiguous")
+    elif q_pass_mean is not None:
+        raise ValueError("full-RoPE scoring must not pass q_pass_mean")
     block_frequency = triton.next_power_of_2(frequency_count)
     _score_paged_keys_mean_kernel[
         (kv_heads * queries_per_kv, triton.cdiv(num_tokens, 16))
@@ -253,6 +293,7 @@ def score_paged_keys_mean_precomputed(
         source_block_ids,
         q_real,
         q_imag,
+        q_pass_mean if q_pass_mean is not None else q_real,
         frequency_scale,
         extra_coefficient,
         phase_cos,
@@ -267,8 +308,11 @@ def score_paged_keys_mean_precomputed(
         output.stride(1),
         BLOCK_SIZE=block_size,
         ROPE_STYLE=0 if rope_style == "interleaved" else 1,
+        ROTARY_DIM=effective_rotary_dim,
+        PASS_DIM=pass_dim,
         BLOCK_N=16,
         BLOCK_F=block_frequency,
+        BLOCK_P=triton.next_power_of_2(max(pass_dim, 1)),
     )
     return True
 
@@ -288,6 +332,9 @@ def score_paged_keys_mean(
     output: torch.Tensor,
     block_size: int,
     rope_style: str,
+    *,
+    q_pass_mean: torch.Tensor | None = None,
+    rotary_dim: int | None = None,
 ) -> bool:
     """Compatibility wrapper that prepares phases for one scoring layer."""
     if k_cache.device.type != "npu":
@@ -310,6 +357,8 @@ def score_paged_keys_mean(
         output,
         block_size,
         rope_style,
+        q_pass_mean=q_pass_mean,
+        rotary_dim=rotary_dim,
     )
 
 

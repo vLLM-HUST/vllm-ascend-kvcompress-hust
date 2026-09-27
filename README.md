@@ -3,16 +3,33 @@
 English | [简体中文](README.zh.md)
 
 An independently packaged TriAttention KV-cache compression plugin for the
-upstream-aligned vLLM-HUST and vLLM-Ascend-HUST stacks. The current working tree
-adds the paper's V3 position policy and an experimental Qwen3.5 hybrid-model
-path in the 0.7 release, without changing either host repository.
+upstream-aligned vLLM-HUST and vLLM-Ascend-HUST stacks. The published 0.7
+release added the paper's V3 position policy and experimental Qwen3.5 support.
+This unreleased 0.8 working tree adapts to the synchronized hosts without
+changing their source repositories.
 
-> Status: experimental release candidate. Package lifecycle, Ascend kernel
-> smoke, the complete three-cold-start A2 engineering matrix, and bounded public
-> LongBench-v2/LongBench quality checks pass. The completed A3 matrix fails its
-> minimum-completion and six-window throughput-CV gates. The official V4.6 B0,
-> authorized production data, and a passing stability matrix remain release
-> gates. See [Validation](docs/validation.md).
+> Status: 0.8 development candidate, not yet published or qualified. The
+> synchronized CANN 9.1/PyTorch 2.13 host has served Qwen3.5 BF16/TP=2 at a
+> 262,144-token configured context with APC, align, async scheduling, opt-in
+> MTP2, and FULL_AND_PIECEWISE graphs. The official SWE C4/60-second protocol
+> check passed with real prefix hits and per-rank compression acknowledgements.
+> Both official SWE and AgentX C4/900-second pairs were protocol-valid, but
+> compression regressed output throughput by 7.88% and 8.46%, respectively.
+> The fused Qwen3.5 partial-RoPE scorer passed an NPU numerical smoke and
+> microbenchmark; a fresh SWE 900-second pair narrowed the throughput
+> regression to 2.75% at a 1,024-token recompute window. A separate 4,096-
+> token candidate regressed 3.00%. Batched V3 selection with five-layer
+> scoring passed a separate 4/4 quality smoke but its matched SWE pair still
+> regressed throughput 2.95%; raising the compression output gate to 512
+> regressed 4.22% in another matched SWE pair. With that same output gate, a
+> fresh AgentX C4/900-second pair improved total output throughput 11.85% and
+> decode P90 5.31%, while TTFT P95 worsened 20.60%. This is a local positive
+> smoke point, not a one-hour result or release qualification; post-merge
+> retesting and user approval remain pending. MTP2 is still
+> experimental and rejected by default; both AgentX arms disabled it under
+> that workload's forced-acceptance rule.
+> See the [current frontier protocol](docs/frontier-benchmarking.md). The
+> [0.7 validation record](docs/validation.md) remains historical.
 
 ## Ownership and maintenance
 
@@ -48,16 +65,16 @@ and [calibration artifacts](docs/calibration-artifacts.md).
 
 | Component | Supported line | Validated snapshot |
 | --- | --- | --- |
-| vLLM-HUST / `vllm` | `>=0.28.1.post1.dev0,<0.29` | `6cdc0304a8` (`0.28.1.post1.dev260`) |
-| vLLM-Ascend-HUST / `vllm-ascend` | `>=0.25.1rc2.dev0,<0.26` | `5901bedbb7` (`0.25.1rc2.dev232+hust.20260903.4.g5901bedbb`) |
-| Extension Manager | `>=0.2.0.dev0,<0.3` | `cf1ea71e3e` |
+| vLLM-HUST / `vllm` | `>=0.29.1.post1.dev0,<0.30` (0.8 candidate) | `fc06902b7d` (`0.29.1.post1.dev843+gfc06902b7.empty`) |
+| vLLM-Ascend-HUST / `vllm-ascend` | `>=0.25.1rc2.dev0,<0.26` | `5422a07c4` (`0.25.1rc2.dev616+hust.20260903.4.g5422a07c4`) |
+| Extension Manager | `>=0.2.0.dev0,<0.3` | installed `0.2.0.dev0` |
 | Python | `>=3.10,<3.15` | 3.11.16 |
 
 The standard acceptance topology remains one Ascend NPU, the v1 scheduler and
 `NPUModelRunner`, one full-attention KV group, block size 128, and dense
 BF16/FP16 K/V. Qwen3.5 text/MoE hybrids additionally support one full-attention
-group plus Gated-DeltaNet state groups with `mamba_cache_mode=none`; tensor
-parallelism is accepted only when its size divides the model's KV-head count
+group plus Gated-DeltaNet state groups with `mamba_cache_mode=none` or `align`;
+tensor parallelism is accepted only when its size divides the model's KV-head count
 (TP=2 for Qwen3.5-35B-A3B). On the validated Ascend host, that hybrid uses a
 32,768-token cross-group scheduler alignment, 2,048-token full-attention pages,
 and 128-token attention-kernel cache blocks. The plugin validates all three
@@ -76,14 +93,14 @@ tested runtime lock, while host compatibility is enforced by the Extension
 Manager manifest and startup checks. This also prevents plugin installation
 from asking pip to re-resolve an already provisioned host environment.
 
-For the currently supported vLLM 0.28 / vLLM-Ascend 0.25 line, do not mix in
+For the current vLLM 0.29 / vLLM-Ascend 0.25 development line, do not mix in
 Triton-Ascend 3.2.2. That older wheel pins NumPy 1.26.4, whereas the supported
 vLLM line requires `opencv-python-headless>=4.13`, whose available wheels
 require NumPy 2. Downgrading OpenCV to 4.9 violates the vLLM requirement. Use
 the matched Triton-Ascend 3.6 host stack instead.
 
-After the host and Extension Manager are present, install the plugin without
-changing host packages:
+The following installs the published 0.7 package, **not** this 0.8 development
+candidate. It is not the validated installation command for the 0.29 host:
 
 ```bash
 python -m pip install --no-deps vllm-ascend-kvcompress-hust==0.7.0
@@ -143,10 +160,11 @@ Qwen3.5-35B-A3B uses the dedicated
 temporary calibration model is automatically distributed across visible NPUs
 before serving weights are loaded. See the
 [Qwen3.5 adaptation note](docs/qwen3.5-35b-a3b-adaptation.md). The validated
-host stack also requires `--enforce-eager` and the explicit
-`VLLM_ASCEND_KVCOMPRESS_QWEN_GDN_LIST_COMPAT=1` bridge because its installed
-GDN operator still exposes the legacy non-optional `int[]` metadata ABI. The
-bridge is schema-gated and does not modify either host repository.
+earlier host snapshot required `--enforce-eager` and the explicit
+`VLLM_ASCEND_KVCOMPRESS_QWEN_GDN_LIST_COMPAT=1` bridge for a legacy `int[]`
+metadata ABI. The synchronized host exposes the Tensor ABI and has completed
+FULL_AND_PIECEWISE graph capture without `--enforce-eager`; the opt-in bridge
+is schema-gated and does not modify either host repository.
 
 ## Runtime and long-context optimization
 
@@ -207,15 +225,15 @@ does not change Qwen2.5-14B-Instruct as the standard release model.
 
 ## Conflict matrix
 
-| Feature | 0.6 status | Behavior |
+| Feature | 0.8 working-tree status | Behavior |
 | --- | --- | --- |
-| Prefix cache | Conflict | Rejected; must be disabled |
-| Speculative decoding | Conflict | Rejected |
+| Prefix cache | SWE C4 pair protocol-valid | Qwen3.5/TP=2/align/graph captured server-side hits; throughput regressed |
+| Speculative decoding | Experimental | Opt-in MTP2 served both SWE 900-second arms with real acceptance; default startup guard remains |
 | KV transfer / disaggregated P/D | Conflict | Rejected |
 | Quantized KV | Conflict | Rejected; dense BF16/FP16 only |
-| Qwen3.5 full-attention + Gated-DeltaNet hybrid | Experimental | `mamba_cache_mode=none`; only full-attention KV is compacted |
+| Qwen3.5 full-attention + Gated-DeltaNet hybrid | Experimental | `mamba_cache_mode=none` or `align`; only full-attention KV is compacted |
 | Other hybrid / MLA / sliding / local attention | Conflict | Rejected |
-| Async scheduling | Conflict | Rejected |
+| Async scheduling | SWE C4 pair protocol-valid | Qwen3.5/TP=2/APC/align/graph served both 900-second arms; not performance-qualified |
 | TP > 1 | Conditional | Must divide KV heads; TP ranks synchronize scores |
 | PP/DP/DCP/PCP > 1 | Conflict | Rejected |
 | BidKV or another scheduler | Conflict | Standard v1 scheduler required; active balance scheduling rejected |
@@ -233,11 +251,13 @@ of block size 128. For a Qwen3.5 runtime with a promoted 2,048-token attention
 page, `kv_budget` must also be divisible by 2,048; it need not be divisible by
 the scheduler's 32,768-token cross-group alignment.
 
-- [Current validation record](docs/validation.md)
-- [V4.6-derived requirements](docs/kv-compress-test-requirements.md)
-- [Benchmark protocol](docs/benchmarking.md)
-- [Public long-context benchmarks](docs/public-long-context-benchmarks.md)
-- [HTML benchmark leaderboard](docs/benchmark-leaderboard.html)
+- [Documentation map (current vs. historical)](docs/README.md)
+- [Historical 2026-09-20 engineering validation](docs/validation.md)
+- [Current 0.8 frontier protocol and engineering evidence](docs/frontier-benchmarking.md)
+- [Historical V4.6-derived requirements](docs/kv-compress-test-requirements.md)
+- [Historical A2/A3 benchmark protocol](docs/benchmarking.md)
+- [Historical public long-context benchmarks](docs/public-long-context-benchmarks.md)
+- [HTML benchmark leaderboard (Frontier measured points and historical evidence)](docs/benchmark-leaderboard.html)
 - [Qwen3.5-35B-A3B adaptation](docs/qwen3.5-35b-a3b-adaptation.md)
 - [Packaging and release](docs/packaging-and-release.md)
 - [Method extension API](docs/methods.md)

@@ -2,6 +2,9 @@
 
 English | [简体中文](benchmarking.zh.md)
 
+> **Historical archive.** This V4.6-derived procedure is no longer the active
+> 0.8 release gate. See [Frontier benchmarking](frontier-benchmarking.md).
+
 The normative project-specific requirements extracted from the HUST V4.6
 delivery plan are in [KV-compression test requirements](kv-compress-test-requirements.md).
 That document takes precedence over the abbreviated workflow below.

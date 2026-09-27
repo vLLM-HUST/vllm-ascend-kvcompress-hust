@@ -68,6 +68,7 @@ class TriAttentionMethod(KVCompressionMethod):
         self.model_shape = model_shape
         self.calibration = CalibrationStats.load(self.config.stats_path)
         self.layer_caches: tuple[TriAttentionLayerCache, ...] = ()
+        self.materialization_caches: tuple[LayerCache, ...] = ()
         self.cache_block_size = ASCEND_BLOCK_SIZE
         self.offsets: torch.Tensor | None = None
         self.k_workspace: torch.Tensor | None = None
@@ -122,13 +123,33 @@ class TriAttentionMethod(KVCompressionMethod):
         self.offsets = build_geometric_offsets(
             int(self.vllm_config.model_config.max_model_len), runner.device
         )
-        if len(layer_caches) != len(self.model_shape.full_attention_layer_indices):
+        mtp_layers = tuple(
+            layer
+            for layer in layer_caches
+            if layer.name == "mtp.layers.0.self_attn.attn"
+        )
+        target_layers = tuple(
+            layer
+            for layer in layer_caches
+            if layer.name != "mtp.layers.0.self_attn.attn"
+        )
+        if mtp_layers and (
+            len(mtp_layers) != 1
+            or getattr(self.vllm_config.speculative_config, "method", None) != "mtp"
+            or getattr(
+                self.vllm_config.speculative_config, "num_speculative_tokens", None
+            )
+            != 2
+        ):
+            raise RuntimeError("uncalibrated MTP cache requires Qwen3.5 MTP2")
+        if len(target_layers) != len(self.model_shape.full_attention_layer_indices):
             raise RuntimeError(
                 "allocated full-attention layer count does not match calibration"
             )
+        self.materialization_caches = layer_caches
         bound: list[TriAttentionLayerCache] = []
         seen_layer_indices: set[int] = set()
-        for layer in layer_caches:
+        for layer in target_layers:
             if layer.layer_index not in device_stats:
                 raise RuntimeError(
                     f"attention layer {layer.name!r} resolves to invalid model "
@@ -245,7 +266,7 @@ class TriAttentionMethod(KVCompressionMethod):
             self.dense_indices,
             cache_block_size,
         )
-        for layer in self.layer_caches:
+        for layer in self.materialization_caches:
             materialize_token_slots(
                 layer.k_cache,
                 layer.v_cache,
@@ -255,7 +276,7 @@ class TriAttentionMethod(KVCompressionMethod):
                 self.v_workspace,
             )
         layer_lengths = tuple(
-            (layer.name, self.config.kv_budget) for layer in self.layer_caches
+            (layer.name, self.config.kv_budget) for layer in self.materialization_caches
         )
         return CompressionResult(
             physical_num_tokens=self.config.kv_budget,
@@ -312,6 +333,7 @@ class TriAttentionMethod(KVCompressionMethod):
                     getattr(layer.stats, "rotary_dim", None) is None
                     or getattr(layer.stats, "rotary_dim", None)
                     == layer.k_cache.shape[-1]
+                    or getattr(layer.stats, "q_pass_mean", None) is not None
                 )
             ):
                 raw_scores = score_workspace[:, :, :physical_num_tokens]
@@ -328,6 +350,8 @@ class TriAttentionMethod(KVCompressionMethod):
                     raw_scores,
                     cache_block_size,
                     layer.stats.rope_style,
+                    q_pass_mean=getattr(layer.stats, "q_pass_mean", None),
+                    rotary_dim=getattr(layer.stats, "rotary_dim", None),
                 )
             else:
                 used_kernel = False

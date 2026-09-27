@@ -2,6 +2,10 @@
 
 [English](kv-compress-test-requirements.md) | 简体中文
 
+> **历史归档。** V4.6 已不再是 0.8 的当前项目门槛；请使用
+> [Frontier 刷榜规程](frontier-benchmarking.zh.md)。下述 Qwen2.5 矩阵保留为
+> 可复核历史证据，不是当前官方刷榜工作负载。
+
 本文把受控文档《vLLM-HUST 标准交付测试方案 V4.6》中与本插件有关的要求
 落实为可执行规程。源文件位于
 `vllm-hust-benchmark/docs/assets/vLLM-HUST标准交付测试方案_V4.6.pdf`，
