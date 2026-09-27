@@ -225,15 +225,15 @@ does not change Qwen2.5-14B-Instruct as the standard release model.
 
 ## Conflict matrix
 
-| Feature | 0.8 working-tree status | Behavior |
+| Feature | 0.8 candidate status | Behavior |
 | --- | --- | --- |
-| Prefix cache | SWE C4 pair protocol-valid | Qwen3.5/TP=2/align/graph captured server-side hits; throughput regressed |
+| Prefix cache | Official C4 pairs protocol-valid | Private destination blocks preserve shared source hashes; Qwen3.5 SWE regressed, AgentX min-512 improved throughput |
 | Speculative decoding | Experimental | Opt-in MTP2 served both SWE 900-second arms with real acceptance; default startup guard remains |
 | KV transfer / disaggregated P/D | Conflict | Rejected |
 | Quantized KV | Conflict | Rejected; dense BF16/FP16 only |
-| Qwen3.5 full-attention + Gated-DeltaNet hybrid | Experimental | `mamba_cache_mode=none` or `align`; only full-attention KV is compacted |
+| Qwen3.5 full-attention + Gated-DeltaNet hybrid | Experimental | `mamba_cache_mode=none` or `align`; only full-attention KV uses compacted physical length, while Gated-DeltaNet keeps semantic length |
 | Other hybrid / MLA / sliding / local attention | Conflict | Rejected |
-| Async scheduling | SWE C4 pair protocol-valid | Qwen3.5/TP=2/APC/align/graph served both 900-second arms; not performance-qualified |
+| Async scheduling | Official C4 pairs protocol-valid | Commit waits for matching output; original source blocks remain reserved until already queued batches finish; post-merge NPU retest pending |
 | TP > 1 | Conditional | Must divide KV heads; TP ranks synchronize scores |
 | PP/DP/DCP/PCP > 1 | Conflict | Rejected |
 | BidKV or another scheduler | Conflict | Standard v1 scheduler required; active balance scheduling rejected |

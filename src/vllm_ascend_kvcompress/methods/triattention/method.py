@@ -124,17 +124,14 @@ class TriAttentionMethod(KVCompressionMethod):
             int(self.vllm_config.model_config.max_model_len), runner.device
         )
         mtp_layers = tuple(
-            layer
-            for layer in layer_caches
-            if layer.name == "mtp.layers.0.self_attn.attn"
+            layer for layer in layer_caches if _is_mtp_cache_layer(layer.name)
         )
         target_layers = tuple(
-            layer
-            for layer in layer_caches
-            if layer.name != "mtp.layers.0.self_attn.attn"
+            layer for layer in layer_caches if not _is_mtp_cache_layer(layer.name)
         )
         if mtp_layers and (
             len(mtp_layers) != 1
+            or mtp_layers[0].name != "mtp.layers.0.self_attn.attn"
             or getattr(self.vllm_config.speculative_config, "method", None) != "mtp"
             or getattr(
                 self.vllm_config.speculative_config, "num_speculative_tokens", None
@@ -146,7 +143,6 @@ class TriAttentionMethod(KVCompressionMethod):
             raise RuntimeError(
                 "allocated full-attention layer count does not match calibration"
             )
-        self.materialization_caches = layer_caches
         bound: list[TriAttentionLayerCache] = []
         seen_layer_indices: set[int] = set()
         for layer in target_layers:
@@ -179,7 +175,15 @@ class TriAttentionMethod(KVCompressionMethod):
                     offset_sin_mean=torch.sin(offset_phases).mean(dim=0),
                 )
             )
+        expected_indices = set(self.model_shape.full_attention_layer_indices)
+        if seen_layer_indices != expected_indices:
+            raise RuntimeError(
+                "allocated target full-attention layers do not match calibration: "
+                f"allocated={sorted(seen_layer_indices)} "
+                f"expected={sorted(expected_indices)}"
+            )
         self.layer_caches = tuple(bound)
+        self.materialization_caches = layer_caches
         scoring_layers = self.layer_caches[:: self.config.score_layer_stride]
         if any(
             layer.offset_cos_mean is None or layer.offset_sin_mean is None
@@ -451,6 +455,10 @@ class TriAttentionMethod(KVCompressionMethod):
             aggregated_scores.add_(layer_scores)
         else:
             torch.maximum(aggregated_scores, layer_scores, out=aggregated_scores)
+
+
+def _is_mtp_cache_layer(layer_name: str) -> bool:
+    return ".mtp.layers." in f".{layer_name}."
 
 
 def create_triattention_method(

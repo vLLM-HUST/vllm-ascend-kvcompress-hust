@@ -55,6 +55,52 @@ class _RecordingBlockTable:
         self.added = block_ids, row_idx
 
 
+def test_async_scheduling_is_admitted_by_worker_compatibility(monkeypatch) -> None:
+    runner_type = type("NPUModelRunner", (SimpleNamespace,), {})
+    runner_type.__module__ = "vllm_ascend.worker.model_runner_v1"
+    runner = runner_type(use_sparse=False, use_compress=False)
+    config = SimpleNamespace(
+        cache_config=SimpleNamespace(
+            enable_prefix_caching=False,
+            block_size=128,
+            cache_dtype="auto",
+            mamba_cache_mode="none",
+        ),
+        speculative_config=None,
+        kv_transfer_config=None,
+        scheduler_config=SimpleNamespace(async_scheduling=True),
+        model_config=SimpleNamespace(
+            is_hybrid=False,
+            use_mla=False,
+            is_encoder_decoder=False,
+            hf_text_config=SimpleNamespace(num_key_value_heads=2),
+        ),
+        parallel_config=SimpleNamespace(
+            tensor_parallel_size=1,
+            pipeline_parallel_size=1,
+            data_parallel_size=1,
+            prefill_context_parallel_size=1,
+            decode_context_parallel_size=1,
+        ),
+    )
+
+    assert _common_compatibility_reasons(config, runner) == ()
+
+    config.cache_config.enable_prefix_caching = True
+    assert _common_compatibility_reasons(config, runner) == ()
+
+    config.speculative_config = SimpleNamespace(method="mtp", num_speculative_tokens=2)
+    assert "speculative decoding is unqualified" in " ".join(
+        _common_compatibility_reasons(config, runner)
+    )
+
+    config.model_config.is_hybrid = True
+    config.model_config.hf_text_config.model_type = "qwen3_5_moe_text"
+    config.cache_config.mamba_cache_mode = "align"
+    monkeypatch.setenv("VLLM_ASCEND_KVCOMPRESS_EXPERIMENTAL_MTP2", "1")
+    assert _common_compatibility_reasons(config, runner) == ()
+
+
 def _provider() -> AscendKVCompressionProvider:
     provider = AscendKVCompressionProvider.__new__(AscendKVCompressionProvider)
     provider.method = _RecordingMethod()
@@ -76,6 +122,10 @@ def _provider() -> AscendKVCompressionProvider:
     provider._offset_row_snapshot = ()
     provider._has_active_rows = False
     provider._physical_lengths_applied = False
+    provider.vllm_config = SimpleNamespace(
+        cache_config=SimpleNamespace(enable_prefix_caching=False),
+        speculative_config=None,
+    )
     return provider
 
 
@@ -249,6 +299,71 @@ def test_final_prefill_compresses_and_arms_worker_commit() -> None:
     assert provider.method.last_request.physical_num_tokens == 300
     assert provider.method.last_request.source_block_ids == ((2, 0, 3),)
     assert provider.method.last_request.destination_block_ids == ((50,),)
+
+
+def test_worker_uses_scheduler_private_destination_for_prefix_caching() -> None:
+    provider = _provider()
+    provider.vllm_config.cache_config.enable_prefix_caching = True
+    request = SimpleNamespace(
+        num_computed_tokens=256,
+        num_prompt_tokens=300,
+        max_tokens=128,
+        block_ids=([2, 0, 3],),
+    )
+    provider.runner = SimpleNamespace(
+        device=torch.device("cpu"), requests={"r": request}
+    )
+    provider.compress_scheduled_requests(_output_with_plan(300, (2, 0, 3), (100,), 44))
+
+    assert provider.pending["r"] == PendingCompression(300, 128, (100,))
+    assert provider.method.last_request is not None
+    assert provider.method.last_request.source_block_ids == ((2, 0, 3),)
+    assert provider.method.last_request.destination_block_ids == ((100,),)
+
+
+def test_prefix_worker_skips_request_without_scheduler_transaction() -> None:
+    provider = _provider()
+    provider.vllm_config.cache_config.enable_prefix_caching = True
+    provider.runner = SimpleNamespace(
+        device=torch.device("cpu"),
+        requests={
+            "r": SimpleNamespace(
+                num_computed_tokens=256,
+                num_prompt_tokens=300,
+                max_tokens=128,
+                block_ids=([2, 0, 3],),
+            )
+        },
+    )
+    output = SimpleNamespace(num_scheduled_tokens={"r": 44})
+
+    provider.compress_scheduled_requests(output)
+
+    assert not provider.pending
+    assert provider.method.last_request is None
+
+
+def test_speculative_worker_requires_scheduler_transaction() -> None:
+    provider = _provider()
+    provider.vllm_config.speculative_config = SimpleNamespace(num_speculative_tokens=2)
+    provider.runner = SimpleNamespace(
+        device=torch.device("cpu"),
+        requests={
+            "r": SimpleNamespace(
+                num_computed_tokens=256,
+                num_prompt_tokens=300,
+                max_tokens=128,
+                block_ids=([2, 0, 3],),
+            )
+        },
+    )
+
+    provider.compress_scheduled_requests(
+        SimpleNamespace(num_scheduled_tokens={"r": 44})
+    )
+
+    assert not provider.pending
+    assert provider.method.last_request is None
 
 
 def test_worker_commit_truncates_tables_and_activates_offsets() -> None:

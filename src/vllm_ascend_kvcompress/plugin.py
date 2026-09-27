@@ -303,6 +303,15 @@ def _prepare_current_triton_runtime() -> None:
     in the wheel.  Keep the workaround local to enabled plugin processes and
     fail with a useful installation error if the expected module is absent.
     """
+    # Triton Ascend 3.2 does not ship the Gluon API and does not use its
+    # descriptor specializer.  The Frontier host still carries that runtime,
+    # so leave it on the ordinary JIT path instead of importing a namespace
+    # that belongs only to 3.6 and newer.
+    triton_module = sys.modules.get("triton")
+    triton_version = str(getattr(triton_module, "__version__", ""))
+    if triton_version.startswith("3.2."):
+        return
+
     # vLLM-Ascend's legacy compatibility path creates parent modules with an
     # empty ``__path__``.  Triton Ascend is distributed as ``triton-ascend``,
     # so a host check for distribution ``triton`` can select that path even on

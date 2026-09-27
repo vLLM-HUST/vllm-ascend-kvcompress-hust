@@ -188,15 +188,15 @@ Qwen2.5-14B-Instruct 作为标准发布模型的定位。
 
 ## 冲突矩阵
 
-| 功能 | 0.8 工作树状态 | 行为 |
+| 功能 | 0.8 候选状态 | 行为 |
 | --- | --- | --- |
-| Prefix cache | SWE C4 配对协议有效 | Qwen3.5/TP=2/align/图模式确有服务端命中，但吞吐退化 |
+| Prefix cache | 官方 C4 配对协议有效 | 私有目标块保留共享源块哈希；Qwen3.5 SWE 吞吐退化，AgentX 的 512 门槛候选吞吐提升 |
 | Speculative decoding | 实验性 | 显式 MTP2 完成 SWE 两侧 900 秒窗口且有真实接受率；默认启动保护仍生效 |
 | KV transfer / 分离式 P/D | 冲突 | 启动拒绝 |
 | 量化 KV | 冲突 | 启动拒绝，仅支持稠密 BF16/FP16 |
-| Qwen3.5 全注意力 + Gated-DeltaNet 混合架构 | 实验支持 | `mamba_cache_mode=none` 或 `align`；只压缩全注意力 KV |
+| Qwen3.5 全注意力 + Gated-DeltaNet 混合架构 | 实验支持 | `mamba_cache_mode=none` 或 `align`；仅全注意力 KV 使用压缩后的物理长度，Gated-DeltaNet 保持语义长度 |
 | 其他 hybrid / MLA / sliding / local attention | 冲突 | 启动拒绝 |
-| 异步调度 | SWE C4 配对协议有效 | Qwen3.5/TP=2/APC/align/图模式完成两侧 900 秒；性能未通过 |
+| 异步调度 | 官方 C4 配对协议有效 | 匹配模型输出后才提交；已排队批次结束前保留源块；合并后 NPU 复测待完成 |
 | TP > 1 | 条件支持 | 必须整除 KV 头数；各 rank 同步评分 |
 | PP/DP/DCP/PCP > 1 | 冲突 | 启动拒绝 |
 | BidKV 或其他调度器 | 冲突 | 要求标准 v1 调度器；拒绝实际启用的平衡调度 |

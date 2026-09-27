@@ -261,7 +261,7 @@ class AscendKVCompressionProvider:
         self._sync_request_offset_rows()
 
     def compress_scheduled_requests(self, scheduler_output: Any) -> None:
-        """Run deterministic in-place transactions after the attention step."""
+        """Run scheduler-authorized transactions after the attention step."""
         if self.runner is None or not self.layer_caches:
             raise RuntimeError("Ascend KV compression provider is not cache-bound")
         plans = getattr(scheduler_output, PLAN_ATTRIBUTE, {})

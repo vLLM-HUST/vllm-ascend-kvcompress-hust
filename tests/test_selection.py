@@ -20,6 +20,16 @@ from vllm_ascend_kvcompress.methods.triattention.selection import (
 )
 
 
+def test_mtp_cache_layer_is_identified_separately_from_target_layers() -> None:
+    assert triattention_method._is_mtp_cache_layer("mtp.layers.0.self_attn.attn")
+    assert triattention_method._is_mtp_cache_layer(
+        "draft_model.mtp.layers.1.self_attn.attn"
+    )
+    assert not triattention_method._is_mtp_cache_layer(
+        "language_model.model.layers.3.self_attn.attn"
+    )
+
+
 def test_qwen35_gqa_width_is_invariant_under_tensor_parallel_sharding() -> None:
     shape = ModelShape(
         model_type="qwen3_5_moe_text",
