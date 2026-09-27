@@ -96,11 +96,26 @@ def test_current_triton_runtime_preloads_gluon_descriptor_namespace(
         "test_triton.experimental.gluon.nvidia",
     )
     monkeypatch.setattr(plugin, "_TRITON_GLUON_MODULES", modules)
+    monkeypatch.setitem(
+        plugin.sys.modules, "triton", SimpleNamespace(__version__="3.6.0")
+    )
     monkeypatch.setattr(plugin, "import_module", imported.append)
 
     _prepare_current_triton_runtime()
 
     assert imported == list(modules)
+
+
+def test_triton_32_skips_unavailable_gluon_namespace(monkeypatch) -> None:
+    imported = []
+    monkeypatch.setitem(
+        plugin.sys.modules, "triton", SimpleNamespace(__version__="3.2.0")
+    )
+    monkeypatch.setattr(plugin, "import_module", imported.append)
+
+    _prepare_current_triton_runtime()
+
+    assert imported == []
 
 
 def test_message_queue_env_override_covers_omitted_worker_default(
