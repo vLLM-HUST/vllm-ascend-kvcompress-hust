@@ -2,7 +2,7 @@
 
 [English](frontier-benchmarking.md) | 简体中文
 
-本规程替代旧 V4.6 A2/A3 作为当前项目的刷榜目标；旧结果保留为历史证据，不能与新工作负载合并。AgentX 已取得一组 900 秒配对吞吐正结果；版本发布仍待合入后的复测和用户确认。
+本规程替代旧 V4.6 A2/A3 作为当前项目的刷榜目标；旧结果保留为历史证据，不能与新工作负载合并。AgentX 的 900 秒配对吞吐正结果已在合并源码提交 `17ffdc7` 上复现；版本发布仍待用户确认。
 
 SWE 的测试资格及将来向官网提交成绩，按[Frontier 成绩提交指南](https://github.com/vLLM-HUST/vllm-hust-website/blob/codex/frontier-submission-example/data/examples/frontier-submission/README.md)执行：先做独立的 C4／60 秒协议检查，再测 900 秒；保留原始 `summary.json`、`config.json`，将 `output_tokens_per_second` 填为总吞吐 `metrics.output_tps`（官网再按卡数相除）。本地测试或插件 HTML 页面上的点不会自动登上官网。SWE 使用 MTP 时必须保留真实生成 token 和实测接受率，不能套用历史 AgentX 的 synthetic sampler 或固定接受长度。
 
@@ -39,7 +39,7 @@ AgentX 配对可运行 `python scripts/kvcompress_frontier_agentx_pair.py --base
 
 SWE 测的是固定长会话的服务形状，不是 SWE 任务求解正确率。AgentX 的合成内容也不证明语义质量或真实工具执行成功。榜单数据与历史负结果见 [HTML 页面](benchmark-leaderboard.html)；每条新记录必须指向可审计的原始证据。
 
-插件 HTML 页面现按官方 [Frontier 视图](https://vllm-hust.sage.org.ai/leaderboard-runs.html#frontier) 将**实测点**与**历史记录**分开，固定坐标为 P90 解码速度和每卡输出 token/s。`evidence/frontier-results.json` 已收入 AgentX 900 秒正收益配对的 B0/B1 两点；SWE cohort 仍无正收益点。两点共用 `pair_id`、cohort、并发和设备数，并保留实际最长输入、原始运行 ID、报告哈希、证据链接和测量范围。这是插件本地榜单，不等于官网提交或 AgentX 一小时正式成绩。运行 `python scripts/kvcompress_leaderboard.py` 生成两个浏览器数据包，并在发布前运行 `python scripts/kvcompress_leaderboard.py --check`。不得从旧记录的百分比增量推算 Frontier 点。
+插件 HTML 页面现按官方 [Frontier 视图](https://vllm-hust.sage.org.ai/leaderboard-runs.html#frontier) 将**实测点**与**历史记录**分开，固定坐标为 P90 解码速度和每卡输出 token/s。`evidence/frontier-results.json` 已收入两组 AgentX 900 秒正收益配对的四个 B0/B1 点，含合并后复测；SWE cohort 仍无正收益点。每组点共用 `pair_id`、cohort、并发和设备数，并保留实际最长输入、原始运行 ID、报告哈希、证据链接和测量范围。这是插件本地榜单，不等于官网提交或 AgentX 一小时正式成绩。运行 `python scripts/kvcompress_leaderboard.py` 生成两个浏览器数据包，并在发布前运行 `python scripts/kvcompress_leaderboard.py --check`。不得从旧记录的百分比增量推算 Frontier 点。
 
 旧 [V4.6 测试要求](kv-compress-test-requirements.zh.md)、[A2/A3 规程](benchmarking.zh.md)及[公开长上下文实验](public-long-context-benchmarks.zh.md)仅作为历史归档，不再是 0.8 的发布门槛。
 
@@ -193,3 +193,45 @@ TP-rank 回执（包括预热）。详见[AgentX 正收益配对记录](evidence
 这是一组工程正收益的 900 秒 smoke，不证明可重复性、语义答案质量，
 也不是一小时正式成绩或官网提交。AgentX 两侧按强制接受率规则关闭 MTP；
 SWE 的真实 MTP 配对仍为负结果。
+
+## 合并源码 `17ffdc7` 后的完整复测
+
+候选分支先与当时最新远端主分支 `ed058fa` 合并，再在同一源码提交上分别运行
+AgentX B0/B1。两侧使用原版 393 会话数据集及预热、C4、两张 910B2 和各自
+900 秒窗口；原版报告均为 `submission_valid=true`，无无效原因或请求错误。
+按强制接受率规则，AgentX 两侧均关闭 MTP。
+
+| AgentX 官方指标 | B0 | B1 | B1 相对 B0 |
+| --- | ---: | ---: | ---: |
+| 总输出 token/s | 52.703 | 58.593 | **+11.18%** |
+| 每卡输出 token/s | 26.351 | 29.297 | **+11.18%** |
+| 逐请求反向 ITL 解码 P90，token/s | 60.381 | 63.562 | **+5.27%** |
+| TTFT P95，ms | 1,601.49 | 1,858.66 | +16.06%（变差） |
+| 完成请求数 | 83 | 89 | 闭环轮次混合不同 |
+| 最长实际输入 token | 169,166 | 169,163 | 未达到 256K |
+
+B1 日志包含 55 次调度提交和 110 次 TP-rank 回执（含预热）。详见
+[合并后 AgentX 配对证据](evidence/kvcompress-qwen35-20260927-agentx-postmerge-positive-pair.json)。
+正吞吐与解码收益的方向在合并后复现，但前后两组配对使用不同源码提交，
+每组仅一次窗口，不能据此声称统计显著性。这不是 AgentX 一小时正式成绩，
+合成回放也不评价语义答案质量。
+
+SWE B0/B1 各自先通过 60 秒协议短测，再分别完成 900 秒窗口。两侧均
+`valid=true`、未中止、0 失败请求，8 条 prepared 会话全部完成。两侧均实际
+启用 MTP2、APC、异步调度、`mamba_cache_mode=align` 与
+FULL_AND_PIECEWISE；仅压缩配置不同。
+
+| SWE 官方指标 | B0 | B1 | B1 相对 B0 |
+| --- | ---: | ---: | ---: |
+| 总输出 token/s | 222.581 | 216.008 | **−2.95%** |
+| 每卡输出 token/s | 111.291 | 108.004 | **−2.95%** |
+| 解码 P90，token/s | 72.341 | 71.368 | **−1.34%** |
+| TTFT P95，ms | 1,283.61 | 1,477.01 | +15.07%（变差） |
+| 窗口内完成请求 | 329 | 315 | 轮次混合不同 |
+| 最长实际 prompt token | 74,706 | 73,616 | 未达到 256K |
+
+B1 的 60 秒短测与 900 秒窗口合计有 99 次调度提交、198 次 TP-rank 回执。
+同源码严格配对及原始报告哈希见
+[合并后 SWE 负结果证据](evidence/kvcompress-qwen35-20260927-swe-postmerge-negative-pair.json)。
+协议有效和真实 MTP 接受率不代表正收益，也不测 SWE 任务成功率。既有
+Qwen2.5 标准发布测试保留为历史记录；0.8 打包发布仍待用户确认。

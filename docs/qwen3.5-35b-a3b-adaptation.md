@@ -76,9 +76,13 @@ metadata ABI. With the isolated CANN 9.1/PyTorch 2.13 environment, the same
 model reached 262,144 configured context and captured FULL_AND_PIECEWISE
 graphs without `--enforce-eager`; the official SWE C4/60-second protocol check
 passed. The bridge flag may remain set but is a no-op for the Tensor schema.
-The SWE 900-second pairs remained negative, while a same-source AgentX
-900-second pair with a 512-token minimum output gate improved output
-throughput by 11.85% and decode P90 by 5.31%; TTFT P95 worsened 20.60%.
+The SWE 900-second pairs remained negative. After merging with the current
+master, source commit `17ffdc7` passed both official 900-second pair protocols:
+AgentX with the 512-token minimum output gate improved output throughput
+11.18% and decode P90 5.27%, while TTFT P95 worsened 16.06%; SWE with real
+MTP2 regressed output throughput 2.95% and decode P90 1.34%, while TTFT P95
+worsened 15.07%. Both SWE arms also passed separate 60-second protocol checks.
+These are local engineering results, not formal one-hour or quality claims.
 See [Frontier benchmarking](frontier-benchmarking.md) for the full limits.
 
 Partial-RoPE calibration captures normalized query heads before rotation. The
@@ -93,8 +97,9 @@ selection on both ranks.
 
 V3 selection protects the first 128 and most recent 512 tokens, splits the
 middle into eight segments, and assigns an exact proportional eviction quota
-to every segment. Qwen3.5 scores all ten full-attention layers
-(`score_layer_stride=1`).
+to every segment. The default Qwen3.5 example scores all ten full-attention
+layers (`score_layer_stride=1`); the measured min-512 candidate samples five
+(`score_layer_stride=2`) while materializing all ten target layers.
 
 ## Calibration and launch
 

@@ -5,29 +5,22 @@ English | [简体中文](README.zh.md)
 An independently packaged TriAttention KV-cache compression plugin for the
 upstream-aligned vLLM-HUST and vLLM-Ascend-HUST stacks. The published 0.7
 release added the paper's V3 position policy and experimental Qwen3.5 support.
-This unreleased 0.8 working tree adapts to the synchronized hosts without
+The unreleased 0.8 candidate adapts to the synchronized hosts without
 changing their source repositories.
 
-> Status: 0.8 development candidate, not yet published or qualified. The
-> synchronized CANN 9.1/PyTorch 2.13 host has served Qwen3.5 BF16/TP=2 at a
-> 262,144-token configured context with APC, align, async scheduling, opt-in
-> MTP2, and FULL_AND_PIECEWISE graphs. The official SWE C4/60-second protocol
-> check passed with real prefix hits and per-rank compression acknowledgements.
-> Both official SWE and AgentX C4/900-second pairs were protocol-valid, but
-> compression regressed output throughput by 7.88% and 8.46%, respectively.
-> The fused Qwen3.5 partial-RoPE scorer passed an NPU numerical smoke and
-> microbenchmark; a fresh SWE 900-second pair narrowed the throughput
-> regression to 2.75% at a 1,024-token recompute window. A separate 4,096-
-> token candidate regressed 3.00%. Batched V3 selection with five-layer
-> scoring passed a separate 4/4 quality smoke but its matched SWE pair still
-> regressed throughput 2.95%; raising the compression output gate to 512
-> regressed 4.22% in another matched SWE pair. With that same output gate, a
-> fresh AgentX C4/900-second pair improved total output throughput 11.85% and
-> decode P90 5.31%, while TTFT P95 worsened 20.60%. This is a local positive
-> smoke point, not a one-hour result or release qualification; post-merge
-> retesting and user approval remain pending. MTP2 is still
-> experimental and rejected by default; both AgentX arms disabled it under
-> that workload's forced-acceptance rule.
+> Status: 0.8 development candidate, merged and retested, not yet published or
+> release-qualified. On merged source commit `17ffdc7`, Qwen3.5 BF16/TP=2
+> passed separate official AgentX and SWE C4/900-second B0/B1 protocols at
+> 262,144 configured context. AgentX output throughput improved **11.18%** and
+> decode P90 **5.27%**, while TTFT P95 worsened **16.06%**. SWE, with real
+> MTP2, APC, async, align, and FULL_AND_PIECEWISE, remained valid but regressed
+> output throughput **2.95%** and decode P90 **1.34%**. Both SWE arms passed
+> separate 60-second protocol checks. Maximum observed inputs were about 169K
+> (AgentX) and 75K (SWE), not 256K. This is a local 900-second engineering
+> result, not a formal one-hour AgentX result, semantic-quality certification,
+> or official website submission. MTP2 is experimental and rejected by default;
+> both AgentX arms disabled it under that workload's forced-acceptance rule.
+> Publication remains subject to user approval.
 > See the [current frontier protocol](docs/frontier-benchmarking.md). The
 > [0.7 validation record](docs/validation.md) remains historical.
 
@@ -233,7 +226,7 @@ does not change Qwen2.5-14B-Instruct as the standard release model.
 | Quantized KV | Conflict | Rejected; dense BF16/FP16 only |
 | Qwen3.5 full-attention + Gated-DeltaNet hybrid | Experimental | `mamba_cache_mode=none` or `align`; only full-attention KV uses compacted physical length, while Gated-DeltaNet keeps semantic length |
 | Other hybrid / MLA / sliding / local attention | Conflict | Rejected |
-| Async scheduling | Official C4 pairs protocol-valid | Commit waits for matching output; original source blocks remain reserved until already queued batches finish; post-merge NPU retest pending |
+| Async scheduling | Official C4 pairs protocol-valid after merge | Commit waits for matching output; original source blocks remain reserved until already queued batches finish |
 | TP > 1 | Conditional | Must divide KV heads; TP ranks synchronize scores |
 | PP/DP/DCP/PCP > 1 | Conflict | Rejected |
 | BidKV or another scheduler | Conflict | Standard v1 scheduler required; active balance scheduling rejected |

@@ -64,9 +64,12 @@ fail closed。全程无需修改宿主仓库。同步后的 2026-09-27 Ascend �
 Tensor 元数据 ABI；配套 CANN 9.1/PyTorch 2.13 环境下，该模型不使用
 `--enforce-eager` 即完成配置 262,144 上下文与 FULL_AND_PIECEWISE 图捕获，
 官方 SWE C4／60 秒协议短测通过。兼容桥开关可保留，但对 Tensor schema 不起作用；
-SWE 900 秒配对仍为负结果；同源码 AgentX 900 秒配对采用最短输出 512-token
-门槛后，总吞吐提升 11.85%、解码 P90 提升 5.31%，但 TTFT P95 变差
-20.60%。详见[Frontier 测试](frontier-benchmarking.zh.md)及其局限。
+SWE 900 秒配对仍为负结果。与当前主分支合并后的源码提交 `17ffdc7`
+再次完成两套官方 900 秒配对协议：最短输出 512-token 门槛下的 AgentX
+总吞吐提升 11.18%、解码 P90 提升 5.27%，TTFT P95 变差 16.06%；
+启用真实 MTP2 的 SWE 吞吐下降 2.95%、解码 P90 下降 1.34%，TTFT P95
+变差 15.07%。SWE 两侧另行通过 60 秒协议短测。这些是本地工程结果，
+不是一小时正式成绩或质量结论。详见[Frontier 测试](frontier-benchmarking.zh.md)。
 
 部分 RoPE 校准会在旋转前采集归一化 query head。64 个旋转维度使用 TriAttention
 面向未来位置的三角评分；192 个直通维度加入校准后的直接 Q·K 内容项。插件自有的
@@ -76,8 +79,9 @@ TP=2 时，各 rank 评分自己的本地 KV 头，
 再以最大值 all-reduce 得到完全相同的 token 选择。
 
 V3 会保护开头 128 个和最近 512 个 token，把中间上下文切成 8 段，并为每段分配
-精确的比例驱逐配额。Qwen3.5 会评分全部 10 个全注意力层
-（`score_layer_stride=1`）。
+精确的比例驱逐配额。Qwen3.5 默认示例评分全部 10 个全注意力层
+（`score_layer_stride=1`）；实测的最短输出 512 候选以 stride 2 采样其中
+5 层评分，同时仍对 10 个目标层实施物理压缩。
 
 ## 校准与启动
 

@@ -2,7 +2,7 @@
 
 English | [简体中文](frontier-benchmarking.zh.md)
 
-This protocol replaces the former V4.6 A2/A3 matrix as the project's current leaderboard target. Earlier results remain historical evidence and must not be pooled with the new workloads. A paired AgentX 900-second smoke now has a positive throughput result; release remains pending post-merge retesting and user approval.
+This protocol replaces the former V4.6 A2/A3 matrix as the project's current leaderboard target. Earlier results remain historical evidence and must not be pooled with the new workloads. A paired AgentX 900-second smoke has reproduced a positive throughput result on merged source commit `17ffdc7`; release remains subject to user approval.
 
 For SWE run qualification and any later submission to the official website, follow the [Frontier submission guide](https://github.com/vLLM-HUST/vllm-hust-website/blob/codex/frontier-submission-example/data/examples/frontier-submission/README.md). In particular, run a 60-second C4 protocol check before the separate 900-second measurement, preserve the raw `summary.json` and `config.json`, and map `output_tokens_per_second` to total `metrics.output_tps` (the website divides by chip count). A local run or a point on this plugin's HTML page does not automatically publish an official website point. MTP in SWE must use actual generated tokens and observed acceptance, not the historical AgentX synthetic sampler or fixed acceptance length.
 
@@ -39,7 +39,7 @@ For an AgentX pair, run `python scripts/kvcompress_frontier_agentx_pair.py --bas
 
 SWE measures a fixed long-conversation serving shape, not SWE task-solving accuracy. AgentX synthetic content does not establish semantic answer quality or real tool success. See the [HTML leaderboard](benchmark-leaderboard.html) for results and negative history; every new point must link to auditable raw evidence.
 
-The local HTML page now separates **Frontier measured points** from **historical records**, following the official [Frontier view](https://vllm-hust.sage.org.ai/leaderboard-runs.html#frontier). The plotted axes are the official P90 decode speed and output tokens/s/chip. `evidence/frontier-results.json` contains the two measured arms of the positive AgentX 900-second smoke pair; the SWE cohort remains without a positive point. Both AgentX arms share a `pair_id`, cohort, concurrency, and chip count, with actual maximum input length, raw run IDs, report hashes, evidence URL, and measurement scope preserved. This is a plugin-local leaderboard point, not an official website submission or a one-hour AgentX result. Run `python scripts/kvcompress_leaderboard.py` to regenerate both browser bundles and `python scripts/kvcompress_leaderboard.py --check` before publishing. No point is inferred from historical percentage deltas.
+The local HTML page now separates **Frontier measured points** from **historical records**, following the official [Frontier view](https://vllm-hust.sage.org.ai/leaderboard-runs.html#frontier). The plotted axes are the official P90 decode speed and output tokens/s/chip. `evidence/frontier-results.json` contains both arms of two positive AgentX 900-second smoke pairs, including the post-merge repeat; the SWE cohort remains without a positive point. Each pair shares a `pair_id`, cohort, concurrency, and chip count, with actual maximum input length, raw run IDs, report hashes, evidence URL, and measurement scope preserved. These are plugin-local leaderboard points, not official website submissions or one-hour AgentX results. Run `python scripts/kvcompress_leaderboard.py` to regenerate both browser bundles and `python scripts/kvcompress_leaderboard.py --check` before publishing. No point is inferred from historical percentage deltas.
 
 The old [V4.6 requirements](kv-compress-test-requirements.md), [A2/A3 procedure](benchmarking.md), and [public long-context experiments](public-long-context-benchmarks.md) are historical archives, no longer 0.8 release gates.
 
@@ -230,3 +230,50 @@ This is one engineering-positive 900-second smoke pair, not proof of
 repeatability, semantic answer quality, a one-hour formal result, or an
 official website submission. Both AgentX arms disabled MTP under the
 forced-acceptance rule; SWE's real-MTP pair remained negative.
+
+## Post-merge retest on commit `17ffdc7`
+
+The development candidate was merged with the then-current remote master
+(`ed058fa`) before retesting. Both AgentX arms used the same merged plugin
+source, frozen 393-session dataset, original warmup, C4, two Ascend 910B2
+devices, and separate 900-second windows. Both original reports were
+`submission_valid=true` with no invalid reasons or request errors. AgentX
+disabled MTP in both arms under its forced-acceptance rule.
+
+| AgentX official metric | B0 | B1 | B1 vs B0 |
+| --- | ---: | ---: | ---: |
+| Total output tokens/s | 52.703 | 58.593 | **+11.18%** |
+| Output tokens/s/chip | 26.351 | 29.297 | **+11.18%** |
+| Per-request inverse-ITL decode P90, tokens/s | 60.381 | 63.562 | **+5.27%** |
+| TTFT P95, ms | 1,601.49 | 1,858.66 | +16.06% (worse) |
+| Completed requests | 83 | 89 | different closed-loop turn mix |
+| Maximum actual input tokens | 169,166 | 169,163 | below 256K |
+
+B1 logged 55 scheduler commits and 110 TP-rank acknowledgements, including
+warmup. See the [post-merge AgentX paired evidence](evidence/kvcompress-qwen35-20260927-agentx-postmerge-positive-pair.json).
+The positive throughput/decode direction repeated after the source merge, but
+these two single-window pairs used different source commits and do not prove
+statistical significance. The 900-second smoke is not AgentX's formal one-hour
+result, and its synthetic replay does not assess answer quality.
+
+SWE B0 and B1 each passed a separate 60-second protocol check before their
+900-second run. Both full reports were `valid=true`, not aborted, with zero
+failed requests and all eight prepared sessions completed. Real MTP2, APC,
+async scheduling, `mamba_cache_mode=align`, and FULL_AND_PIECEWISE were active
+in both arms; only the plugin compression configuration changed.
+
+| SWE official metric | B0 | B1 | B1 vs B0 |
+| --- | ---: | ---: | ---: |
+| Total output tokens/s | 222.581 | 216.008 | **−2.95%** |
+| Output tokens/s/chip | 111.291 | 108.004 | **−2.95%** |
+| P90 decode tokens/s | 72.341 | 71.368 | **−1.34%** |
+| TTFT P95, ms | 1,283.61 | 1,477.01 | +15.07% (worse) |
+| In-window completed requests | 329 | 315 | different turn mix |
+| Maximum actual prompt tokens | 74,706 | 73,616 | below 256K |
+
+B1 logged 99 scheduler commits and 198 TP-rank acknowledgements across its
+60-second check and 900-second window. The strict same-source comparison and
+raw-report hashes are in the [post-merge SWE negative evidence](evidence/kvcompress-qwen35-20260927-swe-postmerge-negative-pair.json).
+Protocol validity and real MTP acceptance do not make this a positive Frontier
+point or measure SWE task success. The prior Qwen2.5 standard-release records
+remain historical; publication of 0.8 awaits user confirmation.

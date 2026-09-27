@@ -56,6 +56,82 @@
   ],
   "points": [
     {
+      "id": "qwen35-agentx-20260927-postmerge-b0",
+      "pair_id": "qwen35-agentx-20260927-postmerge-pair",
+      "arm": "B0",
+      "cohort_id": "qwen35-35b-a3b-59d61f3c-bf16-agentx256k-smoke-v1",
+      "configuration": {
+        "experiment_group": "B0 · compression off",
+        "engine": "vllm-hust + vllm-ascend-hust",
+        "mods": [],
+        "context_capacity_tokens": 262144,
+        "hardware": {
+          "label": "2× Ascend 910B2 · TP=2 · NPU 2,3",
+          "accelerator_count": 2
+        }
+      },
+      "load": {
+        "concurrency": 4,
+        "max_observed_prompt_tokens": 169166
+      },
+      "metrics": {
+        "decode_p90_tps": 60.38111930064175,
+        "output_tps": 52.70291877306248,
+        "ttft_p95_ms": 1601.4869531,
+        "request_count": 83
+      },
+      "evidence": {
+        "status": "measured",
+        "run_ids": [
+          "20260927T195230Z-smoke-c4-0184bda6"
+        ],
+        "aggregation": "Original AIPerf unpooled 900-second smoke report; source commit 17ffdc7; strict paired B0/B1 comparison",
+        "measurement_seconds": 900,
+        "url": "evidence/kvcompress-qwen35-20260927-agentx-postmerge-positive-pair.json",
+        "run_json_sha256": "9d7a4cac7a23552a2bf2dc4a53dce8984997619b277c5a7733aa5859d28a51d0",
+        "aiperf_report_sha256": "f9c7312b8aed5a4f39b28a364907b132a045abcd8a8819bd26048a0d314d68f2"
+      }
+    },
+    {
+      "id": "qwen35-agentx-20260927-postmerge-b1",
+      "pair_id": "qwen35-agentx-20260927-postmerge-pair",
+      "arm": "B1",
+      "cohort_id": "qwen35-35b-a3b-59d61f3c-bf16-agentx256k-smoke-v1",
+      "configuration": {
+        "experiment_group": "B1 · TriAttention V3 · min output 512",
+        "engine": "vllm-hust + vllm-ascend-hust",
+        "mods": [
+          "ascend_kvcompress:triattention"
+        ],
+        "context_capacity_tokens": 262144,
+        "hardware": {
+          "label": "2× Ascend 910B2 · TP=2 · NPU 2,3",
+          "accelerator_count": 2
+        }
+      },
+      "load": {
+        "concurrency": 4,
+        "max_observed_prompt_tokens": 169163
+      },
+      "metrics": {
+        "decode_p90_tps": 63.56220756823275,
+        "output_tps": 58.59333419524176,
+        "ttft_p95_ms": 1858.6579769999994,
+        "request_count": 89
+      },
+      "evidence": {
+        "status": "measured",
+        "run_ids": [
+          "20260927T201559Z-smoke-c4-0fd11485"
+        ],
+        "aggregation": "Original AIPerf unpooled 900-second smoke report; source commit 17ffdc7; strict paired B0/B1 comparison",
+        "measurement_seconds": 900,
+        "url": "evidence/kvcompress-qwen35-20260927-agentx-postmerge-positive-pair.json",
+        "run_json_sha256": "479aabc2b100465a9a080491172e611f63df86d216399f9fde1000716722cfdc",
+        "aiperf_report_sha256": "4dea808945b133f892eabc2ed4609a62e8c68c8915f91e15114f8fee2163f996"
+      }
+    },
+    {
       "id": "qwen35-agentx-20260927-batched-min512-b0",
       "pair_id": "qwen35-agentx-20260927-batched-min512-pair",
       "arm": "B0",
