@@ -253,10 +253,11 @@ class AscendKVCompressionProvider:
             raise RuntimeError("Ascend KV compression provider is not cache-bound")
         transactions = getattr(scheduler_output, SCHEDULER_TRANSACTIONS_ATTRIBUTE, None)
         prefix_caching = bool(self.vllm_config.cache_config.enable_prefix_caching)
+        speculative_decoding = self.vllm_config.speculative_config is not None
         for request_id, scheduled in scheduler_output.num_scheduled_tokens.items():
             if transactions is not None and request_id not in transactions:
                 continue
-            if prefix_caching and transactions is None:
+            if (prefix_caching or speculative_decoding) and transactions is None:
                 continue
             if request_id in self.pending:
                 continue
@@ -416,8 +417,6 @@ def _common_compatibility_reasons(vllm_config: Any, runner: Any) -> tuple[str, .
         "float16",
     }:
         reasons.append("quantized KV cache is unsupported")
-    if vllm_config.speculative_config is not None:
-        reasons.append("speculative decoding is unsupported")
     if vllm_config.kv_transfer_config is not None:
         reasons.append("KV transfer is unsupported")
     model_config = vllm_config.model_config

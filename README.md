@@ -210,7 +210,7 @@ does not change Qwen2.5-14B-Instruct as the standard release model.
 | Feature | 0.6 status | Behavior |
 | --- | --- | --- |
 | Prefix cache | Experimental | Compression uses scheduler-reserved private destination blocks and replaces the request block table after model-output acknowledgement |
-| Speculative decoding | Conflict | Rejected |
+| MTP / speculative decoding | Experimental | Compression may trigger on prompt steps without scheduled speculative tokens; speculative decode steps never start a transaction |
 | KV transfer / disaggregated P/D | Conflict | Rejected |
 | Quantized KV | Conflict | Rejected; dense BF16/FP16 only |
 | Qwen3.5 full-attention + Gated-DeltaNet hybrid | Experimental | `mamba_cache_mode=none`; only full-attention KV is compacted |

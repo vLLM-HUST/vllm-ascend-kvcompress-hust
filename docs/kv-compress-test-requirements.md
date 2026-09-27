@@ -100,9 +100,11 @@ KV reduction; retain block-release transactions and 1-second HBM samples.
 
 ## Applicability and conflicts
 
-Speculative decoding, KV transfer/disaggregated P/D, quantized KV,
-MLA/local attention, PP/DP/DCP/PCP above one, and unrecognized hybrid layouts
-are rejected at startup. Prefix caching has an experimental private-destination
+KV transfer/disaggregated P/D, quantized KV, MLA/local attention,
+PP/DP/DCP/PCP above one, and unrecognized hybrid layouts are rejected at
+startup. MTP/speculative decoding is admitted experimentally, but compression
+can start only on a step with no scheduled speculative tokens. Prefix caching
+has an experimental private-destination
 transaction path: scheduler allocation failure skips compression, and commit
 never overwrites a shared prefix block. Async scheduling has an experimental
 output-acknowledged transaction path, but remains outside this frozen formal

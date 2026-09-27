@@ -176,7 +176,7 @@ Qwen2.5-14B-Instruct 作为标准发布模型的定位。
 | 功能 | 0.6 状态 | 行为 |
 | --- | --- | --- |
 | Prefix cache | 实验性 | 压缩写入调度器预留的私有目标块，收到 model output 后再替换请求 block table |
-| Speculative decoding | 冲突 | 启动拒绝 |
+| MTP / speculative decoding | 实验性 | 仅允许在未调度 speculative token 的 prompt 步触发压缩；speculative decode 步不启动事务 |
 | KV transfer / 分离式 P/D | 冲突 | 启动拒绝 |
 | 量化 KV | 冲突 | 启动拒绝，仅支持稠密 BF16/FP16 |
 | Qwen3.5 全注意力 + Gated-DeltaNet 混合架构 | 实验支持 | `mamba_cache_mode=none`；只压缩全注意力 KV |

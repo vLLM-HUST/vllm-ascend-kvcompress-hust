@@ -44,6 +44,7 @@ def _scheduler(
     max_concurrent_batches=None,
     prefix_caching=False,
     allocation_fails=False,
+    speculative=False,
 ):
     if async_scheduling and scheduler_module == "vllm.v1.core.sched.scheduler":
         scheduler_module = "vllm.v1.core.sched.async_scheduler"
@@ -63,7 +64,9 @@ def _scheduler(
             is_hybrid=hybrid_model_type is not None,
             hf_text_config=SimpleNamespace(model_type=hybrid_model_type),
         ),
-        speculative_config=None,
+        speculative_config=SimpleNamespace(num_speculative_tokens=2)
+        if speculative
+        else None,
         kv_transfer_config=None,
         scheduler_config=SimpleNamespace(async_scheduling=async_scheduling),
         parallel_config=parallel,
@@ -297,6 +300,40 @@ def test_prefix_caching_skips_compression_when_private_allocation_fails() -> Non
     assert not state.pending
     assert [block.block_id for block in manager.req_to_blocks["r"]] == [3, 4, 5]
     assert not freed
+
+
+def test_speculative_step_does_not_arm_compression() -> None:
+    scheduler, manager, freed = _scheduler(speculative=True)
+    state = SchedulerCompressionState(scheduler, _selection())
+    output = SimpleNamespace(
+        num_scheduled_tokens={"r": 44},
+        scheduled_spec_decode_tokens={"r": [17, 18]},
+        finished_req_ids=set(),
+        preempted_req_ids=set(),
+    )
+
+    state.after_schedule(output)
+
+    assert getattr(output, SCHEDULER_TRANSACTIONS_ATTRIBUTE) == {}
+    assert not state.pending
+    assert [block.block_id for block in manager.req_to_blocks["r"]] == [3, 4, 5]
+    assert not freed
+
+
+def test_mtp_launch_can_arm_on_non_speculative_prefill_step() -> None:
+    scheduler, _, _ = _scheduler(speculative=True)
+    state = SchedulerCompressionState(scheduler, _selection())
+    output = SimpleNamespace(
+        num_scheduled_tokens={"r": 44},
+        scheduled_spec_decode_tokens={},
+        finished_req_ids=set(),
+        preempted_req_ids=set(),
+    )
+
+    state.after_schedule(output)
+
+    assert getattr(output, SCHEDULER_TRANSACTIONS_ATTRIBUTE) == {"r": (3,)}
+    assert "r" in state.pending
 
 
 def test_prefix_caching_preemption_releases_uncommitted_destination() -> None:
