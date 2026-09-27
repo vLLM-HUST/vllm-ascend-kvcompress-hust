@@ -48,7 +48,7 @@ wheel/sdist。仓库中仅供开发使用的统计产物缺少完整模型/数�
 
 标准验收拓扑仍为单 Ascend NPU、v1 调度器与 `NPUModelRunner`、单一全注意力
 KV 组、block size 128、稠密 BF16/FP16 K/V。Qwen3.5 text/MoE 混合模型额外支持
-一个全注意力组加 Gated-DeltaNet 状态组，且要求 `mamba_cache_mode=none`；只有 TP
+一个全注意力组加 Gated-DeltaNet 状态组，支持 `mamba_cache_mode=none` 或 `align`；只有 TP
 大小可整除 KV 头数时才允许张量并行（Qwen3.5-35B-A3B 为 TP=2）。已验证的
 Ascend 宿主使用 32,768-token 跨组 scheduler 对齐、2,048-token 全注意力页和
 128-token attention 内核缓存块；插件会校验这三层粒度，并按 16:1 展开注意力
@@ -179,7 +179,7 @@ Qwen2.5-14B-Instruct 作为标准发布模型的定位。
 | MTP / speculative decoding | 实验性 | 仅允许在未调度 speculative token 的 prompt 步触发压缩；speculative decode 步不启动事务 |
 | KV transfer / 分离式 P/D | 冲突 | 启动拒绝 |
 | 量化 KV | 冲突 | 启动拒绝，仅支持稠密 BF16/FP16 |
-| Qwen3.5 全注意力 + Gated-DeltaNet 混合架构 | 实验支持 | `mamba_cache_mode=none`；只压缩全注意力 KV |
+| Qwen3.5 全注意力 + Gated-DeltaNet 混合架构 | 实验支持 | `mamba_cache_mode=none` 或 `align`；只有全注意力 KV 使用压缩后的物理长度，Gated-DeltaNet 保留语义长度 |
 | 其他 hybrid / MLA / sliding / local attention | 冲突 | 启动拒绝 |
 | 异步调度 | 实验性 | 收到对应 model output 后才提交；已入队批次全部完成前保留旧 tail block |
 | TP > 1 | 条件支持 | 必须整除 KV 头数；各 rank 同步评分 |

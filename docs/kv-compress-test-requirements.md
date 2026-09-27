@@ -109,7 +109,9 @@ transaction path: scheduler allocation failure skips compression, and commit
 never overwrites a shared prefix block. Async scheduling has an experimental
 output-acknowledged transaction path, but remains outside this frozen formal
 matrix until the NPU lifecycle gate is recorded. The sole hybrid exception is
-Qwen3.5 full attention plus Gated-DeltaNet with `mamba_cache_mode=none`; TP is
+Qwen3.5 full attention plus Gated-DeltaNet with `mamba_cache_mode=none` or
+`align`; the latter translates allocation lengths only for the full-attention
+group while preserving semantic lengths for Gated-DeltaNet. TP is
 allowed only when its size divides the model's KV heads. These exceptions are
 engineering scope and do not alter the single-card formal topology. A1's
 non-chunked configuration does not apply; A4's prefix-enabled configuration

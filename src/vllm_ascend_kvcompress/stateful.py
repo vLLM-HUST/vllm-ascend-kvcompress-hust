@@ -21,6 +21,7 @@ _STATE_ATTRIBUTE = "_ascend_kvcompress_scheduler_state_v3"
 _OFFSETS_ATTRIBUTE = "_ascend_kvcompress_active_offsets_v3"
 _DEFERRED_RELEASES_ATTRIBUTE = "_ascend_kvcompress_deferred_releases_v3"
 _PENDING_ATTRIBUTE = "_ascend_kvcompress_pending_transactions_v3"
+_GROUP_LENGTH_STATE_ATTRIBUTE = "_ascend_kvcompress_group_length_state_v3"
 _PATCH_MARKER = "_ascend_kvcompress_manager_patch_v3"
 _SUPPORTED_SCHEDULER_TYPES = frozenset(
     {
@@ -95,7 +96,17 @@ class SchedulerCompressionState:
             raise RuntimeError("max_concurrent_batches must be positive")
         self.attention_group_index = 0
         self.prefix_caching = bool(host_config.cache_config.enable_prefix_caching)
+        self.group_specific_lengths = False
         self._validate_host()
+        coordinator = scheduler.kv_cache_manager.coordinator
+        if self.group_specific_lengths:
+            _install_coordinator_hooks(type(coordinator))
+            setattr(coordinator, _GROUP_LENGTH_STATE_ATTRIBUTE, self)
+            setattr(
+                scheduler.kv_cache_manager,
+                _GROUP_LENGTH_STATE_ATTRIBUTE,
+                self,
+            )
         setattr(scheduler.kv_cache_manager, _OFFSETS_ATTRIBUTE, self.active)
         setattr(
             scheduler.kv_cache_manager,
@@ -177,11 +188,14 @@ class SchedulerCompressionState:
                         "compression target must be divisible by full-attention "
                         f"logical block size {self.scheduler_block_size}"
                     )
-        if (
-            len(scheduler.kv_cache_config.kv_cache_groups) > 1
-            and getattr(config.cache_config, "mamba_cache_mode", "none") != "none"
-        ):
-            reasons.append("hybrid compression requires mamba_cache_mode='none'")
+        mamba_cache_mode = getattr(config.cache_config, "mamba_cache_mode", "none")
+        if len(scheduler.kv_cache_config.kv_cache_groups) > 1:
+            if mamba_cache_mode not in {"none", "align"}:
+                reasons.append(
+                    "hybrid compression supports only mamba_cache_mode "
+                    f"'none' or 'align', got {mamba_cache_mode!r}"
+                )
+            self.group_specific_lengths = mamba_cache_mode == "align"
         if reasons:
             raise RuntimeError(
                 "Ascend KV compression is incompatible with this scheduler:\n- "
@@ -450,7 +464,10 @@ def _install_manager_hooks(manager_cls: type[Any]) -> None:
 
     def allocate_slots(manager: Any, request: Any, *args: Any, **kwargs: Any) -> Any:
         active = getattr(manager, _OFFSETS_ATTRIBUTE, {}).get(request.request_id)
-        if active is None:
+        if (
+            active is None
+            or getattr(manager, _GROUP_LENGTH_STATE_ATTRIBUTE, None) is not None
+        ):
             return original_allocate(manager, request, *args, **kwargs)
         semantic = int(request.num_computed_tokens)
         request.num_computed_tokens = semantic - active.removed_tokens
@@ -476,6 +493,143 @@ def _install_manager_hooks(manager_cls: type[Any]) -> None:
     manager_cls.allocate_slots = allocate_slots
     manager_cls.free = free
     setattr(manager_cls, _PATCH_MARKER, True)
+
+
+def _install_coordinator_hooks(coordinator_cls: type[Any]) -> None:
+    """Translate only the compacted full-attention group's token lengths."""
+    marker = f"{_PATCH_MARKER}_coordinator"
+    if coordinator_cls.__dict__.get(marker, False):
+        return
+    original_count = coordinator_cls.get_num_blocks_to_allocate
+    original_allocate = coordinator_cls.allocate_new_blocks
+    original_remove = coordinator_cls.remove_skipped_blocks
+    original_cache = coordinator_cls.cache_blocks
+
+    def get_num_blocks_to_allocate(
+        coordinator: Any,
+        request_id: str,
+        num_tokens: int,
+        new_computed_blocks: Any,
+        num_encoder_tokens: int,
+        total_computed_tokens: int,
+        num_tokens_main_model: int,
+        apply_admission_cap: bool = False,
+    ) -> int:
+        state = getattr(coordinator, _GROUP_LENGTH_STATE_ATTRIBUTE, None)
+        active = None if state is None else state.active.get(request_id)
+        if active is None:
+            return original_count(
+                coordinator,
+                request_id,
+                num_tokens,
+                new_computed_blocks,
+                num_encoder_tokens,
+                total_computed_tokens,
+                num_tokens_main_model,
+                apply_admission_cap=apply_admission_cap,
+            )
+        result = 0
+        for index, manager in enumerate(coordinator.single_type_managers):
+            if index == state.attention_group_index:
+                group_tokens = _physical_tokens(num_tokens, active)
+                group_computed = _physical_tokens(total_computed_tokens, active)
+                group_main = _physical_tokens(num_tokens_main_model, active)
+            else:
+                group_tokens = num_tokens
+                group_computed = total_computed_tokens
+                group_main = num_tokens_main_model
+            result += manager.get_num_blocks_to_allocate(
+                request_id,
+                group_tokens,
+                new_computed_blocks[index],
+                group_computed,
+                group_main,
+                apply_admission_cap=apply_admission_cap,
+            )
+        return result
+
+    def allocate_new_blocks(
+        coordinator: Any,
+        request_id: str,
+        num_tokens: int,
+        num_tokens_main_model: int,
+        num_encoder_tokens: int = 0,
+    ) -> tuple[list[Any], ...]:
+        state = getattr(coordinator, _GROUP_LENGTH_STATE_ATTRIBUTE, None)
+        active = None if state is None else state.active.get(request_id)
+        if active is None:
+            return original_allocate(
+                coordinator,
+                request_id,
+                num_tokens,
+                num_tokens_main_model,
+                num_encoder_tokens,
+            )
+        allocated = []
+        for index, manager in enumerate(coordinator.single_type_managers):
+            if index == state.attention_group_index:
+                group_tokens = _physical_tokens(num_tokens, active)
+                group_main = _physical_tokens(num_tokens_main_model, active)
+            else:
+                group_tokens = num_tokens
+                group_main = num_tokens_main_model
+            allocated.append(
+                manager.allocate_new_blocks(request_id, group_tokens, group_main)
+            )
+        return tuple(allocated)
+
+    def remove_skipped_blocks(
+        coordinator: Any,
+        request_id: str,
+        total_computed_tokens: int,
+        num_prompt_tokens: int | None = None,
+    ) -> None:
+        state = getattr(coordinator, _GROUP_LENGTH_STATE_ATTRIBUTE, None)
+        active = None if state is None else state.active.get(request_id)
+        if active is None:
+            return original_remove(
+                coordinator,
+                request_id,
+                total_computed_tokens,
+                num_prompt_tokens,
+            )
+        for index, manager in enumerate(coordinator.single_type_managers):
+            group_tokens = (
+                _physical_tokens(total_computed_tokens, active)
+                if index == state.attention_group_index
+                else total_computed_tokens
+            )
+            manager.remove_skipped_blocks(request_id, group_tokens, num_prompt_tokens)
+
+    def cache_blocks(coordinator: Any, request: Any, num_computed_tokens: int) -> None:
+        state = getattr(coordinator, _GROUP_LENGTH_STATE_ATTRIBUTE, None)
+        active = None if state is None else state.active.get(request.request_id)
+        if active is None:
+            return original_cache(coordinator, request, num_computed_tokens)
+        for index, manager in enumerate(coordinator.single_type_managers):
+            if index == state.attention_group_index:
+                # Compressed blocks do not represent contiguous token hashes and
+                # must never be published into the automatic prefix cache.
+                continue
+            manager.cache_blocks(
+                request,
+                num_computed_tokens,
+                retention_interval=coordinator.retention_interval,
+            )
+
+    setattr(coordinator_cls, f"{marker}_original_count", original_count)
+    setattr(coordinator_cls, f"{marker}_original_allocate", original_allocate)
+    setattr(coordinator_cls, f"{marker}_original_remove", original_remove)
+    setattr(coordinator_cls, f"{marker}_original_cache", original_cache)
+    coordinator_cls.get_num_blocks_to_allocate = get_num_blocks_to_allocate
+    coordinator_cls.allocate_new_blocks = allocate_new_blocks
+    coordinator_cls.remove_skipped_blocks = remove_skipped_blocks
+    coordinator_cls.cache_blocks = cache_blocks
+    setattr(coordinator_cls, marker, True)
+
+
+def _physical_tokens(semantic_tokens: int, active: SchedulerActiveCompression) -> int:
+    return max(0, int(semantic_tokens) - active.removed_tokens)
 
 
 def _blocks_for_tokens(num_tokens: int, block_size: int) -> int:

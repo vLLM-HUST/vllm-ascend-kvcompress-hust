@@ -56,7 +56,7 @@ and [calibration artifacts](docs/calibration-artifacts.md).
 The standard acceptance topology remains one Ascend NPU, the v1 scheduler and
 `NPUModelRunner`, one full-attention KV group, block size 128, and dense
 BF16/FP16 K/V. Qwen3.5 text/MoE hybrids additionally support one full-attention
-group plus Gated-DeltaNet state groups with `mamba_cache_mode=none`; tensor
+group plus Gated-DeltaNet state groups with `mamba_cache_mode=none` or `align`; tensor
 parallelism is accepted only when its size divides the model's KV-head count
 (TP=2 for Qwen3.5-35B-A3B). On the validated Ascend host, that hybrid uses a
 32,768-token cross-group scheduler alignment, 2,048-token full-attention pages,
@@ -213,7 +213,7 @@ does not change Qwen2.5-14B-Instruct as the standard release model.
 | MTP / speculative decoding | Experimental | Compression may trigger on prompt steps without scheduled speculative tokens; speculative decode steps never start a transaction |
 | KV transfer / disaggregated P/D | Conflict | Rejected |
 | Quantized KV | Conflict | Rejected; dense BF16/FP16 only |
-| Qwen3.5 full-attention + Gated-DeltaNet hybrid | Experimental | `mamba_cache_mode=none`; only full-attention KV is compacted |
+| Qwen3.5 full-attention + Gated-DeltaNet hybrid | Experimental | `mamba_cache_mode=none` or `align`; only full-attention KV uses the compacted physical length, while Gated-DeltaNet keeps the semantic length |
 | Other hybrid / MLA / sliding / local attention | Conflict | Rejected |
 | Async scheduling | Experimental | Commit waits for the matching model output; old tail blocks remain reserved until every already queued batch completes |
 | TP > 1 | Conditional | Must divide KV heads; TP ranks synchronize scores |

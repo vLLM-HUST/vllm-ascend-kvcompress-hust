@@ -79,6 +79,11 @@ def test_async_scheduling_is_admitted_by_worker_compatibility() -> None:
     config.speculative_config = SimpleNamespace(num_speculative_tokens=2)
     assert _common_compatibility_reasons(config, runner) == ()
 
+    config.model_config.is_hybrid = True
+    config.model_config.hf_text_config.model_type = "qwen3_5_moe_text"
+    config.cache_config.mamba_cache_mode = "align"
+    assert _common_compatibility_reasons(config, runner) == ()
+
 
 def _provider() -> AscendKVCompressionProvider:
     provider = AscendKVCompressionProvider.__new__(AscendKVCompressionProvider)

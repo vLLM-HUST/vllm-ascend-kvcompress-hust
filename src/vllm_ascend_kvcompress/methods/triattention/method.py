@@ -68,6 +68,7 @@ class TriAttentionMethod(KVCompressionMethod):
         self.model_shape = model_shape
         self.calibration = CalibrationStats.load(self.config.stats_path)
         self.layer_caches: tuple[TriAttentionLayerCache, ...] = ()
+        self.materialization_caches: tuple[LayerCache, ...] = ()
         self.cache_block_size = ASCEND_BLOCK_SIZE
         self.offsets: torch.Tensor | None = None
         self.k_workspace: torch.Tensor | None = None
@@ -122,13 +123,16 @@ class TriAttentionMethod(KVCompressionMethod):
         self.offsets = build_geometric_offsets(
             int(self.vllm_config.model_config.max_model_len), runner.device
         )
-        if len(layer_caches) != len(self.model_shape.full_attention_layer_indices):
-            raise RuntimeError(
-                "allocated full-attention layer count does not match calibration"
-            )
         bound: list[TriAttentionLayerCache] = []
         seen_layer_indices: set[int] = set()
         for layer in layer_caches:
+            if _is_mtp_cache_layer(layer.name):
+                if self.vllm_config.speculative_config is None:
+                    raise RuntimeError(
+                        f"unexpected MTP cache layer {layer.name!r} without "
+                        "speculative decoding"
+                    )
+                continue
             if layer.layer_index not in device_stats:
                 raise RuntimeError(
                     f"attention layer {layer.name!r} resolves to invalid model "
@@ -158,7 +162,15 @@ class TriAttentionMethod(KVCompressionMethod):
                     offset_sin_mean=torch.sin(offset_phases).mean(dim=0),
                 )
             )
+        expected_indices = set(self.model_shape.full_attention_layer_indices)
+        if seen_layer_indices != expected_indices:
+            raise RuntimeError(
+                "allocated target full-attention layers do not match calibration: "
+                f"allocated={sorted(seen_layer_indices)} "
+                f"expected={sorted(expected_indices)}"
+            )
         self.layer_caches = tuple(bound)
+        self.materialization_caches = layer_caches
         scoring_layers = self.layer_caches[:: self.config.score_layer_stride]
         if any(
             layer.offset_cos_mean is None or layer.offset_sin_mean is None
@@ -245,7 +257,10 @@ class TriAttentionMethod(KVCompressionMethod):
             self.dense_indices,
             cache_block_size,
         )
-        for layer in self.layer_caches:
+        materialization_caches = getattr(
+            self, "materialization_caches", self.layer_caches
+        )
+        for layer in materialization_caches:
             materialize_token_slots(
                 layer.k_cache,
                 layer.v_cache,
@@ -255,7 +270,7 @@ class TriAttentionMethod(KVCompressionMethod):
                 self.v_workspace,
             )
         layer_lengths = tuple(
-            (layer.name, self.config.kv_budget) for layer in self.layer_caches
+            (layer.name, self.config.kv_budget) for layer in materialization_caches
         )
         return CompressionResult(
             physical_num_tokens=self.config.kv_budget,
@@ -427,6 +442,10 @@ class TriAttentionMethod(KVCompressionMethod):
             aggregated_scores.add_(layer_scores)
         else:
             torch.maximum(aggregated_scores, layer_scores, out=aggregated_scores)
+
+
+def _is_mtp_cache_layer(layer_name: str) -> bool:
+    return ".mtp.layers." in f".{layer_name}."
 
 
 def create_triattention_method(
