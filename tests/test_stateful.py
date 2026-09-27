@@ -12,9 +12,11 @@ from vllm.v1.kv_cache_interface import (
 from vllm_ascend_kvcompress.config import ProviderSelection
 from vllm_ascend_kvcompress.provider import SCHEDULER_TRANSACTIONS_ATTRIBUTE
 from vllm_ascend_kvcompress.stateful import (
+    _GROUP_LENGTH_STATE_ATTRIBUTE,
     SchedulerActiveCompression,
     SchedulerCompressionState,
     SchedulerDeferredRelease,
+    _install_coordinator_hooks,
     _install_manager_hooks,
 )
 
@@ -45,6 +47,7 @@ def _scheduler(
     prefix_caching=False,
     allocation_fails=False,
     speculative=False,
+    mamba_cache_mode="none",
 ):
     if async_scheduling and scheduler_module == "vllm.v1.core.sched.scheduler":
         scheduler_module = "vllm.v1.core.sched.async_scheduler"
@@ -58,7 +61,7 @@ def _scheduler(
     vllm_config = SimpleNamespace(
         cache_config=SimpleNamespace(
             enable_prefix_caching=prefix_caching,
-            mamba_cache_mode="none",
+            mamba_cache_mode=mamba_cache_mode,
         ),
         model_config=SimpleNamespace(
             is_hybrid=hybrid_model_type is not None,
@@ -100,7 +103,7 @@ def _scheduler(
                     block_size=32768,
                     shapes=((1,),),
                     dtypes=(torch.float16,),
-                    mamba_cache_mode="none",
+                    mamba_cache_mode=mamba_cache_mode,
                 ),
             )
         )
@@ -118,8 +121,24 @@ def _scheduler(
             for value in range(count)
         ]
 
+    class Coordinator(SimpleNamespace):
+        def get_num_blocks_to_allocate(self, *args, **kwargs):
+            return 0
+
+        def allocate_new_blocks(self, *args, **kwargs):
+            return ()
+
+        def remove_skipped_blocks(self, *args, **kwargs):
+            return None
+
+        def cache_blocks(self, *args, **kwargs):
+            return None
+
+    coordinator = Coordinator(
+        single_type_managers=tuple(single_managers), retention_interval=None
+    )
     manager = SimpleNamespace(
-        coordinator=SimpleNamespace(single_type_managers=tuple(single_managers)),
+        coordinator=coordinator,
         block_pool=SimpleNamespace(
             free_blocks=lambda values: freed.extend(values),
             get_new_blocks=get_new_blocks,
@@ -197,6 +216,34 @@ def test_qwen35_scheduler_rejects_wrong_group_lcm_alignment() -> None:
         assert "LCM of cache-group block sizes" in str(error)
     else:
         raise AssertionError("mismatched scheduler alignment should be rejected")
+
+
+def test_qwen35_align_installs_group_specific_length_translation() -> None:
+    scheduler, _, _ = _scheduler(
+        block_size=32768,
+        hybrid_model_type="qwen3_5_moe_text",
+        attention_block_size=2048,
+        mamba_cache_mode="align",
+    )
+    selection = ProviderSelection.from_mapping(
+        {
+            "method": "triattention",
+            "method_config": {
+                "stats_path": "/tmp/stats.pt",
+                "kv_budget": 4096,
+                "recompute_window": 128,
+                "score_chunk_size": 128,
+            },
+        }
+    )
+
+    state = SchedulerCompressionState(scheduler, selection)
+
+    assert state.group_specific_lengths
+    assert (
+        getattr(scheduler.kv_cache_manager.coordinator, _GROUP_LENGTH_STATE_ATTRIBUTE)
+        is state
+    )
 
 
 def test_scheduler_arms_then_commits_tail_after_barrier() -> None:
@@ -448,6 +495,99 @@ def test_manager_free_releases_async_tail_on_abort() -> None:
     assert manager.free(request) == "r"
     assert [block.block_id for block in freed] == [5, 4]
     assert not manager._ascend_kvcompress_deferred_releases_v3
+
+
+def test_hybrid_coordinator_translates_only_full_attention_lengths() -> None:
+    class RecordingManager:
+        def __init__(self):
+            self.count_calls = []
+            self.allocate_calls = []
+            self.remove_calls = []
+            self.cache_calls = []
+
+        def get_num_blocks_to_allocate(
+            self,
+            request_id,
+            num_tokens,
+            new_computed_blocks,
+            total_computed_tokens,
+            num_tokens_main_model,
+            apply_admission_cap=False,
+        ):
+            self.count_calls.append(
+                (
+                    request_id,
+                    num_tokens,
+                    total_computed_tokens,
+                    num_tokens_main_model,
+                    apply_admission_cap,
+                )
+            )
+            return 1
+
+        def allocate_new_blocks(self, request_id, num_tokens, num_tokens_main_model):
+            self.allocate_calls.append((request_id, num_tokens, num_tokens_main_model))
+            return []
+
+        def remove_skipped_blocks(
+            self, request_id, total_computed_tokens, num_prompt_tokens=None
+        ):
+            self.remove_calls.append(
+                (request_id, total_computed_tokens, num_prompt_tokens)
+            )
+
+        def cache_blocks(self, request, num_computed_tokens, retention_interval=None):
+            self.cache_calls.append(
+                (request.request_id, num_computed_tokens, retention_interval)
+            )
+
+    class Coordinator:
+        def __init__(self):
+            self.single_type_managers = (RecordingManager(), RecordingManager())
+            self.retention_interval = 64
+
+        def get_num_blocks_to_allocate(self, *args, **kwargs):
+            raise AssertionError("active request must use group translation")
+
+        def allocate_new_blocks(self, *args, **kwargs):
+            raise AssertionError("active request must use group translation")
+
+        def remove_skipped_blocks(self, *args, **kwargs):
+            raise AssertionError("active request must use group translation")
+
+        def cache_blocks(self, *args, **kwargs):
+            raise AssertionError("active request must use group translation")
+
+    _install_coordinator_hooks(Coordinator)
+    coordinator = Coordinator()
+    setattr(
+        coordinator,
+        _GROUP_LENGTH_STATE_ATTRIBUTE,
+        SimpleNamespace(
+            attention_group_index=0,
+            active={"r": SchedulerActiveCompression(300, 128)},
+        ),
+    )
+
+    assert (
+        coordinator.get_num_blocks_to_allocate(
+            "r", 305, ((), ()), 0, 300, 305, apply_admission_cap=True
+        )
+        == 2
+    )
+    coordinator.allocate_new_blocks("r", 305, 305)
+    coordinator.remove_skipped_blocks("r", 300, 300)
+    coordinator.cache_blocks(SimpleNamespace(request_id="r"), 300)
+
+    attention, mamba = coordinator.single_type_managers
+    assert attention.count_calls == [("r", 133, 128, 133, True)]
+    assert mamba.count_calls == [("r", 305, 300, 305, True)]
+    assert attention.allocate_calls == [("r", 133, 133)]
+    assert mamba.allocate_calls == [("r", 305, 305)]
+    assert attention.remove_calls == [("r", 128, 300)]
+    assert mamba.remove_calls == [("r", 300, 300)]
+    assert not attention.cache_calls
+    assert mamba.cache_calls == [("r", 300, 64)]
 
 
 def test_finished_request_discards_pending_state() -> None:

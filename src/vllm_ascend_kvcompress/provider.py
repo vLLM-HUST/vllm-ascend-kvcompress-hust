@@ -427,8 +427,12 @@ def _common_compatibility_reasons(vllm_config: Any, runner: Any) -> tuple[str, .
             reasons.append(
                 "only Qwen3.5-style full-attention/Gated-DeltaNet hybrids are supported"
             )
-        if getattr(cache_config, "mamba_cache_mode", "none") != "none":
-            reasons.append("hybrid compression requires mamba_cache_mode='none'")
+        mamba_cache_mode = getattr(cache_config, "mamba_cache_mode", "none")
+        if mamba_cache_mode not in {"none", "align"}:
+            reasons.append(
+                "hybrid compression supports only mamba_cache_mode "
+                f"'none' or 'align', got {mamba_cache_mode!r}"
+            )
     if bool(getattr(model_config, "use_mla", False)):
         reasons.append("MLA cache layouts are unsupported")
     if bool(getattr(model_config, "is_encoder_decoder", False)):
