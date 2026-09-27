@@ -22,6 +22,7 @@ from .methods.triattention.kernels import shift_positions
 from .model import model_shape_from_config
 
 RUNNER_PROVIDER_ATTRIBUTE = "_ascend_kvcompress_provider_v3"
+SCHEDULER_TRANSACTIONS_ATTRIBUTE = "_ascend_kvcompress_transactions_v3"
 
 
 @dataclass(frozen=True)
@@ -247,10 +248,16 @@ class AscendKVCompressionProvider:
         self._sync_request_offset_rows()
 
     def compress_scheduled_requests(self, scheduler_output: Any) -> None:
-        """Run deterministic in-place transactions after the attention step."""
+        """Run scheduler-authorized transactions after the attention step."""
         if self.runner is None or not self.layer_caches:
             raise RuntimeError("Ascend KV compression provider is not cache-bound")
+        transactions = getattr(scheduler_output, SCHEDULER_TRANSACTIONS_ATTRIBUTE, None)
+        prefix_caching = bool(self.vllm_config.cache_config.enable_prefix_caching)
         for request_id, scheduled in scheduler_output.num_scheduled_tokens.items():
+            if transactions is not None and request_id not in transactions:
+                continue
+            if prefix_caching and transactions is None:
+                continue
             if request_id in self.pending:
                 continue
             request = self.runner.requests.get(request_id)
@@ -284,15 +291,28 @@ class AscendKVCompressionProvider:
                 raise RuntimeError(
                     f"request {request_id!r} has too few blocks for compression"
                 )
-            destination_ids = source_ids[:required_blocks]
+            if transactions is None:
+                destination_ids = source_ids[:required_blocks]
+            else:
+                destination_ids = tuple(
+                    int(value) for value in transactions[request_id]
+                )
+                if len(destination_ids) != required_blocks:
+                    raise RuntimeError(
+                        f"request {request_id!r} scheduler transaction has "
+                        f"{len(destination_ids)} destination blocks; expected "
+                        f"{required_blocks}"
+                    )
             source_device = _expand_scheduler_block_ids(
                 source_ids,
                 self.cache_blocks_per_scheduler_block,
                 self.runner.device,
             )
-            destination_device = source_device[
-                : required_blocks * self.cache_blocks_per_scheduler_block
-            ]
+            destination_device = _expand_scheduler_block_ids(
+                destination_ids,
+                self.cache_blocks_per_scheduler_block,
+                self.runner.device,
+            )
             result = self.method.compress(
                 CompressionRequest(
                     request_id=request_id,
@@ -383,8 +403,6 @@ class AscendKVCompressionProvider:
 def _common_compatibility_reasons(vllm_config: Any, runner: Any) -> tuple[str, ...]:
     reasons: list[str] = []
     cache_config = vllm_config.cache_config
-    if bool(cache_config.enable_prefix_caching):
-        reasons.append("prefix caching must be disabled")
     block_size = int(cache_config.block_size)
     allowed_block_sizes = _allowed_scheduler_block_sizes(vllm_config)
     if block_size not in allowed_block_sizes:

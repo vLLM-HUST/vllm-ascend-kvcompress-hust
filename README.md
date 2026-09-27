@@ -209,7 +209,7 @@ does not change Qwen2.5-14B-Instruct as the standard release model.
 
 | Feature | 0.6 status | Behavior |
 | --- | --- | --- |
-| Prefix cache | Conflict | Rejected; must be disabled |
+| Prefix cache | Experimental | Compression uses scheduler-reserved private destination blocks and replaces the request block table after model-output acknowledgement |
 | Speculative decoding | Conflict | Rejected |
 | KV transfer / disaggregated P/D | Conflict | Rejected |
 | Quantized KV | Conflict | Rejected; dense BF16/FP16 only |

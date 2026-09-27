@@ -100,16 +100,19 @@ KV reduction; retain block-release transactions and 1-second HBM samples.
 
 ## Applicability and conflicts
 
-Prefix cache, speculative decoding, KV transfer/disaggregated P/D, quantized
-KV, MLA/local attention, PP/DP/DCP/PCP above one, and unrecognized hybrid
-layouts are rejected at startup. Async scheduling has an experimental
+Speculative decoding, KV transfer/disaggregated P/D, quantized KV,
+MLA/local attention, PP/DP/DCP/PCP above one, and unrecognized hybrid layouts
+are rejected at startup. Prefix caching has an experimental private-destination
+transaction path: scheduler allocation failure skips compression, and commit
+never overwrites a shared prefix block. Async scheduling has an experimental
 output-acknowledged transaction path, but remains outside this frozen formal
 matrix until the NPU lifecycle gate is recorded. The sole hybrid exception is
 Qwen3.5 full attention plus Gated-DeltaNet with `mamba_cache_mode=none`; TP is
 allowed only when its size divides the model's KV heads. These exceptions are
 engineering scope and do not alter the single-card formal topology. A1's
-non-chunked configuration and A4's prefix-enabled configuration therefore do
-not apply. Former Prefix Router, KV Tiering, KNorm, PyramidKV Ascend and
+non-chunked configuration does not apply; A4's prefix-enabled configuration
+remains outside the frozen matrix until its NPU lifecycle gate is recorded.
+Former Prefix Router, KV Tiering, KNorm, PyramidKV Ascend and
 SliceGPT code is absent from the current hosts and is not assumed.
 
 ## Data preparation

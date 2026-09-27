@@ -11,11 +11,16 @@ from vllm.logger import logger
 
 from .config import ProviderSelection
 from .methods.triattention.config import TriAttentionConfig
-from .provider import _allowed_scheduler_block_sizes, _find_full_attention_group
+from .provider import (
+    SCHEDULER_TRANSACTIONS_ATTRIBUTE,
+    _allowed_scheduler_block_sizes,
+    _find_full_attention_group,
+)
 
 _STATE_ATTRIBUTE = "_ascend_kvcompress_scheduler_state_v3"
 _OFFSETS_ATTRIBUTE = "_ascend_kvcompress_active_offsets_v3"
 _DEFERRED_RELEASES_ATTRIBUTE = "_ascend_kvcompress_deferred_releases_v3"
+_PENDING_ATTRIBUTE = "_ascend_kvcompress_pending_transactions_v3"
 _PATCH_MARKER = "_ascend_kvcompress_manager_patch_v3"
 _SUPPORTED_SCHEDULER_TYPES = frozenset(
     {
@@ -33,7 +38,9 @@ _SUPPORTED_SCHEDULER_TYPES = frozenset(
 class SchedulerPendingCompression:
     semantic_anchor: int
     physical_anchor: int
-    block_ids: tuple[int, ...]
+    source_block_ids: tuple[int, ...]
+    destination_block_ids: tuple[int, ...]
+    private_destination_blocks: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -87,6 +94,7 @@ class SchedulerCompressionState:
         if self.max_concurrent_batches < 1:
             raise RuntimeError("max_concurrent_batches must be positive")
         self.attention_group_index = 0
+        self.prefix_caching = bool(host_config.cache_config.enable_prefix_caching)
         self._validate_host()
         setattr(scheduler.kv_cache_manager, _OFFSETS_ATTRIBUTE, self.active)
         setattr(
@@ -94,6 +102,7 @@ class SchedulerCompressionState:
             _DEFERRED_RELEASES_ATTRIBUTE,
             self.deferred_releases,
         )
+        setattr(scheduler.kv_cache_manager, _PENDING_ATTRIBUTE, self.pending)
         logger.info(
             "Ascend KV compression scheduler bound threshold_tokens=%d "
             "target_tokens=%d min_output_tokens=%d scheduler_alignment=%d "
@@ -118,8 +127,6 @@ class SchedulerCompressionState:
             )
         if bool(getattr(scheduler, "_balance_enabled", False)):
             reasons.append("Ascend balance scheduling must be disabled")
-        if bool(config.cache_config.enable_prefix_caching):
-            reasons.append("prefix caching must be disabled")
         if config.speculative_config is not None:
             reasons.append("speculative decoding is unsupported")
         if config.kv_transfer_config is not None:
@@ -187,7 +194,7 @@ class SchedulerCompressionState:
         """Free the compacted tail only after the prior worker step completed."""
         scheduler = self.scheduler
         for request_id in tuple(scheduler.finished_req_ids):
-            self.pending.pop(request_id, None)
+            self._discard_pending(request_id)
             self.active.pop(request_id, None)
         if self.async_scheduling:
             return
@@ -200,7 +207,7 @@ class SchedulerCompressionState:
         self._drain_deferred_releases()
         scheduler = self.scheduler
         for request_id in tuple(scheduler.finished_req_ids):
-            self.pending.pop(request_id, None)
+            self._discard_pending(request_id)
             self.active.pop(request_id, None)
         self._commit_pending(
             defer_release_outputs=max(0, self.max_concurrent_batches - 1)
@@ -215,36 +222,45 @@ class SchedulerCompressionState:
         cache_manager = single_managers[self.attention_group_index]
         for request_id, pending in tuple(self.pending.items()):
             if request_id not in scheduler.requests:
-                self.pending.pop(request_id, None)
+                self._discard_pending(request_id)
                 continue
             blocks = cache_manager.req_to_blocks.get(request_id)
             if blocks is None:
-                self.pending.pop(request_id, None)
+                self._discard_pending(request_id)
                 continue
-            keep = len(pending.block_ids)
-            actual_prefix = tuple(block.block_id for block in blocks[:keep])
-            if actual_prefix != pending.block_ids:
+            source_count = len(pending.source_block_ids)
+            actual_source = tuple(block.block_id for block in blocks[:source_count])
+            if actual_source != pending.source_block_ids:
                 raise RuntimeError(
                     f"request {request_id!r} block table changed before "
                     "compression commit"
                 )
-            tail = blocks[keep:]
             source_block_count = len(blocks)
-            del blocks[keep:]
-            if defer_release_outputs and tail:
+            if pending.private_destination_blocks:
+                released = tuple(reversed(blocks))
+                blocks[:] = pending.private_destination_blocks
+            else:
+                keep = len(pending.destination_block_ids)
+                released = tuple(reversed(blocks[keep:]))
+                del blocks[keep:]
+            if defer_release_outputs and released:
                 self.deferred_releases.setdefault(request_id, []).append(
                     SchedulerDeferredRelease(
                         request_id=request_id,
-                        blocks=tuple(reversed(tail)),
+                        blocks=released,
                         remaining_outputs=defer_release_outputs,
                     )
                 )
             else:
-                manager.block_pool.free_blocks(reversed(tail))
+                manager.block_pool.free_blocks(released)
             if hasattr(cache_manager, "num_cached_block"):
-                cache_manager.num_cached_block[request_id] = min(
-                    int(cache_manager.num_cached_block.get(request_id, 0)), keep
-                )
+                if pending.private_destination_blocks:
+                    cache_manager.num_cached_block[request_id] = 0
+                else:
+                    cache_manager.num_cached_block[request_id] = min(
+                        int(cache_manager.num_cached_block.get(request_id, 0)),
+                        len(pending.destination_block_ids),
+                    )
             self.active[request_id] = SchedulerActiveCompression(
                 pending.semantic_anchor, pending.physical_anchor
             )
@@ -256,10 +272,17 @@ class SchedulerCompressionState:
                 pending.semantic_anchor,
                 pending.physical_anchor,
                 source_block_count,
-                keep,
-                len(tail),
+                len(pending.destination_block_ids),
+                len(released),
             )
             self.pending.pop(request_id, None)
+
+    def _discard_pending(self, request_id: str) -> None:
+        pending = self.pending.pop(request_id, None)
+        if pending is not None and pending.private_destination_blocks:
+            self.scheduler.kv_cache_manager.block_pool.free_blocks(
+                pending.private_destination_blocks
+            )
 
     def _drain_deferred_releases(self) -> None:
         for request_id, releases in tuple(self.deferred_releases.items()):
@@ -288,11 +311,12 @@ class SchedulerCompressionState:
         reset_ids = set(getattr(output, "preempted_req_ids", ()))
         reset_ids.update(output.finished_req_ids)
         for request_id in reset_ids:
-            self.pending.pop(request_id, None)
+            self._discard_pending(request_id)
             self.active.pop(request_id, None)
 
         coordinator = self.scheduler.kv_cache_manager.coordinator
         single_manager = coordinator.single_type_managers[self.attention_group_index]
+        transactions: dict[str, tuple[int, ...]] = {}
         for request_id in output.num_scheduled_tokens:
             if request_id in self.pending:
                 continue
@@ -320,11 +344,43 @@ class SchedulerCompressionState:
                 raise RuntimeError(
                     f"request {request_id!r} has too few scheduler blocks"
                 )
+            source_ids = tuple(block.block_id for block in blocks)
+            private_blocks: tuple[Any, ...] = ()
+            if self.prefix_caching:
+                try:
+                    allocated = (
+                        self.scheduler.kv_cache_manager.block_pool.get_new_blocks(keep)
+                    )
+                except ValueError:
+                    continue
+                if len(allocated) != keep:
+                    if allocated:
+                        self.scheduler.kv_cache_manager.block_pool.free_blocks(
+                            allocated
+                        )
+                    raise RuntimeError("block pool returned a partial allocation")
+                if any(
+                    getattr(block, "ref_cnt", 1) != 1
+                    or getattr(block, "block_hash", None) is not None
+                    for block in allocated
+                ):
+                    self.scheduler.kv_cache_manager.block_pool.free_blocks(allocated)
+                    raise RuntimeError(
+                        "block pool returned a shared or hashed compression destination"
+                    )
+                private_blocks = tuple(allocated)
+                destination_ids = tuple(block.block_id for block in private_blocks)
+            else:
+                destination_ids = source_ids[:keep]
             self.pending[request_id] = SchedulerPendingCompression(
                 semantic_anchor=semantic,
                 physical_anchor=self.budget,
-                block_ids=tuple(block.block_id for block in blocks[:keep]),
+                source_block_ids=source_ids,
+                destination_block_ids=destination_ids,
+                private_destination_blocks=private_blocks,
             )
+            transactions[request_id] = destination_ids
+        setattr(output, SCHEDULER_TRANSACTIONS_ATTRIBUTE, transactions)
 
 
 def _request_max_tokens(request: Any) -> int:
@@ -404,6 +460,9 @@ def _install_manager_hooks(manager_cls: type[Any]) -> None:
 
     def free(manager: Any, request: Any) -> Any:
         getattr(manager, _OFFSETS_ATTRIBUTE, {}).pop(request.request_id, None)
+        pending = getattr(manager, _PENDING_ATTRIBUTE, {}).pop(request.request_id, None)
+        if pending is not None and pending.private_destination_blocks:
+            manager.block_pool.free_blocks(pending.private_destination_blocks)
         releases = getattr(manager, _DEFERRED_RELEASES_ATTRIBUTE, {}).pop(
             request.request_id, ()
         )
