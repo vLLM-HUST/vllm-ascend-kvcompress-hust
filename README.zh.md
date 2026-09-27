@@ -181,7 +181,7 @@ Qwen2.5-14B-Instruct 作为标准发布模型的定位。
 | 量化 KV | 冲突 | 启动拒绝，仅支持稠密 BF16/FP16 |
 | Qwen3.5 全注意力 + Gated-DeltaNet 混合架构 | 实验支持 | `mamba_cache_mode=none`；只压缩全注意力 KV |
 | 其他 hybrid / MLA / sliding / local attention | 冲突 | 启动拒绝 |
-| 异步调度 | 冲突 | 启动拒绝 |
+| 异步调度 | 实验性 | 收到对应 model output 后才提交；已入队批次全部完成前保留旧 tail block |
 | TP > 1 | 条件支持 | 必须整除 KV 头数；各 rank 同步评分 |
 | PP/DP/DCP/PCP > 1 | 冲突 | 启动拒绝 |
 | BidKV 或其他调度器 | 冲突 | 要求标准 v1 调度器；拒绝实际启用的平衡调度 |

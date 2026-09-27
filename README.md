@@ -215,7 +215,7 @@ does not change Qwen2.5-14B-Instruct as the standard release model.
 | Quantized KV | Conflict | Rejected; dense BF16/FP16 only |
 | Qwen3.5 full-attention + Gated-DeltaNet hybrid | Experimental | `mamba_cache_mode=none`; only full-attention KV is compacted |
 | Other hybrid / MLA / sliding / local attention | Conflict | Rejected |
-| Async scheduling | Conflict | Rejected |
+| Async scheduling | Experimental | Commit waits for the matching model output; old tail blocks remain reserved until every already queued batch completes |
 | TP > 1 | Conditional | Must divide KV heads; TP ranks synchronize scores |
 | PP/DP/DCP/PCP > 1 | Conflict | Rejected |
 | BidKV or another scheduler | Conflict | Standard v1 scheduler required; active balance scheduling rejected |

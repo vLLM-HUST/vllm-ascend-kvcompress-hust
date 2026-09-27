@@ -15,10 +15,12 @@ from .provider import _allowed_scheduler_block_sizes, _find_full_attention_group
 
 _STATE_ATTRIBUTE = "_ascend_kvcompress_scheduler_state_v3"
 _OFFSETS_ATTRIBUTE = "_ascend_kvcompress_active_offsets_v3"
+_DEFERRED_RELEASES_ATTRIBUTE = "_ascend_kvcompress_deferred_releases_v3"
 _PATCH_MARKER = "_ascend_kvcompress_manager_patch_v3"
 _SUPPORTED_SCHEDULER_TYPES = frozenset(
     {
         ("vllm.v1.core.sched.scheduler", "Scheduler"),
+        ("vllm.v1.core.sched.async_scheduler", "AsyncScheduler"),
         (
             "vllm_ascend.patch.platform.patch_balance_schedule",
             "BalanceScheduler",
@@ -44,8 +46,15 @@ class SchedulerActiveCompression:
         return self.semantic_anchor - self.physical_anchor
 
 
+@dataclass
+class SchedulerDeferredRelease:
+    request_id: str
+    blocks: tuple[Any, ...]
+    remaining_outputs: int
+
+
 class SchedulerCompressionState:
-    """Mirror worker transactions across the synchronous execution barrier."""
+    """Mirror worker transactions across acknowledged model-output barriers."""
 
     def __init__(self, scheduler: Any, selection: ProviderSelection) -> None:
         if selection.method != "triattention":
@@ -63,9 +72,28 @@ class SchedulerCompressionState:
         self.scheduler_block_size = self.scheduler_alignment_size
         self.pending: dict[str, SchedulerPendingCompression] = {}
         self.active: dict[str, SchedulerActiveCompression] = {}
+        self.deferred_releases: dict[str, list[SchedulerDeferredRelease]] = {}
+        host_config = scheduler.vllm_config
+        self.async_scheduling = bool(
+            getattr(host_config.scheduler_config, "async_scheduling", False)
+        )
+        self.max_concurrent_batches = int(
+            getattr(
+                host_config,
+                "max_concurrent_batches",
+                2 if self.async_scheduling else 1,
+            )
+        )
+        if self.max_concurrent_batches < 1:
+            raise RuntimeError("max_concurrent_batches must be positive")
         self.attention_group_index = 0
         self._validate_host()
         setattr(scheduler.kv_cache_manager, _OFFSETS_ATTRIBUTE, self.active)
+        setattr(
+            scheduler.kv_cache_manager,
+            _DEFERRED_RELEASES_ATTRIBUTE,
+            self.deferred_releases,
+        )
         logger.info(
             "Ascend KV compression scheduler bound threshold_tokens=%d "
             "target_tokens=%d min_output_tokens=%d scheduler_alignment=%d "
@@ -96,8 +124,6 @@ class SchedulerCompressionState:
             reasons.append("speculative decoding is unsupported")
         if config.kv_transfer_config is not None:
             reasons.append("KV transfer is unsupported")
-        if bool(getattr(config.scheduler_config, "async_scheduling", False)):
-            reasons.append("asynchronous scheduling is unsupported")
         parallel = config.parallel_config
         for name, attr in (
             ("pipeline parallel", "pipeline_parallel_size"),
@@ -163,6 +189,25 @@ class SchedulerCompressionState:
         for request_id in tuple(scheduler.finished_req_ids):
             self.pending.pop(request_id, None)
             self.active.pop(request_id, None)
+        if self.async_scheduling:
+            return
+        self._commit_pending(defer_release_outputs=0)
+
+    def after_model_output(self) -> None:
+        """Commit async transactions after their model output is acknowledged."""
+        if not self.async_scheduling:
+            return
+        self._drain_deferred_releases()
+        scheduler = self.scheduler
+        for request_id in tuple(scheduler.finished_req_ids):
+            self.pending.pop(request_id, None)
+            self.active.pop(request_id, None)
+        self._commit_pending(
+            defer_release_outputs=max(0, self.max_concurrent_batches - 1)
+        )
+
+    def _commit_pending(self, *, defer_release_outputs: int) -> None:
+        scheduler = self.scheduler
         manager = scheduler.kv_cache_manager
         single_managers = manager.coordinator.single_type_managers
         if self.attention_group_index >= len(single_managers):
@@ -186,7 +231,16 @@ class SchedulerCompressionState:
             tail = blocks[keep:]
             source_block_count = len(blocks)
             del blocks[keep:]
-            manager.block_pool.free_blocks(reversed(tail))
+            if defer_release_outputs and tail:
+                self.deferred_releases.setdefault(request_id, []).append(
+                    SchedulerDeferredRelease(
+                        request_id=request_id,
+                        blocks=tuple(reversed(tail)),
+                        remaining_outputs=defer_release_outputs,
+                    )
+                )
+            else:
+                manager.block_pool.free_blocks(reversed(tail))
             if hasattr(cache_manager, "num_cached_block"):
                 cache_manager.num_cached_block[request_id] = min(
                     int(cache_manager.num_cached_block.get(request_id, 0)), keep
@@ -206,6 +260,28 @@ class SchedulerCompressionState:
                 len(tail),
             )
             self.pending.pop(request_id, None)
+
+    def _drain_deferred_releases(self) -> None:
+        for request_id, releases in tuple(self.deferred_releases.items()):
+            retained: list[SchedulerDeferredRelease] = []
+            for release in releases:
+                remaining = release.remaining_outputs - 1
+                if remaining <= 0:
+                    self.scheduler.kv_cache_manager.block_pool.free_blocks(
+                        release.blocks
+                    )
+                else:
+                    retained.append(
+                        SchedulerDeferredRelease(
+                            request_id=release.request_id,
+                            blocks=release.blocks,
+                            remaining_outputs=remaining,
+                        )
+                    )
+            if retained:
+                self.deferred_releases[request_id] = retained
+            else:
+                self.deferred_releases.pop(request_id, None)
 
     def after_schedule(self, output: Any) -> None:
         """Arm the same deterministic transaction the worker performs."""
@@ -272,6 +348,7 @@ def install_stateful_compression_hooks(
         return
     original_init = scheduler_cls.__init__
     original_schedule = scheduler_cls.schedule
+    original_update_from_output = scheduler_cls.update_from_output
 
     def initialize(scheduler: Any, *args: Any, **kwargs: Any) -> None:
         original_init(scheduler, *args, **kwargs)
@@ -286,10 +363,25 @@ def install_stateful_compression_hooks(
         state.after_schedule(output)
         return output
 
+    def update_from_output(
+        scheduler: Any, scheduler_output: Any, model_runner_output: Any
+    ) -> Any:
+        result = original_update_from_output(
+            scheduler, scheduler_output, model_runner_output
+        )
+        getattr(scheduler, _STATE_ATTRIBUTE).after_model_output()
+        return result
+
     setattr(scheduler_cls, f"{marker}_original_init", original_init)
     setattr(scheduler_cls, f"{marker}_original_schedule", original_schedule)
+    setattr(
+        scheduler_cls,
+        f"{marker}_original_update_from_output",
+        original_update_from_output,
+    )
     scheduler_cls.__init__ = initialize
     scheduler_cls.schedule = schedule
+    scheduler_cls.update_from_output = update_from_output
     setattr(scheduler_cls, marker, True)
 
 
@@ -312,6 +404,11 @@ def _install_manager_hooks(manager_cls: type[Any]) -> None:
 
     def free(manager: Any, request: Any) -> Any:
         getattr(manager, _OFFSETS_ATTRIBUTE, {}).pop(request.request_id, None)
+        releases = getattr(manager, _DEFERRED_RELEASES_ATTRIBUTE, {}).pop(
+            request.request_id, ()
+        )
+        for release in releases:
+            manager.block_pool.free_blocks(release.blocks)
         return original_free(manager, request)
 
     setattr(manager_cls, f"{_PATCH_MARKER}_original_allocate", original_allocate)

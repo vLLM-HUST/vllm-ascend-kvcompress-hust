@@ -15,6 +15,7 @@ from vllm_ascend_kvcompress.provider import (
     AscendKVCompressionProvider,
     PendingCompression,
     _allowed_scheduler_block_sizes,
+    _common_compatibility_reasons,
     _expand_scheduler_block_ids,
     _find_full_attention_group,
     _unpack_layer_cache,
@@ -38,6 +39,38 @@ class _RecordingBlockTable:
 
     def add_row(self, block_ids, row_idx) -> None:
         self.added = block_ids, row_idx
+
+
+def test_async_scheduling_is_admitted_by_worker_compatibility() -> None:
+    runner_type = type("NPUModelRunner", (SimpleNamespace,), {})
+    runner_type.__module__ = "vllm_ascend.worker.model_runner_v1"
+    runner = runner_type(use_sparse=False, use_compress=False)
+    config = SimpleNamespace(
+        cache_config=SimpleNamespace(
+            enable_prefix_caching=False,
+            block_size=128,
+            cache_dtype="auto",
+            mamba_cache_mode="none",
+        ),
+        speculative_config=None,
+        kv_transfer_config=None,
+        scheduler_config=SimpleNamespace(async_scheduling=True),
+        model_config=SimpleNamespace(
+            is_hybrid=False,
+            use_mla=False,
+            is_encoder_decoder=False,
+            hf_text_config=SimpleNamespace(num_key_value_heads=2),
+        ),
+        parallel_config=SimpleNamespace(
+            tensor_parallel_size=1,
+            pipeline_parallel_size=1,
+            data_parallel_size=1,
+            prefill_context_parallel_size=1,
+            decode_context_parallel_size=1,
+        ),
+    )
+
+    assert _common_compatibility_reasons(config, runner) == ()
 
 
 def _provider() -> AscendKVCompressionProvider:
