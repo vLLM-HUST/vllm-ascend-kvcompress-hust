@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "provider": "ascend_kvcompress",
+  "method": "triattention",
+  "method_config": {
+    "stats_path": "/root/frontier-kvcompress-runs/calibration/qwen35-712cf743-v3.pt",
+    "auto_calibrate": true,
+    "calibration_max_length": 4096,
+    "calibration_device": "auto",
+    "calibration_attn_implementation": "eager",
+    "calibration_local_files_only": true,
+    "kv_budget": 8192,
+    "recompute_window": 1024,
+    "position_policy": "v3",
+    "protected_prefix_window": 128,
+    "protected_recent_window": 512,
+    "position_segments": 8,
+    "score_aggregation": "mean",
+    "layer_aggregation": "mean",
+    "score_chunk_size": 8192,
+    "score_layer_stride": 2,
+    "min_output_tokens_for_compression": 512
+  }
+}
