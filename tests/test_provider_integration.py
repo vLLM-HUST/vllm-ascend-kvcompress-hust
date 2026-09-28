@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from vllm_ascend_kvcompress.methods.base import (
@@ -10,6 +11,7 @@ from vllm_ascend_kvcompress.methods.base import (
     CompressionResult,
     LayerCache,
     MethodRuntimeSpec,
+    QueryObservation,
 )
 from vllm_ascend_kvcompress.provider import (
     ActiveCompression,
@@ -104,6 +106,11 @@ def test_async_scheduling_is_admitted_by_worker_compatibility(monkeypatch) -> No
 def _provider() -> AscendKVCompressionProvider:
     provider = AscendKVCompressionProvider.__new__(AscendKVCompressionProvider)
     provider.method = _RecordingMethod()
+    provider.query_window_tokens = 0
+    provider._query_step_output = None
+    provider._query_seen_layers = set()
+    provider._query_forward_complete = False
+    provider._query_tracked_ids = set()
     provider.runtime_spec = MethodRuntimeSpec(True, 256, 128, 128)
     provider.layer_caches = (
         LayerCache("model.layers.0.self_attn", 0, torch.empty(0), torch.empty(0)),
@@ -534,6 +541,131 @@ def test_worker_skips_short_decode_request() -> None:
 
     assert not provider.pending
     assert provider.method.last_request is None
+
+
+class _ObservingMethod(_RecordingMethod):
+    def __init__(self) -> None:
+        super().__init__()
+        self.buffers: dict[str, torch.Tensor] = {}
+        self.counts: dict[str, int] = {}
+        self.observation: QueryObservation | None = None
+        self.observed_rows: torch.Tensor | None = None
+        self.discarded: list[str] = []
+
+    def capture_query(self, layer, query, spans) -> None:
+        assert layer.layer_index == 0
+        for span in spans:
+            buffer = self.buffers.setdefault(span.request_id, torch.empty(2, 2))
+            rows = query[span.start : span.end]
+            count = self.counts.get(span.request_id, 0)
+            if count < 2:
+                copy = min(2 - count, len(rows))
+                buffer[count : count + copy].copy_(rows[:copy])
+                count += copy
+                rows = rows[copy:]
+            for row in rows:
+                buffer[:-1].copy_(buffer[1:].clone())
+                buffer[-1].copy_(row)
+            self.counts[span.request_id] = count
+
+    def complete_query_observation(self, observation: QueryObservation) -> None:
+        assert observation.request_id == "r"
+        assert observation.window_tokens == 2
+        assert observation.layer_indices == (0,)
+        assert self.counts["r"] == 2
+        self.observation = observation
+        self.observed_rows = self.buffers["r"].clone()
+
+    def compress(self, request: CompressionRequest) -> CompressionResult:
+        assert self.observation is not None
+        assert request.plan is self.observation.plan
+        return super().compress(request)
+
+    def discard_query_observation(self, request_id: str) -> None:
+        self.discarded.append(request_id)
+        self.buffers.pop(request_id, None)
+        self.counts.pop(request_id, None)
+
+
+def _observing_provider() -> AscendKVCompressionProvider:
+    provider = _provider()
+    provider.method = _ObservingMethod()
+    provider.query_window_tokens = 2
+    request = SimpleNamespace(
+        num_computed_tokens=298,
+        num_prompt_tokens=300,
+        max_tokens=128,
+        block_ids=([2, 0, 3],),
+    )
+    provider.runner = SimpleNamespace(
+        device=torch.device("cpu"),
+        requests={"r": request},
+        input_batch=SimpleNamespace(req_id_to_index={"r": 0}),
+        query_start_loc=SimpleNamespace(cpu=torch.tensor([0, 1])),
+    )
+    return provider
+
+
+def test_query_observation_spans_chunked_prefill_and_matches_plan() -> None:
+    provider = _observing_provider()
+    capture = provider._make_query_hook(provider.layer_caches[0])
+    first = SimpleNamespace(num_scheduled_tokens={"r": 1})
+
+    provider.begin_query_step(first)
+    capture(None, (torch.tensor([[1.0, 2.0]]),))
+    provider.finish_query_step()
+    stable_address = provider.method.buffers["r"].data_ptr()
+
+    provider.runner.requests["r"].num_computed_tokens = 299
+    final = _output_with_plan(300, (2, 0, 3), (50,), 1)
+    provider.begin_query_step(final)
+    capture(None, (torch.tensor([[3.0, 4.0]]),))
+    provider.finish_query_step()
+    assert provider.method.buffers["r"].data_ptr() == stable_address
+    provider.compress_scheduled_requests(final)
+
+    torch.testing.assert_close(
+        provider.method.observed_rows,
+        torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+    )
+    assert provider.method.observation.plan is getattr(final, PLAN_ATTRIBUTE)["r"]
+    assert provider.method.discarded == ["r"]
+    assert provider.method.buffers == {}
+
+
+def test_query_observation_fails_closed_when_forward_hook_is_bypassed() -> None:
+    provider = _observing_provider()
+    output = SimpleNamespace(num_scheduled_tokens={"r": 1})
+
+    provider.begin_query_step(output)
+    with pytest.raises(RuntimeError, match="graph replay path is unvalidated"):
+        provider.finish_query_step()
+    provider.abort_query_step(output)
+
+    assert not provider._query_forward_complete
+    assert provider.method.discarded == ["r"]
+
+
+def test_query_observation_is_discarded_on_preemption() -> None:
+    provider = _observing_provider()
+    output = SimpleNamespace(num_scheduled_tokens={"r": 1})
+    provider.begin_query_step(output)
+    provider._make_query_hook(provider.layer_caches[0])(
+        None, (torch.tensor([[1.0, 2.0]]),)
+    )
+    provider.finish_query_step()
+
+    provider.before_update_states(
+        SimpleNamespace(
+            finished_req_ids=set(),
+            preempted_req_ids={"r"},
+            scheduled_cached_reqs=SimpleNamespace(resumed_req_ids=set()),
+            num_scheduled_tokens={},
+        )
+    )
+
+    assert provider.method.buffers == {}
+    assert provider.method.discarded == ["r"]
 
 
 def test_worker_reads_output_limit_from_cached_request_sampling_params() -> None:

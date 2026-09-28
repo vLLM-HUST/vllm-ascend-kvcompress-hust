@@ -150,9 +150,7 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
     from .host_compat import qwen_gdn_list_compat_enabled
 
     gdn_list_compat = qwen_gdn_list_compat_enabled()
-    original_execute_model = (
-        getattr(runner_cls, "execute_model", None) if gdn_list_compat else None
-    )
+    original_execute_model = getattr(runner_cls, "execute_model", None)
     if gdn_list_compat and original_execute_model is None:
         raise RuntimeError("Qwen GDN list compatibility requires execute_model")
 
@@ -233,18 +231,41 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
     def sample_tokens(runner: Any, grammar_output: Any) -> Any:
         state = runner.execute_model_state
         scheduler_output = state[0] if state is not None else None
-        output = original_sample(runner, grammar_output)
         provider = getattr(runner, RUNNER_PROVIDER_ATTRIBUTE, None)
-        if provider is not None and scheduler_output is not None:
-            provider.compress_scheduled_requests(scheduler_output)
-        return output
+        try:
+            output = original_sample(runner, grammar_output)
+            if provider is not None and scheduler_output is not None:
+                provider.compress_scheduled_requests(scheduler_output)
+            return output
+        except Exception:
+            if (
+                provider is not None
+                and scheduler_output is not None
+                and getattr(provider, "query_window_tokens", 0)
+            ):
+                provider.abort_query_step(scheduler_output)
+            raise
 
     def execute_model(runner: Any, *args: Any, **kwargs: Any) -> Any:
-        from .host_compat import clear_qwen_gdn_list_compat_cache
-
-        clear_qwen_gdn_list_compat_cache()
         assert original_execute_model is not None
-        return original_execute_model(runner, *args, **kwargs)
+        if gdn_list_compat:
+            from .host_compat import clear_qwen_gdn_list_compat_cache
+
+            clear_qwen_gdn_list_compat_cache()
+        provider = getattr(runner, RUNNER_PROVIDER_ATTRIBUTE, None)
+        output = args[0] if args else kwargs.get("scheduler_output")
+        observes = provider is not None and getattr(provider, "query_window_tokens", 0)
+        if observes:
+            provider.begin_query_step(output)
+        try:
+            result = original_execute_model(runner, *args, **kwargs)
+            if observes:
+                provider.finish_query_step()
+            return result
+        except Exception:
+            if observes:
+                provider.abort_query_step(output)
+            raise
 
     setattr(runner_cls, f"{_PATCH_MARKER}_original_initialize", original_initialize)
     setattr(runner_cls, f"{_PATCH_MARKER}_original_load_model", original_load_model)

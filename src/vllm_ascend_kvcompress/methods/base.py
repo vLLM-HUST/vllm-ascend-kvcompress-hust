@@ -9,6 +9,8 @@ from typing import Any
 
 import torch
 
+from ..transaction import CompressionPlan
+
 
 @dataclass(frozen=True)
 class ModelShape:
@@ -71,6 +73,7 @@ class CompressionRequest:
     destination_block_ids: tuple[tuple[int, ...], ...]
     source_block_ids_device: torch.Tensor
     destination_block_ids_device: torch.Tensor
+    plan: CompressionPlan | None = None
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,31 @@ class CompressionResult:
 
     physical_num_tokens: int
     per_layer_physical_num_tokens: tuple[tuple[str, int], ...] | None = None
+
+
+@dataclass(frozen=True)
+class QueryBatchSpan:
+    """Query rows for one request in the current model-forward batch."""
+
+    request_id: str
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class QueryObservation:
+    """Identity of a completed final-prefill compression transaction.
+
+    Query tensors remain in the method's own buffers, populated by
+    ``capture_query``. ``plan`` is the exact scheduler-authorized transaction
+    subsequently passed to ``compress``.
+    """
+
+    request_id: str
+    plan: CompressionPlan
+    semantic_num_tokens: int
+    window_tokens: int
+    layer_indices: tuple[int, ...]
 
 
 class KVCompressionMethod(ABC):
@@ -109,3 +137,29 @@ class KVCompressionMethod(ABC):
     @abstractmethod
     def compress(self, request: CompressionRequest) -> CompressionResult:
         """Materialize one compression transaction into destination blocks."""
+
+    @property
+    def query_window_tokens(self) -> int:
+        """Trailing prefill query rows required per full-attention layer.
+
+        Zero is the default and installs no observation hooks. A method that
+        opts in owns its capture buffers and must override the hooks below.
+        """
+        return 0
+
+    def capture_query(
+        self,
+        layer: LayerCache,
+        query: torch.Tensor,
+        spans: tuple[QueryBatchSpan, ...],
+    ) -> None:
+        """Copy prefill query rows into method-owned, address-stable buffers."""
+        return None
+
+    def complete_query_observation(self, observation: QueryObservation) -> None:
+        """Publish buffered queries only after a successful full forward."""
+        return None
+
+    def discard_query_observation(self, request_id: str) -> None:
+        """Release one request's uncommitted observation on reset or commit."""
+        return None
