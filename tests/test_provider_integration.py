@@ -128,6 +128,8 @@ def _provider() -> AscendKVCompressionProvider:
     provider._semantic_seq_lens_cpu = None
     provider._offset_row_snapshot = ()
     provider._has_active_rows = False
+    provider._has_per_layer_rows = False
+    provider._per_layer_metadata_seen = False
     provider._physical_lengths_applied = False
     provider.vllm_config = SimpleNamespace(
         cache_config=SimpleNamespace(enable_prefix_caching=False),
@@ -513,13 +515,245 @@ def test_repeated_compression_uses_current_physical_window() -> None:
     provider.runner = SimpleNamespace(
         device=torch.device("cpu"), requests={"r": request}
     )
-    provider.active["r"] = ActiveCompression(300, 128)
+    provider.active["r"] = ActiveCompression(
+        300, 128, (("model.layers.0.self_attn", 64),)
+    )
 
     provider.compress_scheduled_requests(_output_with_plan(428, (5, 9), (50,), 1))
 
     assert provider.pending["r"] == PendingCompression(428, 128, (50,))
     assert provider.method.last_request is not None
     assert provider.method.last_request.physical_num_tokens == 256
+    assert provider.method.last_request.per_layer_physical_num_tokens == (
+        ("model.layers.0.self_attn", 192),
+    )
+
+
+def test_per_layer_result_commits_only_on_acknowledged_request_step() -> None:
+    provider = _provider()
+    provider.layer_caches += (
+        LayerCache("model.layers.1.self_attn", 1, torch.empty(0), torch.empty(0)),
+    )
+    provider.runner = SimpleNamespace(
+        compilation_config=SimpleNamespace(cudagraph_mode=SimpleNamespace(name="NONE")),
+        device=torch.device("cpu"),
+        requests={
+            "r": SimpleNamespace(
+                num_computed_tokens=256,
+                num_prompt_tokens=300,
+                max_tokens=128,
+                block_ids=([2, 0, 3],),
+            )
+        },
+        input_batch=SimpleNamespace(
+            req_id_to_index={}, block_table=_RecordingBlockTable()
+        ),
+    )
+    provider.method.compress = lambda request: CompressionResult(
+        128,
+        (("model.layers.1.self_attn", 64), ("model.layers.0.self_attn", 128)),
+    )
+    provider.compress_scheduled_requests(_output_with_plan(300, (2, 0, 3), (50,), 44))
+    expected = (
+        ("model.layers.0.self_attn", 128),
+        ("model.layers.1.self_attn", 64),
+    )
+    assert provider.pending["r"].per_layer_physical_num_tokens == expected
+    other_step = SimpleNamespace(
+        finished_req_ids=set(),
+        preempted_req_ids=set(),
+        scheduled_cached_reqs=SimpleNamespace(resumed_req_ids=set()),
+        num_scheduled_tokens={"other": 1},
+    )
+    provider.before_update_states(other_step)
+    assert "r" in provider.pending and "r" not in provider.active
+
+    other_step.num_scheduled_tokens = {"r": 1}
+    provider.before_update_states(other_step)
+    assert provider.active["r"].per_layer_physical_num_tokens == expected
+    assert "r" not in provider.pending
+
+    other_step.num_scheduled_tokens = {}
+    other_step.preempted_req_ids = {"r"}
+    provider.before_update_states(other_step)
+    assert "r" not in provider.active
+
+
+@pytest.mark.parametrize("reset_kind", ["finished", "preempted", "resumed"])
+def test_per_layer_state_clears_on_request_reset(reset_kind) -> None:
+    provider = _provider()
+    layers = (("model.layers.0.self_attn", 64),)
+    provider.pending["r"] = PendingCompression(300, 128, (50,), layers)
+    provider.active["r"] = ActiveCompression(300, 128, layers)
+    provider.runner = SimpleNamespace(
+        requests={"r": object()}, input_batch=SimpleNamespace(req_id_to_index={})
+    )
+    output = SimpleNamespace(
+        finished_req_ids={"r"} if reset_kind == "finished" else set(),
+        preempted_req_ids={"r"} if reset_kind == "preempted" else set(),
+        scheduled_cached_reqs=SimpleNamespace(
+            resumed_req_ids={"r"} if reset_kind == "resumed" else set()
+        ),
+        num_scheduled_tokens={},
+    )
+    provider.before_update_states(output)
+    assert not provider.pending and not provider.active
+
+
+def test_per_layer_state_clears_if_request_disappears_after_update() -> None:
+    provider = _provider()
+    layers = (("model.layers.0.self_attn", 64),)
+    provider.pending["r"] = PendingCompression(300, 128, (50,), layers)
+    provider.active["r"] = ActiveCompression(300, 128, layers)
+    provider.runner = SimpleNamespace(requests={})
+    provider.after_update_states(None)
+    assert not provider.pending and not provider.active
+
+
+@pytest.mark.parametrize(
+    "lengths",
+    [
+        (),
+        (("model.layers.0.self_attn", 128),),
+        (("model.layers.0.self_attn", 128), ("model.layers.0.self_attn", 64)),
+        (("model.layers.0.self_attn", 128), ("wrong", 64)),
+        (("model.layers.0.self_attn", 128), ("model.layers.1.self_attn", 0)),
+        (("model.layers.0.self_attn", 128), ("model.layers.1.self_attn", 129)),
+        (("model.layers.0.self_attn", 128), ("model.layers.1.self_attn", True)),
+    ],
+)
+def test_per_layer_result_rejects_invalid_maps(lengths) -> None:
+    provider = _provider()
+    provider.layer_caches += (
+        LayerCache("model.layers.1.self_attn", 1, torch.empty(0), torch.empty(0)),
+    )
+    with pytest.raises(RuntimeError, match="per-layer physical lengths"):
+        provider._validate_per_layer_lengths(lengths, 128)
+
+
+def test_uniform_per_layer_result_keeps_shared_metadata_path() -> None:
+    provider = _provider()
+    provider.layer_caches += (
+        LayerCache("model.layers.1.self_attn", 1, torch.empty(0), torch.empty(0)),
+    )
+    assert (
+        provider._validate_per_layer_lengths(
+            (("model.layers.1.self_attn", 128), ("model.layers.0.self_attn", 128)),
+            128,
+        )
+        is None
+    )
+
+
+def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> None:
+    @dataclass
+    class AscendMetadata:
+        seq_lens: torch.Tensor
+        seq_lens_cpu: torch.Tensor
+        seq_lens_list: list[int]
+        slot_mapping: torch.Tensor
+
+    AscendMetadata.__module__ = "vllm_ascend.attention.attention_v1"
+
+    class BlockTable:
+        def __init__(self):
+            self.slot_mapping = SimpleNamespace(gpu=torch.tensor([12928, 2580]))
+
+        def native(self, num_reqs, query_start_loc, positions):
+            assert num_reqs == 2
+            assert query_start_loc.tolist() == [0, 1, 2]
+            # Two private 128-token pages for request 0, one for request 1.
+            blocks = ((100, 101), (20,))
+            for token, position in enumerate(positions.tolist()):
+                request = token
+                self.slot_mapping.gpu[token] = (
+                    blocks[request][position // 128] * 128 + position % 128
+                )
+
+    BlockTable._ascend_kvcompress_patch_v3_slot_mapping_original = BlockTable.native
+    table = BlockTable()
+    provider = _provider()
+    provider.layer_caches += (
+        LayerCache("model.layers.1.self_attn", 1, torch.empty(0), torch.empty(0)),
+    )
+    provider.active["compressed"] = ActiveCompression(
+        300,
+        128,
+        (("model.layers.0.self_attn", 128), ("model.layers.1.self_attn", 64)),
+    )
+    provider._has_per_layer_rows = True
+    provider._physical_lengths_applied = True
+    provider._request_offsets_cpu = torch.tensor([172, 0])
+    provider.runner = SimpleNamespace(
+        compilation_config=SimpleNamespace(cudagraph_mode=SimpleNamespace(name="NONE")),
+        input_batch=SimpleNamespace(
+            req_ids=["compressed", "plain"],
+            block_table=SimpleNamespace(block_tables=[table]),
+        ),
+        positions=torch.tensor([300, 20]),
+        req_indices=SimpleNamespace(gpu=torch.tensor([0, 1])),
+        query_start_loc=SimpleNamespace(gpu=torch.tensor([0, 1, 2])),
+    )
+    shared = AscendMetadata(
+        torch.tensor([129, 21]),
+        torch.tensor([129, 21]),
+        [129, 21],
+        table.slot_mapping.gpu,
+    )
+    metadata, common = provider.per_layer_attention_metadata(
+        ({layer.name: shared for layer in provider.layer_caches}, "common"), 2, 2
+    )
+    first, second = (metadata[layer.name] for layer in provider.layer_caches)
+    assert common == "common"
+    assert first is shared
+    assert first.seq_lens_list == [129, 21]
+    assert second.seq_lens_list == [65, 21]
+    assert second.seq_lens.tolist() == [65, 21]
+    assert second.slot_mapping.tolist() == [100 * 128 + 64, 20 * 128 + 20]
+    assert table.slot_mapping.gpu.tolist() == [12928, 2580]
+
+    provider.runner.positions[0] = 305
+    table.slot_mapping.gpu[0] = 12933
+    next_shared = AscendMetadata(
+        torch.tensor([134, 21]),
+        torch.tensor([134, 21]),
+        [134, 21],
+        table.slot_mapping.gpu,
+    )
+    next_metadata, _ = provider.per_layer_attention_metadata(
+        ({layer.name: next_shared for layer in provider.layer_caches}, None), 2, 2
+    )
+    assert next_metadata["model.layers.1.self_attn"].seq_lens_list == [70, 21]
+    assert next_metadata["model.layers.1.self_attn"].slot_mapping.tolist() == [
+        100 * 128 + 69,
+        20 * 128 + 20,
+    ]
+    assert table.slot_mapping.gpu.tolist() == [12933, 2580]
+
+
+def test_nonuniform_lengths_fail_closed_under_graph_replay() -> None:
+    provider = _provider()
+    provider.layer_caches += (
+        LayerCache("model.layers.1.self_attn", 1, torch.empty(0), torch.empty(0)),
+    )
+    provider.runner = SimpleNamespace(
+        compilation_config=SimpleNamespace(
+            cudagraph_mode=SimpleNamespace(name="FULL_AND_PIECEWISE")
+        )
+    )
+    with pytest.raises(RuntimeError, match="requires eager execution"):
+        provider._validate_per_layer_lengths(
+            (("model.layers.0.self_attn", 128), ("model.layers.1.self_attn", 64)),
+            128,
+        )
+
+
+def test_per_layer_metadata_bypass_fails_closed() -> None:
+    provider = _provider()
+    provider._has_per_layer_rows = True
+    provider.begin_per_layer_step()
+    with pytest.raises(RuntimeError, match="metadata hook was bypassed"):
+        provider.finish_per_layer_step()
 
 
 def test_worker_skips_short_decode_request() -> None:

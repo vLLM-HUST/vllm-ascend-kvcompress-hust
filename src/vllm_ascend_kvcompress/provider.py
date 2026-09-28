@@ -10,7 +10,7 @@ at startup and kept in :mod:`vllm_ascend_kvcompress.plugin`.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import torch
@@ -39,12 +39,14 @@ class PendingCompression:
     semantic_anchor: int
     physical_anchor: int
     block_ids: tuple[int, ...]
+    per_layer_physical_num_tokens: tuple[tuple[str, int], ...] | None = None
 
 
 @dataclass(frozen=True)
 class ActiveCompression:
     semantic_anchor: int
     physical_anchor: int
+    per_layer_physical_num_tokens: tuple[tuple[str, int], ...] | None = None
 
     @property
     def removed_tokens(self) -> int:
@@ -105,6 +107,8 @@ class AscendKVCompressionProvider:
         self._semantic_seq_lens_cpu: torch.Tensor | None = None
         self._offset_row_snapshot: tuple[int, ...] = ()
         self._has_active_rows = False
+        self._has_per_layer_rows = False
+        self._per_layer_metadata_seen = False
         self._physical_lengths_applied = False
         self._query_step_output: Any | None = None
         self._query_seen_layers: set[int] = set()
@@ -290,7 +294,9 @@ class AscendKVCompressionProvider:
                     request.block_ids, request_index
                 )
             self.active[request_id] = ActiveCompression(
-                pending.semantic_anchor, pending.physical_anchor
+                pending.semantic_anchor,
+                pending.physical_anchor,
+                pending.per_layer_physical_num_tokens,
             )
             logger.info(
                 "KV compression worker commit acknowledged request_id=%s "
@@ -384,6 +390,11 @@ class AscendKVCompressionProvider:
 
     def after_update_states(self, scheduler_output: Any) -> None:
         del scheduler_output
+        if self.runner is not None:
+            live = self.runner.requests.keys()
+            for request_id in (self.pending.keys() | self.active.keys()) - live:
+                self.pending.pop(request_id, None)
+                self.active.pop(request_id, None)
         self._physical_lengths_applied = False
         self._sync_request_offset_rows()
 
@@ -483,22 +494,100 @@ class AscendKVCompressionProvider:
                         source_block_ids_device=source_device,
                         destination_block_ids_device=destination_device,
                         plan=plan,
+                        per_layer_physical_num_tokens=(
+                            tuple(
+                                (
+                                    name,
+                                    length + semantic - active.semantic_anchor,
+                                )
+                                for name, length in active.per_layer_physical_num_tokens
+                            )
+                            if active is not None
+                            and active.per_layer_physical_num_tokens is not None
+                            else None
+                        ),
                     )
                 )
             finally:
                 if self.query_window_tokens:
                     self.method.discard_query_observation(request_id)
                     self._query_tracked_ids.discard(request_id)
-            compacted = int(result.physical_num_tokens)
+            compacted = result.physical_num_tokens
+            if isinstance(compacted, bool) or not isinstance(compacted, int):
+                raise RuntimeError("method returned a non-integer physical length")
             if compacted != self.runtime_spec.max_physical_num_tokens:
                 raise RuntimeError(
                     f"method {self.method.name!r} returned unexpected "
                     f"length {compacted}"
                 )
+            per_layer = self._validate_per_layer_lengths(
+                result.per_layer_physical_num_tokens, compacted
+            )
             self.pending[request_id] = PendingCompression(
                 semantic_anchor=semantic,
                 physical_anchor=compacted,
                 block_ids=destination_ids,
+                per_layer_physical_num_tokens=per_layer,
+            )
+
+    def _validate_per_layer_lengths(
+        self, lengths: tuple[tuple[str, int], ...] | None, maximum: int
+    ) -> tuple[tuple[str, int], ...] | None:
+        if lengths is None:
+            return None
+        names = tuple(layer.name for layer in self.layer_caches)
+        if not isinstance(lengths, tuple) or len(lengths) != len(names):
+            raise RuntimeError(
+                "per-layer physical lengths must cover every full-attention layer"
+            )
+        values: dict[str, int] = {}
+        for entry in lengths:
+            if not isinstance(entry, tuple) or len(entry) != 2:
+                raise RuntimeError("invalid per-layer physical length entry")
+            name, length = entry
+            if not isinstance(name, str) or name in values or name not in names:
+                raise RuntimeError(
+                    "per-layer physical lengths contain an unknown or duplicate layer"
+                )
+            if (
+                isinstance(length, bool)
+                or not isinstance(length, int)
+                or not 0 < length <= maximum
+            ):
+                raise RuntimeError(
+                    "per-layer physical lengths must be positive and <= group maximum"
+                )
+            values[name] = length
+        if set(values) != set(names):
+            raise RuntimeError("per-layer physical lengths omit a full-attention layer")
+        ordered = tuple((name, values[name]) for name in names)
+        if any(length != maximum for _, length in ordered):
+            self._validate_per_layer_host()
+            return ordered
+        # Uniform methods, including TriAttention, retain the existing fast path.
+        return None
+
+    def _validate_per_layer_host(self) -> None:
+        if self.runner is None:
+            raise RuntimeError("per-layer physical state requires a bound runner")
+        mode = getattr(
+            getattr(self.runner, "compilation_config", None), "cudagraph_mode", None
+        )
+        if getattr(mode, "name", None) != "NONE":
+            raise RuntimeError(
+                "per-layer physical state requires eager execution; "
+                "graph replay metadata is unvalidated"
+            )
+        if (
+            any(
+                getattr(self.runner, name, False)
+                for name in ("use_dcp", "use_async_spec_decode", "pcp_enabled")
+            )
+            or getattr(self.vllm_config, "speculative_config", None) is not None
+        ):
+            raise RuntimeError(
+                "per-layer physical state is unvalidated with parallel "
+                "or speculative attention"
             )
 
     def physical_positions_for_slot_mapping(
@@ -553,8 +642,6 @@ class AscendKVCompressionProvider:
             or self._semantic_seq_lens_cpu is None
         ):
             raise RuntimeError("semantic GDN length buffers are not initialized")
-        from dataclasses import replace
-
         num_reqs = metadata.num_reqs
         return replace(
             metadata,
@@ -562,6 +649,109 @@ class AscendKVCompressionProvider:
             _seq_lens_cpu=self._semantic_seq_lens_cpu[:num_reqs],
             seq_lens_cpu_upper_bound=self._semantic_seq_lens_cpu[:num_reqs],
         )
+
+    def per_layer_attention_metadata(
+        self, result: Any, num_tokens: int, num_reqs: int
+    ) -> Any:
+        """Give each full-attention layer its own eager KV lengths and write slots."""
+        if not self._has_per_layer_rows:
+            return result
+        self._validate_per_layer_host()
+        if self.runner is None or not isinstance(result, tuple) or len(result) != 2:
+            raise RuntimeError("per-layer attention metadata hook was bypassed")
+        metadata, common = result
+        if not isinstance(metadata, dict):
+            raise RuntimeError(
+                "per-layer attention requires a single eager metadata batch"
+            )
+        runner = self.runner
+        batch = runner.input_batch
+        request_ids = batch.req_ids[:num_reqs]
+        if len(request_ids) != num_reqs or num_tokens < 0:
+            raise RuntimeError("per-layer attention batch dimensions changed")
+        table = batch.block_table.block_tables[self.attention_group_index]
+        native = getattr(
+            type(table), "_ascend_kvcompress_patch_v3_slot_mapping_original", None
+        )
+        if not callable(native):
+            raise RuntimeError(
+                "per-layer attention requires the native slot mapping hook"
+            )
+        if not self._physical_lengths_applied or self._request_offsets_cpu is None:
+            raise RuntimeError("per-layer attention requires saved semantic lengths")
+        global_offsets = tuple(
+            int(value) for value in self._request_offsets_cpu[:num_reqs]
+        )
+        original_slots = table.slot_mapping.gpu[:num_tokens].clone()
+        try:
+            for layer in self.layer_caches:
+                offsets = tuple(
+                    self.active[request_id].semantic_anchor
+                    - dict(
+                        self.active[request_id].per_layer_physical_num_tokens or ()
+                    ).get(layer.name, self.active[request_id].physical_anchor)
+                    if request_id in self.active
+                    else 0
+                    for request_id in request_ids
+                )
+                if offsets == global_offsets:
+                    continue
+                base = metadata.get(layer.name)
+                if (
+                    type(base).__name__ != "AscendMetadata"
+                    or type(base).__module__ != "vllm_ascend.attention.attention_v1"
+                    or base.seq_lens is None
+                    or base.seq_lens_list is None
+                    or base.slot_mapping is None
+                ):
+                    raise RuntimeError(
+                        "per-layer attention backend metadata is unvalidated"
+                    )
+                delta = [
+                    global_offset - offset
+                    for global_offset, offset in zip(
+                        global_offsets, offsets, strict=True
+                    )
+                ]
+                seq_lens = base.seq_lens.clone()
+                seq_lens[:num_reqs] += torch.tensor(
+                    delta, dtype=seq_lens.dtype, device=seq_lens.device
+                )
+                seq_lens_list = list(base.seq_lens_list)
+                for index, correction in enumerate(delta):
+                    seq_lens_list[index] += correction
+                positions = runner.positions[:num_tokens]
+                req_indices = runner.req_indices.gpu[:num_tokens]
+                offset_tensor = torch.tensor(
+                    offsets, dtype=positions.dtype, device=positions.device
+                )
+                native(
+                    table,
+                    num_reqs,
+                    runner.query_start_loc.gpu[: num_reqs + 1],
+                    positions - offset_tensor[req_indices.long()],
+                )
+                metadata[layer.name] = replace(
+                    base,
+                    seq_lens=seq_lens,
+                    seq_lens_cpu=seq_lens,
+                    seq_lens_list=seq_lens_list,
+                    slot_mapping=table.slot_mapping.gpu[:num_tokens].clone(),
+                )
+        finally:
+            table.slot_mapping.gpu[:num_tokens].copy_(original_slots)
+        self._per_layer_metadata_seen = True
+        return metadata, common
+
+    def begin_per_layer_step(self) -> None:
+        if self._has_per_layer_rows:
+            self._per_layer_metadata_seen = False
+
+    def finish_per_layer_step(self) -> None:
+        if self._has_per_layer_rows and not self._per_layer_metadata_seen:
+            raise RuntimeError(
+                "per-layer attention metadata hook was bypassed by the host"
+            )
 
     def _sync_request_offset_rows(self) -> None:
         if (
@@ -574,6 +764,11 @@ class AscendKVCompressionProvider:
         offsets = tuple(
             self.active[request_id].removed_tokens if request_id in self.active else 0
             for request_id in self.runner.input_batch.req_ids[:num_reqs]
+        )
+        self._has_per_layer_rows = any(
+            self.active[request_id].per_layer_physical_num_tokens is not None
+            for request_id in self.runner.input_batch.req_ids[:num_reqs]
+            if request_id in self.active
         )
         if offsets == self._offset_row_snapshot:
             return

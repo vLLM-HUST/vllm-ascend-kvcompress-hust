@@ -129,6 +129,25 @@ Implement `KVCompressionMethod` from `methods/base.py`:
 - `compress(request)`: synchronously materialize one transaction and return
   the new physical length, plus optional per-layer lengths.
 
+### Per-layer physical state
+
+`CompressionResult.per_layer_physical_num_tokens` may contain one `(layer_name,
+length)` pair for every bound full-attention layer. Names must be unique and
+exact; lengths must be positive integers no greater than
+`runtime_spec.max_physical_num_tokens`. The scheduler reserves private blocks
+using that declared group maximum. The worker switches the per-layer anchors
+with the same acknowledged transaction and advances each layer's KV write
+slots and attention lengths independently during decode. A later
+`CompressionRequest.per_layer_physical_num_tokens` reports the current lengths
+if the request is compressed again. GDN continues to receive semantic lengths.
+
+`None` and all-equal-to-maximum maps use the established shared metadata path,
+including TriAttention. Unequal maps currently require eager execution and
+the standard Ascend FlashAttention metadata class. Graph replay and other
+attention backends fail closed until their per-layer metadata path is
+validated on hardware. CPU contract tests do not qualify an external method
+for serving.
+
 ### Optional query observation
 
 `query_window_tokens` defaults to `0`; existing methods, including

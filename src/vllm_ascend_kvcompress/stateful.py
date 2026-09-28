@@ -10,11 +10,14 @@ from typing import Any
 from vllm.logger import logger
 
 from .config import ProviderSelection
+from .methods import create_method
 from .methods.triattention.config import TriAttentionConfig
+from .model import model_shape_from_config
 from .provider import (
     _allowed_scheduler_block_sizes,
     _find_full_attention_group,
     _supports_mtp2,
+    _validate_method_runtime_spec,
 )
 from .transaction import PLAN_ATTRIBUTE, CompressionPlan
 
@@ -65,15 +68,28 @@ class SchedulerCompressionState:
     """Mirror worker transactions across acknowledged model-output barriers."""
 
     def __init__(self, scheduler: Any, selection: ProviderSelection) -> None:
-        if selection.method != "triattention":
-            raise ValueError(
-                f"scheduler adapter does not support method {selection.method!r}"
+        if selection.method == "triattention":
+            # Keep the existing scheduler path independent of worker calibration.
+            config = TriAttentionConfig.from_method_config(selection.method_config)
+            threshold = config.compression_threshold_tokens
+            budget = config.kv_budget
+            min_output_tokens = config.min_output_tokens_for_compression
+        else:
+            method = create_method(
+                selection.method,
+                selection.method_config,
+                scheduler.vllm_config,
+                model_shape_from_config(scheduler.vllm_config.model_config),
             )
-        config = TriAttentionConfig.from_method_config(selection.method_config)
+            spec = method.runtime_spec
+            _validate_method_runtime_spec(method.name, spec)
+            threshold = spec.compression_threshold_tokens
+            budget = spec.max_physical_num_tokens
+            min_output_tokens = spec.min_output_tokens_for_compression
         self.scheduler = scheduler
-        self.threshold = config.compression_threshold_tokens
-        self.budget = config.kv_budget
-        self.min_output_tokens = config.min_output_tokens_for_compression
+        self.threshold = threshold
+        self.budget = budget
+        self.min_output_tokens = min_output_tokens
         # Scheduler.block_size is the LCM alignment across every hybrid cache
         # group; it can be larger than the full-attention manager page.
         self.scheduler_alignment_size = int(scheduler.block_size)
