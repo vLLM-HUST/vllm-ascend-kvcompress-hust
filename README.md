@@ -59,6 +59,7 @@ and [calibration artifacts](docs/calibration-artifacts.md).
 | --- | --- | --- |
 | vLLM-HUST / `vllm` | `>=0.29.1.post1.dev0,<0.30` (0.8.0) | `fc06902b7d` (`0.29.1.post1.dev843+gfc06902b7.empty`) |
 | vLLM-Ascend-HUST / `vllm-ascend` | `>=0.25.1rc2.dev0,<0.26` | `5422a07c4` (`0.25.1rc2.dev616+hust.20260903.4.g5422a07c4`) |
+| Unified Frontier legacy line | Core `0.23.0+empty`, Ascend `0.23.0.post1` | Core `d0f22d2bda562156e4dbf433ce645e1769b4f804`, Ascend `03766ac696fde5ab1980d80ca0b8543d3580c989` |
 | Extension Manager | `>=0.2.0.dev0,<0.3` | installed `0.2.0.dev0` |
 | Python | `>=3.10,<3.15` | 3.11.16 |
 
@@ -75,6 +76,9 @@ during startup. The manifest
 uses the stable `vllm.general_plugins` discovery entry point; current hosts do
 not expose a frozen native KV-lifecycle API, so the narrow host range and
 contract tests intentionally guard the internal integration seams.
+The disjoint legacy line is admitted only for the exact unified Frontier source
+pair above. Its older inline KV-binding ABI is covered by a separate contract
+test; unknown 0.24 and 0.25.0 hosts remain excluded by the manifest.
 
 ## Install, enable, disable, and uninstall
 

@@ -391,6 +391,7 @@ def test_qwen_mtp2_cache_binding_bridge_is_exact_and_restored(monkeypatch) -> No
         worker_utils,
         "bind_kv_cache_to_layers",
         lambda *args: bound.append(args),
+        raising=False,
     )
     caches = {
         "language_model.model.layers.0.linear_attn": object(),
@@ -408,6 +409,31 @@ def test_qwen_mtp2_cache_binding_bridge_is_exact_and_restored(monkeypatch) -> No
     assert worker_utils.bind_kv_cache is original
     assert runner == list(caches.values())
     assert len(bound) == 1
+
+
+def test_qwen_mtp2_cache_binding_bridge_supports_legacy_inline_binding(
+    monkeypatch,
+) -> None:
+    from vllm.v1.worker import utils as worker_utils
+
+    monkeypatch.delattr(worker_utils, "bind_kv_cache_to_layers", raising=False)
+    caches = {
+        "language_model.model.layers.0.linear_attn": object(),
+        "mtp.layers.0.self_attn.attn": object(),
+        "language_model.model.layers.1.linear_attn": object(),
+    }
+    contexts = {
+        name: SimpleNamespace(kv_cache=None) for name in caches
+    }
+    runner = []
+
+    with qwen_mtp2_cache_binding_bridge():
+        worker_utils.bind_kv_cache(caches, contexts, runner)
+        with pytest.raises(RuntimeError, match="explicit cache groups"):
+            worker_utils.bind_kv_cache(caches, contexts, [], kv_cache_groups=[0])
+
+    assert runner == list(caches.values())
+    assert all(contexts[name].kv_cache is cache for name, cache in caches.items())
 
 
 def test_step3p5_import_alias_is_idempotent() -> None:
