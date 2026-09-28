@@ -1,0 +1,76 @@
+{
+  "activation": {
+    "additional_config": [],
+    "entry_points": [
+      {
+        "group": "vllm.general_plugins",
+        "name": "ascend_kvcompress"
+      }
+    ],
+    "environment": [
+      [
+        "VLLM_ASCEND_KVCOMPRESS_ENABLED",
+        "1"
+      ]
+    ]
+  },
+  "activation_blocker": null,
+  "activation_ready": true,
+  "bundle_id": "org.vllm-hust.ascend-kvcompress",
+  "bundle_version": "0.8.0",
+  "components": [
+    {
+      "component_id": "ascend-kvcompress",
+      "contracts": [
+        "vllm.general_plugins"
+      ],
+      "execution_planes": [
+        "scheduler",
+        "worker",
+        "device"
+      ],
+      "implementation_ref": "vllm_ascend_kvcompress.plugin:register",
+      "isolation": "trusted_in_process",
+      "permissions": [
+        "device_access",
+        "filesystem_read",
+        "filesystem_write",
+        "network_egress"
+      ]
+    }
+  ],
+  "distribution": "vllm-ascend-kvcompress-hust",
+  "distribution_version": "0.8.0",
+  "enabled": false,
+  "experimental": true,
+  "host": {
+    "api_range": null,
+    "name": "vllm-ascend",
+    "provider": "vllm",
+    "version_range": ">=0.23.0.post1,<0.26,!=0.24.*,!=0.25.0.*"
+  },
+  "implementation": [
+    {
+      "group": "vllm.general_plugins",
+      "name": "ascend_kvcompress",
+      "object": "vllm_ascend_kvcompress.plugin:register",
+      "status": "active",
+      "type": "python_entry_point"
+    }
+  ],
+  "kind": "in_process_plugin",
+  "lifecycle_owner": "vllm",
+  "manifest_path": "/root/kvcompress-source-2ca0f933/src/vllm_ascend_kvcompress/manifests/vllm-hust-extension-v0.2.json",
+  "protocols": [
+    {
+      "name": "vllm.general_plugins",
+      "version_range": null
+    }
+  ],
+  "requires_services": [],
+  "runtime": {
+    "isolation": "trusted_in_process",
+    "process_scope": "scheduler_and_ascend_worker",
+    "type": "python"
+  }
+}

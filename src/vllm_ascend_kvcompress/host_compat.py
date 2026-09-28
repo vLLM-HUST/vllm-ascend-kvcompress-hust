@@ -80,9 +80,22 @@ def qwen_mtp2_cache_binding_bridge():
             )
         for index in sorted(index2names):
             runner_kv_caches.extend(kv_caches[name] for name in index2names[index])
-        worker_utils.bind_kv_cache_to_layers(
-            kv_caches, forward_context, num_attn_module, kv_cache_groups
-        )
+        bind_to_layers = getattr(worker_utils, "bind_kv_cache_to_layers", None)
+        if bind_to_layers is None:
+            # vLLM 0.23 keeps the layer-binding loop inside ``bind_kv_cache``;
+            # later hosts extracted it as a helper.  The collision bridge has
+            # already performed only the runner-list half, so reproduce the
+            # unchanged layer assignment on the older ABI.
+            if kv_cache_groups is not None:
+                raise RuntimeError(
+                    "the legacy KV binder cannot accept explicit cache groups"
+                )
+            for layer_name, kv_cache in kv_caches.items():
+                forward_context[layer_name].kv_cache = kv_cache
+        else:
+            bind_to_layers(
+                kv_caches, forward_context, num_attn_module, kv_cache_groups
+            )
         logger.warning("Bound exact Qwen3.5 target/MTP layer-zero KV pair")
 
     worker_utils.bind_kv_cache = bind_kv_cache

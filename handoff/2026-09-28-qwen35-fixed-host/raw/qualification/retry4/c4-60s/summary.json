@@ -1,0 +1,31 @@
+{
+  "valid": false,
+  "measurement_seconds": 0.0985974632203579,
+  "requests_started": 4,
+  "max_prompt_tokens_observed": 1514,
+  "prompt_tokens_p50": 1481.0,
+  "max_turn_index_reached": 0,
+  "distinct_trajectories_started": 4,
+  "sessions_completed": 0,
+  "requests_completed_in_window": 0,
+  "requests_drained": 0,
+  "failed_requests": 4,
+  "observed_output_tokens_in_window": 0,
+  "output_tokens_per_second": null,
+  "output_tokens_per_second_per_chip": null,
+  "decode_tokens_per_second_p90": null,
+  "decode_speed_samples": 0,
+  "ttft_seconds_p95": null,
+  "client_inflight_seconds": {
+    "0": 0.0010844897478818893,
+    "1": 0.0015976205468177795,
+    "2": 0.0011297259479761124,
+    "3": 0.0012302696704864502,
+    "4": 0.09355535730719566
+  },
+  "mean_client_inflight": 3.8719993214205357,
+  "full_concurrency_fraction": 0.9488617075076922,
+  "drain_seconds": 0.0,
+  "aborted": true,
+  "planned_measurement_seconds": 60.0
+}

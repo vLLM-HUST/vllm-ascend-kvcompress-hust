@@ -1,0 +1,12 @@
+Filesystem                                              Size  Used Avail Use% Mounted on
+overlay                                                 3.5T  3.3T  209G  95% /
+tmpfs                                                    64M     0   64M   0% /dev
+/dev/longhorn/pvc-affb23ad-27ed-46b7-beb7-0253828fe0f3   98G   65G   34G  66% /root
+/dev/nvme0n1p1                                          3.5T  3.3T  209G  95% /models
+/dev/sda2                                               446G  321G  107G  76% /usr/local/dcmi
+tmpfs                                                   245G     0  245G   0% /dev/shm
+tmpfs                                                   980G   12K  980G   1% /run/secrets/kubernetes.io/serviceaccount
+tmpfs                                                  1006G     0 1006G   0% /proc/acpi
+tmpfs                                                  1006G     0 1006G   0% /proc/scsi
+tmpfs                                                  1006G     0 1006G   0% /sys/firmware
+tmpfs                                                  1006G     0 1006G   0% /sys/devices/virtual/powercap

@@ -13,6 +13,7 @@ import argparse
 import fcntl
 import gc
 import hashlib
+import importlib.util
 import json
 import os
 import tempfile
@@ -194,8 +195,22 @@ def generate_calibration_artifact(request: CalibrationRequest) -> bool:
 
 
 def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
+    if (
+        request.device_map is not None
+        and importlib.util.find_spec("accelerate") is None
+    ):
+        raise RuntimeError(
+            "distributed calibration requires Accelerate; install the "
+            "'vllm-ascend-kvcompress-hust[calibration]' extra in the host "
+            "environment"
+        )
     try:
-        from transformers import AutoConfig, AutoModel, AutoTokenizer
+        from transformers import (
+            AutoConfig,
+            AutoModel,
+            AutoModelForCausalLM,
+            AutoTokenizer,
+        )
         from transformers import __version__ as transformers_version
     except ImportError as error:
         raise RuntimeError(
@@ -242,7 +257,13 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
     if token_count < 2:
         raise ValueError("calibration input produced fewer than two tokens")
 
+    text_config = getattr(config, "text_config", config)
+    is_qwen35_multimodal = (
+        text_config is not config
+        and str(getattr(config, "model_type", "")).startswith("qwen3_5")
+    )
     load_options: dict[str, Any] = {
+        "config": text_config if is_qwen35_multimodal else config,
         "revision": request.revision,
         "dtype": dtype,
         "device_map": request.device_map or request.device,
@@ -250,11 +271,19 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
     }
     if request.attn_implementation:
         load_options["attn_implementation"] = request.attn_implementation
+    if is_qwen35_multimodal:
+        # The published Qwen3.5 checkpoint nests text weights below
+        # model.language_model. Loading only the causal text model avoids
+        # constructing an unused vision tower during calibration.
+        load_options["key_mapping"] = {
+            r"^model\.language_model\.(.+)$": r"model.\1"
+        }
 
     model: torch.nn.Module | None = None
     handles: list[Any] = []
     try:
-        model = AutoModel.from_pretrained(request.model, **load_options)
+        model_loader = AutoModelForCausalLM if is_qwen35_multimodal else AutoModel
+        model = model_loader.from_pretrained(request.model, **load_options)
         model.eval()
         attention_layers = _find_attention_layers(model)
         actual_layer_indices = tuple(index for index, _ in attention_layers)

@@ -101,6 +101,8 @@ lock, and the extension manifest owns the compatible host range. Re-resolving
 the host while installing a plugin can combine the NumPy-1-only
 Triton-Ascend 3.2.2 line with the NumPy-2-only OpenCV requirement in current
 vLLM releases.
+The optional `calibration` extra may declare Accelerate; multi-device automatic
+calibration must fail with an actionable error when it is absent.
 
 Confirm that `extension list` no longer discovers the plugin. Reinstall,
 configure, and enable the exact wheel that will be published.

@@ -479,7 +479,17 @@ def test_hybrid_coordinator_translates_only_full_attention_lengths() -> None:
             self.single_type_managers = (RecordingManager(), RecordingManager())
             self.retention_interval = 64
 
-        def get_num_blocks_to_allocate(self, *args, **kwargs):
+        def get_num_blocks_to_allocate(
+            self,
+            request_id,
+            num_tokens,
+            new_computed_blocks,
+            num_encoder_tokens,
+            total_computed_tokens,
+            num_local_computed_tokens,
+            num_tokens_main_model,
+            apply_admission_cap=False,
+        ):
             raise AssertionError("active request must use group translation")
 
         def allocate_new_blocks(self, *args, **kwargs):
@@ -520,6 +530,81 @@ def test_hybrid_coordinator_translates_only_full_attention_lengths() -> None:
     assert mamba.remove_calls == [("r", 300, 300)]
     # The unmodified host coordinator handles replay-boundary-aware caching;
     # the plugin's attention-manager hook suppresses only private KV hashes.
+
+
+def test_hybrid_coordinator_supports_fixed_host_count_signature() -> None:
+    class LegacyManager:
+        def __init__(self):
+            self.calls = []
+
+        def get_num_blocks_to_allocate(
+            self,
+            request_id,
+            num_tokens,
+            new_computed_blocks,
+            total_computed_tokens,
+            num_tokens_main_model,
+            apply_admission_cap=False,
+        ):
+            self.calls.append(
+                (
+                    request_id,
+                    num_tokens,
+                    total_computed_tokens,
+                    num_tokens_main_model,
+                    apply_admission_cap,
+                )
+            )
+            return 1
+
+    class LegacyCoordinator:
+        def __init__(self):
+            self.single_type_managers = (LegacyManager(), LegacyManager())
+
+        def get_num_blocks_to_allocate(
+            self,
+            request_id,
+            num_tokens,
+            new_computed_blocks,
+            num_encoder_tokens,
+            total_computed_tokens,
+            num_tokens_main_model,
+            apply_admission_cap=False,
+        ):
+            raise AssertionError("active request must use group translation")
+
+        def allocate_new_blocks(self, *args, **kwargs):
+            raise AssertionError
+
+        def remove_skipped_blocks(self, *args, **kwargs):
+            raise AssertionError
+
+    _install_coordinator_hooks(LegacyCoordinator)
+    coordinator = LegacyCoordinator()
+    setattr(
+        coordinator,
+        _GROUP_LENGTH_STATE_ATTRIBUTE,
+        SimpleNamespace(
+            attention_group_index=0,
+            active={"r": SchedulerActiveCompression(300, 128)},
+        ),
+    )
+
+    assert (
+        coordinator.get_num_blocks_to_allocate(
+            request_id="r",
+            num_tokens=305,
+            new_computed_blocks=((), ()),
+            num_encoder_tokens=0,
+            total_computed_tokens=300,
+            num_tokens_main_model=305,
+            apply_admission_cap=True,
+        )
+        == 2
+    )
+    attention, mamba = coordinator.single_type_managers
+    assert attention.calls == [("r", 133, 128, 133, True)]
+    assert mamba.calls == [("r", 305, 300, 305, True)]
 
 
 def test_finished_request_discards_pending_state() -> None:

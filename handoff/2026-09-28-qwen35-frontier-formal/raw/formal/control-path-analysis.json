@@ -1,0 +1,90 @@
+{
+  "all_transactions_exactly_one_commit_and_two_rank_acks": true,
+  "invalid_transactions": {},
+  "scheduler_commits_total": 434,
+  "tp0_acks_total": 434,
+  "tp1_acks_total": 434,
+  "windows": [
+    {
+      "concurrency": 1,
+      "end_utc": "2026-09-28T16:46:52+00:00",
+      "metric_deltas": {
+        "vllm:num_preemptions_total": 0.0,
+        "vllm:prefix_cache_hits_total": 2492416.0,
+        "vllm:prefix_cache_queries_total": 3109646.0,
+        "vllm:prompt_tokens_cached_total": 2492416.0,
+        "vllm:spec_decode_num_accepted_tokens_total": 56380.0,
+        "vllm:spec_decode_num_draft_tokens_total": 59360.0,
+        "vllm:spec_decode_num_drafts_total": 29680.0
+      },
+      "scheduler_commits": 42,
+      "start_utc": "2026-09-28T16:31:43+00:00",
+      "worker_acks": 84
+    },
+    {
+      "concurrency": 2,
+      "end_utc": "2026-09-28T17:02:15+00:00",
+      "metric_deltas": {
+        "vllm:num_preemptions_total": 0.0,
+        "vllm:prefix_cache_hits_total": 3692544.0,
+        "vllm:prefix_cache_queries_total": 4499830.0,
+        "vllm:prompt_tokens_cached_total": 3653632.0,
+        "vllm:spec_decode_num_accepted_tokens_total": 81533.0,
+        "vllm:spec_decode_num_draft_tokens_total": 85662.0,
+        "vllm:spec_decode_num_drafts_total": 42831.0
+      },
+      "scheduler_commits": 54,
+      "start_utc": "2026-09-28T16:47:02+00:00",
+      "worker_acks": 108
+    },
+    {
+      "concurrency": 4,
+      "end_utc": "2026-09-28T17:17:30+00:00",
+      "metric_deltas": {
+        "vllm:num_preemptions_total": 0.0,
+        "vllm:prefix_cache_hits_total": 6809600.0,
+        "vllm:prefix_cache_queries_total": 8070520.0,
+        "vllm:prompt_tokens_cached_total": 6692864.0,
+        "vllm:spec_decode_num_accepted_tokens_total": 122057.0,
+        "vllm:spec_decode_num_draft_tokens_total": 129160.0,
+        "vllm:spec_decode_num_drafts_total": 64580.0
+      },
+      "scheduler_commits": 88,
+      "start_utc": "2026-09-28T17:02:23+00:00",
+      "worker_acks": 176
+    },
+    {
+      "concurrency": 8,
+      "end_utc": "2026-09-28T17:33:48+00:00",
+      "metric_deltas": {
+        "vllm:num_preemptions_total": 0.0,
+        "vllm:prefix_cache_hits_total": 8624128.0,
+        "vllm:prefix_cache_queries_total": 10483527.0,
+        "vllm:prompt_tokens_cached_total": 8433664.0,
+        "vllm:spec_decode_num_accepted_tokens_total": 177851.0,
+        "vllm:spec_decode_num_draft_tokens_total": 186374.0,
+        "vllm:spec_decode_num_drafts_total": 93187.0
+      },
+      "scheduler_commits": 117,
+      "start_utc": "2026-09-28T17:17:36+00:00",
+      "worker_acks": 234
+    },
+    {
+      "concurrency": 16,
+      "end_utc": "2026-09-28T17:50:35+00:00",
+      "metric_deltas": {
+        "vllm:num_preemptions_total": 0.0,
+        "vllm:prefix_cache_hits_total": 9123840.0,
+        "vllm:prefix_cache_queries_total": 12017204.0,
+        "vllm:prompt_tokens_cached_total": 8364032.0,
+        "vllm:spec_decode_num_accepted_tokens_total": 218073.0,
+        "vllm:spec_decode_num_draft_tokens_total": 232072.0,
+        "vllm:spec_decode_num_drafts_total": 116036.0
+      },
+      "scheduler_commits": 133,
+      "start_utc": "2026-09-28T17:33:56+00:00",
+      "worker_acks": 266
+    }
+  ],
+  "worker_acks_total": 868
+}

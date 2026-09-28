@@ -1,0 +1,12 @@
+    PID    PPID COMMAND         STAT CMD
+      1       0 coder           Ssl  ./coder agent
+     70       1 coder           Ssl  ./coder agent --no-reap
+    137       1 sshd            Ss   sshd: /usr/sbin/sshd -e -o PermitRootLogin=prohibit-password -o PubkeyAuthentication=yes -o AuthorizedKeysFile=/etc/ssh/authorized_keys.generated %h/.ssh/authorized_keys -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PermitUserEnvironment=yes [listener] 0 of 10-100 startups
+    194     137 sshd            Ss   sshd: root@notty
+    205     194 sleep           Ss   sleep infinity
+    990       1 codex.direct    Sl   /root/.local/bin/codex.direct -c features.code_mode_host=true app-server --listen unix://
+   1081     137 sshd            Ss   sshd: root@notty
+   1101    1081 codex.direct    Ssl  /root/.local/bin/codex.direct app-server proxy
+   2554     990 codex-code-mode Sl   /root/.codex/packages/standalone/releases/0.157.1-aarch64-unknown-linux-musl/bin/codex-code-mode-host
+  58410     990 bash            Ss   /bin/bash -c set -eo pipefail run=/root/frontier-kvcompress-runs/qualification-clean ps -eo pid,ppid,comm,stat,cmd > "$run/processes-after-stop.txt" awk '$3 ~ /^python/ && ($0 ~ /vllm.entrypoints.cli.main serve/ || $0 ~ /EngineCore/ || $0 ~ /Worker_TP/) {print; found=1} END {exit found ? 1 : 0}' "$run/processes-after-stop.txt" [[ ! -s "$run/port-after-stop.txt" ]] for id in 2 3 4 5; do rg -q "No running processes found in NPU $id" "$run/npu-after-stop.txt"; done find "$run" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$run/SHA256SUMS" printf 'qualification release verified; files='; find "$run" -type f | wc -l
+  58411   58410 ps              R    ps -eo pid,ppid,comm,stat,cmd

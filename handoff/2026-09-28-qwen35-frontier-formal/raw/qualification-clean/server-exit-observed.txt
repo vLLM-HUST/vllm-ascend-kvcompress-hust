@@ -1,0 +1,1 @@
+server PTY session closed after operator SIGINT and graceful shutdown
