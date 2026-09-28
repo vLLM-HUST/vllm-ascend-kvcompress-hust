@@ -74,6 +74,7 @@ class CompressionRequest:
     source_block_ids_device: torch.Tensor
     destination_block_ids_device: torch.Tensor
     plan: CompressionPlan | None = None
+    per_layer_physical_num_tokens: tuple[tuple[str, int], ...] | None = None
 
 
 @dataclass(frozen=True)

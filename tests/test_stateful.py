@@ -10,7 +10,9 @@ from vllm.v1.kv_cache_interface import (
     MambaSpec,
 )
 
+import vllm_ascend_kvcompress.stateful as stateful_module
 from vllm_ascend_kvcompress.config import ProviderSelection
+from vllm_ascend_kvcompress.methods.base import MethodRuntimeSpec
 from vllm_ascend_kvcompress.stateful import (
     _GROUP_LENGTH_STATE_ATTRIBUTE,
     SchedulerActiveCompression,
@@ -194,6 +196,30 @@ def test_qwen35_scheduler_separates_alignment_from_attention_pages() -> None:
 
     assert state.scheduler_alignment_size == 32768
     assert state.scheduler_block_size == 2048
+
+
+def test_scheduler_uses_registered_method_runtime_spec(monkeypatch) -> None:
+    scheduler, _, _ = _scheduler()
+    seen = []
+    monkeypatch.setattr(
+        stateful_module, "model_shape_from_config", lambda config: "shape"
+    )
+
+    def create(name, options, config, shape):
+        seen.append((name, options, config, shape))
+        return SimpleNamespace(
+            name=name,
+            runtime_spec=MethodRuntimeSpec(True, 256, 128, 128, 32),
+        )
+
+    monkeypatch.setattr(stateful_module, "create_method", create)
+    selection = ProviderSelection.from_mapping(
+        {"method": "external", "method_config": {"option": 1}}
+    )
+    state = SchedulerCompressionState(scheduler, selection)
+
+    assert seen == [("external", {"option": 1}, scheduler.vllm_config, "shape")]
+    assert (state.threshold, state.budget, state.min_output_tokens) == (256, 128, 32)
 
 
 def test_qwen35_scheduler_rejects_wrong_group_lcm_alignment() -> None:

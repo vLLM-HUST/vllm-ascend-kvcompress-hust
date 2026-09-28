@@ -84,6 +84,20 @@ RoPE 融合路径已通过真实昇腾 NPU 的数值检查。随后的 SWE 官�
 - `bind_model_runner(runner, layer_caches)`：公共缓存校验后分配状态；
 - `compress(request)`：同步完成一次物化并返回新物理长度，以及可选的逐层长度。
 
+### 逐层物理状态
+
+`CompressionResult.per_layer_physical_num_tokens` 可以为每个已绑定的全注意力层
+返回一个 `(layer_name, length)`。层名必须完整且不重复；长度须为正整数，且不超过
+`runtime_spec.max_physical_num_tokens`。scheduler 按声明的组上限预留私有块。
+worker 在同一次输出确认后的事务中切换逐层锚点；之后每个层的 KV 写入槽位和注意力
+长度独立随 decode 前进。若再次压缩，`CompressionRequest.per_layer_physical_num_tokens`
+包含当前逐层长度。GDN 继续使用语义长度。
+
+`None` 或全部等于组上限的结果继续使用原有共享元数据路径，包括 TriAttention。
+不等长结果目前仅支持 eager 模式及标准 Ascend FlashAttention 元数据类型。图重放和
+其他注意力后端在完成硬件验证前会明确拒绝执行。CPU 契约测试不代表外部方法已通过
+服务验证。
+
 方法只能使用已校验的 cache binding，不能修改 scheduler 拥有的 request 或
 block table。返回长度必须为正、不超过声明上限；使用逐层长度时必须覆盖全部层。
 
