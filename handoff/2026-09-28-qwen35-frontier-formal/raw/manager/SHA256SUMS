@@ -1,0 +1,9 @@
+5337c8dfad0eecfff9bbf5bdea6f8f601f4d10eb5ec8d9517bbe0d310592f44d  /root/frontier-kvcompress-runs/manager/01-inspect.txt
+8fd0b9db0f8f9a356eb2abc70e51c7c90e02e1d967612a120e8a64c42777f7cb  /root/frontier-kvcompress-runs/manager/02-check-before-configure.txt
+7284ea08d341544d34dd4f0655c24a9dd130748bcd5d28783a52edea6e177842  /root/frontier-kvcompress-runs/manager/03-plan.txt
+7b1da655a702cc53eb55f3ab1c17507933603b1e48bc099ba880d3ab5d99a08a  /root/frontier-kvcompress-runs/manager/04-configure.txt
+54258c7e64663ad29e10626363c5013fa71db8a4cee0ff0f1aa930a38ac3486e  /root/frontier-kvcompress-runs/manager/05-enable.txt
+274513c7df4104ba34846a13843edc4392342f150801528be0ec80bb1e84bfa7  /root/frontier-kvcompress-runs/manager/06-status.txt
+13a9566abca6fc7d877c1beadb2e184c8af849b3081700f7bfbe0a0e4f46fe3d  /root/frontier-kvcompress-runs/manager/07-check-final.txt
+6181720e5a423e1ec0c79b0db92f86c7df735a1d171db97df5bb5b5b0d63bb67  /root/frontier-kvcompress-runs/manager/08-status-final.txt
+257f99423920ff44e8fdce494453f296f002c057e11f2c5260696797cdc7205c  /root/frontier-kvcompress-runs/manager/09-status-regenerated-calibration-config.txt

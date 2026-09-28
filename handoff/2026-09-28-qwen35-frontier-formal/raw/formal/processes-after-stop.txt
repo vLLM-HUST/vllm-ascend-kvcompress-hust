@@ -1,0 +1,15 @@
+    PID    PPID COMMAND         STAT CMD
+      1       0 coder           Ssl  ./coder agent
+     70       1 coder           Ssl  ./coder agent --no-reap
+    137       1 sshd            Ss   sshd: /usr/sbin/sshd -e -o PermitRootLogin=prohibit-password -o PubkeyAuthentication=yes -o AuthorizedKeysFile=/etc/ssh/authorized_keys.generated %h/.ssh/authorized_keys -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PermitUserEnvironment=yes [listener] 0 of 10-100 startups
+    194     137 sshd            Ss   sshd: root@notty
+    205     194 sleep           Ss   sleep infinity
+    990       1 codex.direct    Sl   /root/.local/bin/codex.direct -c features.code_mode_host=true app-server --listen unix://
+   1081     137 sshd            Ss   sshd: root@notty
+   1101    1081 codex.direct    Ssl  /root/.local/bin/codex.direct app-server proxy
+   2554     990 codex-code-mode Sl   /root/.codex/packages/standalone/releases/0.157.1-aarch64-unknown-linux-musl/bin/codex-code-mode-host
+ 129480     990 bash            Ss   /bin/bash -lc sed -n '1,360p' /root/frontier-kvcompress-runs/control/start-server.sh /root/frontier-kvcompress-env/bin/vllm-hust-ext extension inspect org.vllm-hust.ascend-kvcompress 2>&1 | head -240 /root/frontier-kvcompress-env/bin/vllm-hust-ext extension status org.vllm-hust.ascend-kvcompress 2>&1 | head -240
+ 129539  129480 vllm-hust-ext   Rl   /root/frontier-kvcompress-env/bin/python /root/frontier-kvcompress-env/bin/vllm-hust-ext extension status org.vllm-hust.ascend-kvcompress
+ 129540  129480 head            S    head -240
+ 129605     990 bash            Ss   /bin/bash -c set -eo pipefail run=/root/frontier-kvcompress-runs/formal date -u +%FT%TZ > "$run/server-stopped-utc.txt" printf 'server PTY session closed after operator SIGINT and graceful shutdown\n' > "$run/server-exit-observed.txt" npu-smi info > "$run/npu-after-stop.txt" ps -eo pid,ppid,comm,stat,cmd > "$run/processes-after-stop.txt" if command -v lsof >/dev/null; then lsof -nP -iTCP:33787 -sTCP:LISTEN > "$run/port-after-stop.txt" || true; else netstat -ltnp 2>/dev/null | rg ':33787\b' > "$run/port-after-stop.txt" || true; fi awk '$3 ~ /^python/ && ($0 ~ /vllm.entrypoints.cli.main serve/ || $0 ~ /EngineCore/ || $0 ~ /Worker_TP/) {print; found=1} END {exit found ? 1 : 0}' "$run/processes-after-stop.txt" [[ ! -s "$run/port-after-stop.txt" ]] for id in 2 3 4 5; do rg -q "No running processes found in NPU $id" "$run/npu-after-stop.txt"; done printf 'formal release verified\n'
+ 129626  129605 ps              R    ps -eo pid,ppid,comm,stat,cmd

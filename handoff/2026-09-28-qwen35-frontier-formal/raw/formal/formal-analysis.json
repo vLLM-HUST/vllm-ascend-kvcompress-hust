@@ -1,0 +1,73 @@
+{
+  "baseline_id": "swe-unified-native-20260927",
+  "formula": "(geomean(candidate/native) - 1) * 100",
+  "points": [
+    {
+      "concurrency": 1,
+      "candidate_output_tps": 94.57222222222222,
+      "native_output_tps": 91.54555555555555,
+      "point_gain_percent": 3.3061863553057957,
+      "decode_p90_tps_per_user": 110.35405668201226,
+      "output_tokens_in_window": 85115,
+      "completed_in_window": 151,
+      "drained": 1,
+      "failed": 0,
+      "measurement_seconds": 900.0,
+      "valid": true
+    },
+    {
+      "concurrency": 2,
+      "candidate_output_tps": 136.70555555555555,
+      "native_output_tps": 152.7211111111111,
+      "point_gain_percent": -10.486798739896253,
+      "decode_p90_tps_per_user": 88.41768829712161,
+      "output_tokens_in_window": 123035,
+      "completed_in_window": 188,
+      "drained": 2,
+      "failed": 0,
+      "measurement_seconds": 900.0,
+      "valid": true
+    },
+    {
+      "concurrency": 4,
+      "candidate_output_tps": 206.5988888888889,
+      "native_output_tps": 217.47555555555556,
+      "point_gain_percent": -5.001328374070136,
+      "decode_p90_tps_per_user": 77.34354504472113,
+      "output_tokens_in_window": 185939,
+      "completed_in_window": 295,
+      "drained": 4,
+      "failed": 0,
+      "measurement_seconds": 900.0,
+      "valid": true
+    },
+    {
+      "concurrency": 8,
+      "candidate_output_tps": 286.1011111111111,
+      "native_output_tps": 291.1066666666667,
+      "point_gain_percent": -1.7194919006397136,
+      "decode_p90_tps_per_user": 61.13461820415613,
+      "output_tokens_in_window": 257491,
+      "completed_in_window": 421,
+      "drained": 8,
+      "failed": 0,
+      "measurement_seconds": 900.0,
+      "valid": true
+    },
+    {
+      "concurrency": 16,
+      "candidate_output_tps": 347.75333333333333,
+      "native_output_tps": 359.75,
+      "point_gain_percent": -3.3347231873986583,
+      "decode_p90_tps_per_user": 34.93487505412306,
+      "output_tokens_in_window": 312978,
+      "completed_in_window": 548,
+      "drained": 16,
+      "failed": 0,
+      "measurement_seconds": 900.0,
+      "valid": true
+    }
+  ],
+  "geomean_ratio": 0.9644812043824064,
+  "geomean_gain_percent": -3.5518795617593635
+}

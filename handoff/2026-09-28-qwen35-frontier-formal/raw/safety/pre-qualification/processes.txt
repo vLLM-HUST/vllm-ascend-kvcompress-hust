@@ -1,0 +1,14 @@
+    PID    PPID USER     STAT     ELAPSED %CPU %MEM CMD
+      1       0 root     Ssl        33:34  0.0  0.0 ./coder agent
+     70       1 root     Ssl        33:34  0.2  0.0 ./coder agent --no-reap
+    137       1 root     Ss         33:34  0.0  0.0 sshd: /usr/sbin/sshd -e -o PermitRootLogin=prohibit-password -o PubkeyAuthentication=yes -o AuthorizedKeysFile=/etc/ssh/authorized_keys.generated %h/.ssh/authorized_keys -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PermitUserEnvironment=yes [listener] 0 of 10-100 startups
+    194     137 root     Ss         33:32  0.3  0.0 sshd: root@notty
+    205     194 root     Ss         33:32  0.0  0.0 sleep infinity
+    990       1 root     Sl         33:13  3.0  0.0 /root/.local/bin/codex.direct -c features.code_mode_host=true app-server --listen unix://
+   1081     137 root     Ss         33:12  0.0  0.0 sshd: root@notty
+   1101    1081 root     Ssl        33:12  0.0  0.0 /root/.local/bin/codex.direct app-server proxy
+   2554     990 root     Sl         30:44  0.1  0.0 /root/.codex/packages/standalone/releases/0.157.1-aarch64-unknown-linux-musl/bin/codex-code-mode-host
+  32606     990 root     Ss         00:06  0.3  0.0 /bin/bash -c /tmp/vamos-gh-cli/gh_2.101.0_linux_arm64/bin/gh pr checks 20 --repo vLLM-HUST/extension-manager || true
+  32607   32606 root     Sl         00:06  2.5  0.0 /tmp/vamos-gh-cli/gh_2.101.0_linux_arm64/bin/gh pr checks 20 --repo vLLM-HUST/extension-manager
+  32888     990 root     Ss         00:01  3.0  0.0 /bin/bash -c set -eo pipefail dir=/root/frontier-kvcompress-runs/safety/pre-qualification mkdir -p "$dir" date -u +%FT%TZ | tee "$dir/utc.txt" hostname | tee "$dir/hostname.txt" uname -a | tee "$dir/uname.txt" df -h | tee "$dir/disk.txt" free -h | tee "$dir/memory.txt" npu-smi info | tee "$dir/npu-smi-info.txt" ps -eo pid,ppid,user,stat,etime,%cpu,%mem,cmd --sort=pid > "$dir/processes.txt" ss -ltnp > "$dir/listening-ports.txt" find -L /root/models/Qwen3.5-35B-A3B -maxdepth 1 -name 'model.safetensors-*-of-00014.safetensors' -type f -printf '%f %s\n' | sort > "$dir/model-shards.txt" for p in /root/vllm-hust /vllm-workspace/vllm-ascend /root/kvcompress-source-2ca0f933 /root/extension-manager /root/GenNova_OSDI_paper/swe-prefix-reuse; do printf '%s ' "$p"; git -C "$p" rev-parse HEAD; git -C "$p" status --short; done | tee "$dir/source-identities.txt" printf '%s\n' '--- accelerator-related processes ---' rg -i 'vllm|torchrun|python.*serve|mindie|msrun|ray' "$dir/processes.txt" || true printf '%s\n' '--- port 33787 ---' rg ':33787\b' "$dir/listening-ports.txt" || true printf '%s\n' '--- NPU running process markers ---' rg -n 'Process id|No running processes|AICore' "$dir/npu-smi-info.txt" || true
+  32917   32888 root     R          00:00  0.0  0.0 ps -eo pid,ppid,user,stat,etime,%cpu,%mem,cmd --sort=pid

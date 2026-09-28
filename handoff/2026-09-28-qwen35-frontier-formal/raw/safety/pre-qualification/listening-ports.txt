@@ -1,0 +1,8 @@
+Active Internet connections (only servers)
+Proto Recv-Q Send-Q Local Address           Foreign Address         State       PID/Program name    
+tcp        0      0 127.0.0.1:6060          0.0.0.0:*               LISTEN      70/./coder          
+tcp        0      0 127.0.0.1:2112          0.0.0.0:*               LISTEN      70/./coder          
+tcp        0      0 127.0.0.1:2113          0.0.0.0:*               LISTEN      70/./coder          
+tcp        0      0 127.0.0.1:27897         0.0.0.0:*               LISTEN      194/sshd: root@nott 
+tcp        0      0 0.0.0.0:22              0.0.0.0:*               LISTEN      137/sshd: /usr/sbin 
+tcp6       0      0 :::22                   :::*                    LISTEN      137/sshd: /usr/sbin 

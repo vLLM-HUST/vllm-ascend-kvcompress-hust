@@ -1,0 +1,27 @@
+{
+  "actions": [
+    {
+      "details": {
+        "enabled": false
+      },
+      "lifecycle_owner": "vllm",
+      "mutating": false,
+      "operation": "configure_launch",
+      "target": "vllm"
+    }
+  ],
+  "extension_id": "org.vllm-hust.ascend-kvcompress",
+  "generated_config": {
+    "additional_config": {},
+    "environment": {
+      "VLLM_ASCEND_KVCOMPRESS_ENABLED": "1"
+    },
+    "user_config": {},
+    "vllm_json_options": {},
+    "vllm_plugins": [
+      "ascend_kvcompress"
+    ]
+  },
+  "provider": "vllm",
+  "warnings": []
+}
