@@ -19,6 +19,20 @@ from vllm_ascend_kvcompress.methods.base import ModelShape
 from vllm_ascend_kvcompress.methods.triattention.stats import CalibrationStats
 
 
+def test_distributed_calibration_reports_missing_accelerate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    request = CalibrationRequest(
+        model="fake/model",
+        output=tmp_path / "stats.pt",
+        device_map="auto",
+    )
+    monkeypatch.setattr(calibration.importlib.util, "find_spec", lambda name: None)
+
+    with pytest.raises(RuntimeError, match=r"\[calibration\]"):
+        calibration._generate_payload(request)
+
+
 class _FakeAttention(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -117,6 +131,54 @@ def test_generator_creates_safe_model_matched_artifact(
     assert artifact.metadata["input_source"].startswith("builtin:")
     assert artifact.layers[0].q_mean_real.shape == (2, 2)
     assert artifact.layers[0].inv_freq is not None
+
+
+def test_generator_loads_only_qwen35_text_model(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import transformers
+
+    config = _FakeConfig()
+    config.model_type = "qwen3_5_moe"
+    config.text_config = _FakeConfig()
+    monkeypatch.setattr(
+        transformers.AutoConfig, "from_pretrained", lambda *args, **kwargs: config
+    )
+    monkeypatch.setattr(
+        transformers.AutoTokenizer,
+        "from_pretrained",
+        lambda *args, **kwargs: _FakeTokenizer(),
+    )
+    captured = []
+
+    def load_model(*args, **kwargs):
+        captured.append(kwargs)
+        return _FakeModel()
+
+    monkeypatch.setattr(
+        transformers.AutoModel,
+        "from_pretrained",
+        lambda *args, **kwargs: pytest.fail("multimodal AutoModel was selected"),
+    )
+    monkeypatch.setattr(
+        transformers.AutoModelForCausalLM, "from_pretrained", load_model
+    )
+    monkeypatch.setattr(calibration, "_prepare_device", lambda device: None)
+    monkeypatch.setattr(
+        calibration, "_empty_device_cache", lambda *args, **kwargs: None
+    )
+
+    request = CalibrationRequest(
+        model="fake/model",
+        output=tmp_path / "stats.pt",
+        max_length=128,
+        device="cpu",
+    )
+    assert generate_calibration_artifact(request)
+    assert captured[0]["config"] is config.text_config
+    assert captured[0]["key_mapping"] == {
+        r"^model\.language_model\.(.+)$": r"model.\1"
+    }
 
 
 def test_generator_rejects_empty_explicit_input(tmp_path: Path) -> None:

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import inspect
 import math
 from dataclasses import dataclass
 from typing import Any
@@ -597,31 +598,27 @@ def _install_coordinator_hooks(coordinator_cls: type[Any]) -> None:
     original_allocate = coordinator_cls.allocate_new_blocks
     original_remove = coordinator_cls.remove_skipped_blocks
 
+    count_signature = inspect.signature(original_count)
+
     def get_num_blocks_to_allocate(
-        coordinator: Any,
-        request_id: str,
-        num_tokens: int,
-        new_computed_blocks: Any,
-        num_encoder_tokens: int,
-        total_computed_tokens: int,
-        num_local_computed_tokens: int,
-        num_tokens_main_model: int,
-        apply_admission_cap: bool = False,
+        coordinator: Any, *args: Any, **kwargs: Any
     ) -> int:
+        bound = count_signature.bind(coordinator, *args, **kwargs)
+        bound.apply_defaults()
+        values = bound.arguments
+        request_id = values["request_id"]
+        num_tokens = values["num_tokens"]
+        new_computed_blocks = values["new_computed_blocks"]
+        total_computed_tokens = values["total_computed_tokens"]
+        num_local_computed_tokens = values.get(
+            "num_local_computed_tokens", total_computed_tokens
+        )
+        num_tokens_main_model = values["num_tokens_main_model"]
+        apply_admission_cap = values.get("apply_admission_cap", False)
         state = getattr(coordinator, _GROUP_LENGTH_STATE_ATTRIBUTE, None)
         active = None if state is None else state.active.get(request_id)
         if active is None:
-            return original_count(
-                coordinator,
-                request_id,
-                num_tokens,
-                new_computed_blocks,
-                num_encoder_tokens,
-                total_computed_tokens,
-                num_local_computed_tokens,
-                num_tokens_main_model,
-                apply_admission_cap=apply_admission_cap,
-            )
+            return original_count(coordinator, *args, **kwargs)
         result = 0
         for index, manager in enumerate(coordinator.single_type_managers):
             if index == state.attention_group_index:
@@ -634,15 +631,20 @@ def _install_coordinator_hooks(coordinator_cls: type[Any]) -> None:
                 group_computed = total_computed_tokens
                 group_local = num_local_computed_tokens
                 group_main = num_tokens_main_model
-            result += manager.get_num_blocks_to_allocate(
-                request_id,
-                group_tokens,
-                new_computed_blocks[index],
-                group_computed,
-                group_local,
-                group_main,
-                apply_admission_cap=apply_admission_cap,
+            manager_values = {
+                "request_id": request_id,
+                "num_tokens": group_tokens,
+                "new_computed_blocks": new_computed_blocks[index],
+                "total_computed_tokens": group_computed,
+                "num_tokens_main_model": group_main,
+                "apply_admission_cap": apply_admission_cap,
+            }
+            manager_signature = inspect.signature(
+                manager.get_num_blocks_to_allocate
             )
+            if "num_local_computed_tokens" in manager_signature.parameters:
+                manager_values["num_local_computed_tokens"] = group_local
+            result += manager.get_num_blocks_to_allocate(**manager_values)
         return result
 
     def allocate_new_blocks(

@@ -44,6 +44,7 @@ test = [
     "vllm-hust-ext>=0.2.0.dev0,<0.3",
 ]
 manager = ["vllm-hust-ext>=0.2.0.dev0,<0.3"]
+calibration = ["accelerate>=1.10,<2"]
 
 [project.urls]
 Homepage = "https://github.com/vLLM-HUST/vllm-ascend-kvcompress-hust"

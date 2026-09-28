@@ -7,6 +7,15 @@ English | [简体中文](environment-installation.zh.md)
 The plugin is installed into a pre-provisioned host and does not own the host's
 Python dependency graph. Its wheel therefore has no core `Requires-Dist`; the
 supported `vllm-ascend` range remains in the Extension Manager manifest.
+When `auto_calibrate` distributes a model across multiple devices, provision
+the optional calibration dependency without re-resolving the accelerator host:
+
+```bash
+python -m pip install --no-deps 'accelerate>=1.10,<2'
+```
+
+The equivalent package extra is `vllm-ascend-kvcompress-hust[calibration]` for
+environments whose dependency lock already owns PyTorch and Transformers.
 
 The original development environment has PyTorch 2.10.0, torch-npu
 2.10.0.post2, and CANN 9.0.1. The synchronized Ascend host's
