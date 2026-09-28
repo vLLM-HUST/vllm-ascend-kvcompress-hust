@@ -87,6 +87,26 @@ RoPE 融合路径已通过真实昇腾 NPU 的数值检查。随后的 SWE 官�
 方法只能使用已校验的 cache binding，不能修改 scheduler 拥有的 request 或
 block table。返回长度必须为正、不超过声明上限；使用逐层长度时必须覆盖全部层。
 
+### 可选 Query 观察接口
+
+`query_window_tokens` 默认为 `0`，现有方法（包括 TriAttention）不会安装观察钩子。
+方法将其设为正整数时，必须实现 `capture_query(layer, query, spans)`、
+`complete_query_observation(observation)` 和
+`discard_query_observation(request_id)`。
+
+host 仅在 prefill 中对已绑定的全注意力层调用 `capture_query`。`query` 是注意力层
+应用位置编码后的 Query 张量；每个 `QueryBatchSpan` 给出一个请求在张量中的左闭右开
+行区间。方法在 `bind_model_runner` 中分配并持有地址稳定的缓冲区，可跨分块 prefill
+累积末尾窗口。完整模型前向和采样成功之前不会发布观察结果。最终 prefill 步骤有
+授权压缩计划时，`complete_query_observation` 收到请求 ID、原始
+`CompressionPlan`、语义长度、窗口长度和参与的层编号。同一计划也会传给
+`CompressionRequest.plan`。方法使用窗口前须检查各层数据完整。压缩完成以及请求
+结束、抢占、重启或执行失败时，host 调用 `discard_query_observation` 清理。
+
+若 prefill 中有全注意力层未触发观察钩子，包括图重放跳过 Python 钩子的情况，
+host 会失败关闭。当前 CPU 契约测试不构成任何图模式或外部方法的服务支持证据；
+必须在精确的 host 与设备组合上完成图重放、兼容性和正确性验证后才能启用。
+
 ## 注册其他方法
 
 仓库内部可调用：

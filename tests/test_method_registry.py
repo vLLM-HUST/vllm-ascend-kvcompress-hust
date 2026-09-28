@@ -49,6 +49,7 @@ def test_registry_creates_registered_method() -> None:
     method = registry.create("test_method", {}, SimpleNamespace(), _shape())
 
     assert isinstance(method, _Method)
+    assert method.query_window_tokens == 0
     assert registry.names() == ("test_method",)
 
 

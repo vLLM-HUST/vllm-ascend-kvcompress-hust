@@ -129,6 +129,34 @@ Implement `KVCompressionMethod` from `methods/base.py`:
 - `compress(request)`: synchronously materialize one transaction and return
   the new physical length, plus optional per-layer lengths.
 
+### Optional query observation
+
+`query_window_tokens` defaults to `0`; existing methods, including
+TriAttention, install no query hooks. A method that sets a positive integer
+must implement `capture_query(layer, query, spans)`,
+`complete_query_observation(observation)`, and
+`discard_query_observation(request_id)`.
+
+The host calls `capture_query` only for bound full-attention layers during
+prefill. `query` is the attention layer's post-position-encoding query tensor;
+each `QueryBatchSpan` gives one request's half-open row range in that tensor.
+The method owns any retained tensors and should allocate address-stable buffers
+in `bind_model_runner`; it can accumulate the trailing window across chunked
+prefill steps. The host publishes no observation until the complete model
+forward and sampling succeed. On the final prefill step with an authorized
+compression plan, `complete_query_observation` receives the request ID, exact
+`CompressionPlan`, semantic length, requested window length, and participating
+layer indices. The same plan is then present on `CompressionRequest.plan`.
+The method must check that every required layer has a complete window before
+using it. The host calls `discard_query_observation` after compression and on
+request finish, preemption, restart, or failed execution.
+
+The host fails closed when an observing method misses a full-attention layer
+during a prefill forward, including graph replay that bypasses the Python
+hook. This CPU-tested contract does not qualify any graph mode or external
+method for serving. Graph replay, compatibility, and correctness must be
+validated on the exact host and device stack before enabling such a method.
+
 Methods receive validated cache bindings. They must not mutate scheduler-owned
 request objects or block tables. Returned lengths must be positive, no larger
 than the declared maximum, and cover every layer when per-layer lengths are

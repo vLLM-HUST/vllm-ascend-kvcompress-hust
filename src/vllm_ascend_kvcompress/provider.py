@@ -18,7 +18,15 @@ from vllm.logger import logger
 
 from .config import ASCEND_BLOCK_SIZE, ProviderSelection
 from .methods import create_method
-from .methods.base import CompressionRequest, LayerCache, MethodRuntimeSpec, ModelShape
+from .methods.base import (
+    CompressionRequest,
+    KVCompressionMethod,
+    LayerCache,
+    MethodRuntimeSpec,
+    ModelShape,
+    QueryBatchSpan,
+    QueryObservation,
+)
 from .methods.triattention.kernels import shift_positions
 from .model import model_shape_from_config
 from .transaction import PLAN_ATTRIBUTE
@@ -65,6 +73,27 @@ class AscendKVCompressionProvider:
         )
         self.runtime_spec: MethodRuntimeSpec = self.method.runtime_spec
         _validate_method_runtime_spec(self.method.name, self.runtime_spec)
+        self.query_window_tokens = self.method.query_window_tokens
+        if (
+            isinstance(self.query_window_tokens, bool)
+            or not isinstance(self.query_window_tokens, int)
+            or self.query_window_tokens < 0
+        ):
+            raise ValueError(
+                "method query_window_tokens must be a non-negative integer"
+            )
+        if self.query_window_tokens and any(
+            getattr(type(self.method), name) is getattr(KVCompressionMethod, name)
+            for name in (
+                "capture_query",
+                "complete_query_observation",
+                "discard_query_observation",
+            )
+        ):
+            raise TypeError(
+                "a query-observing method must implement capture, completion, "
+                "and discard hooks"
+            )
         self.runner: Any | None = None
         self.layer_caches: tuple[LayerCache, ...] = ()
         self.pending: dict[str, PendingCompression] = {}
@@ -77,6 +106,10 @@ class AscendKVCompressionProvider:
         self._offset_row_snapshot: tuple[int, ...] = ()
         self._has_active_rows = False
         self._physical_lengths_applied = False
+        self._query_step_output: Any | None = None
+        self._query_seen_layers: set[int] = set()
+        self._query_forward_complete = False
+        self._query_tracked_ids: set[str] = set()
 
     def validate_host(self, runner: Any) -> None:
         """Fail closed before binding any cache memory."""
@@ -180,6 +213,14 @@ class AscendKVCompressionProvider:
         self.runner = runner
         self.layer_caches = tuple(layer_caches)
         self.method.bind_model_runner(runner, self.layer_caches)
+        if self.query_window_tokens:
+            for cache in self.layer_caches:
+                layer = context[cache.name]
+                if not callable(getattr(layer, "register_forward_pre_hook", None)):
+                    raise RuntimeError(
+                        f"full-attention layer {cache.name!r} cannot expose queries"
+                    )
+                layer.register_forward_pre_hook(self._make_query_hook(cache))
         pin_memory = bool(getattr(runner, "pin_memory", False))
         self._request_offsets_cpu = torch.zeros(
             runner.max_num_reqs,
@@ -221,6 +262,9 @@ class AscendKVCompressionProvider:
         for request_id in reset_ids:
             self.pending.pop(request_id, None)
             self.active.pop(request_id, None)
+            if self.query_window_tokens:
+                self.method.discard_query_observation(request_id)
+                self._query_tracked_ids.discard(request_id)
 
         for request_id, pending in tuple(self.pending.items()):
             # An async scheduler can execute other requests while this
@@ -232,6 +276,9 @@ class AscendKVCompressionProvider:
             request = self.runner.requests.get(request_id)
             if request is None:
                 self.pending.pop(request_id, None)
+                if self.query_window_tokens:
+                    self.method.discard_query_observation(request_id)
+                    self._query_tracked_ids.discard(request_id)
                 continue
             mutable = list(pending.block_ids)
             group_block_ids = list(request.block_ids)
@@ -254,6 +301,86 @@ class AscendKVCompressionProvider:
                 len(pending.block_ids),
             )
             self.pending.pop(request_id, None)
+
+    def _make_query_hook(self, cache: LayerCache):
+        def capture(layer: Any, args: tuple[Any, ...]) -> None:
+            del layer
+            if self._query_step_output is None:
+                return
+            if not args or not isinstance(args[0], torch.Tensor):
+                raise RuntimeError(
+                    f"attention layer {cache.name!r} has no query tensor"
+                )
+            query = args[0]
+            spans = self._query_spans()
+            if not spans:
+                return
+            if query.ndim < 2 or max(span.end for span in spans) > query.shape[0]:
+                raise RuntimeError(f"attention layer {cache.name!r} query rows changed")
+            self.method.capture_query(cache, query, spans)
+            self._query_tracked_ids.update(span.request_id for span in spans)
+            self._query_seen_layers.add(cache.layer_index)
+
+        return capture
+
+    def _query_spans(self) -> tuple[QueryBatchSpan, ...]:
+        output = self._query_step_output
+        if output is None or self.runner is None:
+            return ()
+        batch = self.runner.input_batch
+        offsets = self.runner.query_start_loc.cpu
+        spans: list[QueryBatchSpan] = []
+        for request_id, scheduled in output.num_scheduled_tokens.items():
+            request = self.runner.requests.get(request_id)
+            index = batch.req_id_to_index.get(request_id)
+            if request is None or index is None or scheduled <= 0:
+                continue
+            remaining = int(request.num_prompt_tokens) - int(
+                request.num_computed_tokens
+            )
+            if remaining <= 0:
+                continue
+            start = int(offsets[index])
+            end = start + min(int(scheduled), remaining)
+            if end > int(offsets[index + 1]):
+                raise RuntimeError("prefill query rows exceed the runner batch span")
+            spans.append(QueryBatchSpan(request_id, start, end))
+        return tuple(spans)
+
+    def begin_query_step(self, scheduler_output: Any) -> None:
+        if not self.query_window_tokens:
+            return
+        for request_id in self._query_tracked_ids - self.runner.requests.keys():
+            self.method.discard_query_observation(request_id)
+            self._query_tracked_ids.discard(request_id)
+        self._query_step_output = scheduler_output
+        self._query_seen_layers.clear()
+        self._query_forward_complete = False
+
+    def finish_query_step(self) -> None:
+        if not self.query_window_tokens:
+            return
+        try:
+            if self._query_spans() and self._query_seen_layers != {
+                layer.layer_index for layer in self.layer_caches
+            }:
+                raise RuntimeError(
+                    "query observation missed a full-attention layer; "
+                    "the current graph replay path is unvalidated"
+                )
+            self._query_forward_complete = True
+        finally:
+            self._query_step_output = None
+
+    def abort_query_step(self, scheduler_output: Any) -> None:
+        if not self.query_window_tokens:
+            return
+        self._query_step_output = None
+        self._query_forward_complete = False
+        self._query_seen_layers.clear()
+        for request_id in scheduler_output.num_scheduled_tokens:
+            self.method.discard_query_observation(request_id)
+            self._query_tracked_ids.discard(request_id)
 
     def after_update_states(self, scheduler_output: Any) -> None:
         del scheduler_output
@@ -329,17 +456,39 @@ class AscendKVCompressionProvider:
                 self.cache_blocks_per_scheduler_block,
                 self.runner.device,
             )
-            result = self.method.compress(
-                CompressionRequest(
-                    request_id=request_id,
-                    semantic_num_tokens=semantic,
-                    physical_num_tokens=physical,
-                    source_block_ids=(source_ids,),
-                    destination_block_ids=(destination_ids,),
-                    source_block_ids_device=source_device,
-                    destination_block_ids_device=destination_device,
+            if self.query_window_tokens:
+                if not self._query_forward_complete:
+                    raise RuntimeError(
+                        "query observation requires a completed model forward"
+                    )
+                self.method.complete_query_observation(
+                    QueryObservation(
+                        request_id=request_id,
+                        plan=plan,
+                        semantic_num_tokens=semantic,
+                        window_tokens=self.query_window_tokens,
+                        layer_indices=tuple(
+                            layer.layer_index for layer in self.layer_caches
+                        ),
+                    )
                 )
-            )
+            try:
+                result = self.method.compress(
+                    CompressionRequest(
+                        request_id=request_id,
+                        semantic_num_tokens=semantic,
+                        physical_num_tokens=physical,
+                        source_block_ids=(source_ids,),
+                        destination_block_ids=(destination_ids,),
+                        source_block_ids_device=source_device,
+                        destination_block_ids_device=destination_device,
+                        plan=plan,
+                    )
+                )
+            finally:
+                if self.query_window_tokens:
+                    self.method.discard_query_observation(request_id)
+                    self._query_tracked_ids.discard(request_id)
             compacted = int(result.physical_num_tokens)
             if compacted != self.runtime_spec.max_physical_num_tokens:
                 raise RuntimeError(
