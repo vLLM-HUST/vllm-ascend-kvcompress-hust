@@ -129,6 +129,17 @@ Implement `KVCompressionMethod` from `methods/base.py`:
 - `compress(request)`: synchronously materialize one transaction and return
   the new physical length, plus optional per-layer lengths.
 
+For requests eligible to cross the method's compression threshold, automatic
+prefix-cache admission caps the reusable prefix at
+`max(0, min(prompt_tokens - 1, prompt_tokens - required_recompute_tokens))`.
+This guarantees that the method's declared trailing query suffix is executed,
+including with chunked prefill. Prompts shorter than the required window
+recompute from token zero. APC-disabled, below-threshold, and output-ineligible
+requests keep the host's original admission path.
+Query-observing methods must declare a recompute window at least as long as
+`query_window_tokens`. With APC enabled, the adapter checks the required host
+lookup hooks at startup and fails closed if they are unavailable.
+
 ### Per-layer physical state
 
 `CompressionResult.per_layer_physical_num_tokens` may contain one `(layer_name,

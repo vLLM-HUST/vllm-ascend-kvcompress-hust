@@ -3,6 +3,7 @@
 import pickle
 from types import SimpleNamespace
 
+import pytest
 import torch
 from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
@@ -15,6 +16,7 @@ from vllm_ascend_kvcompress.config import ProviderSelection
 from vllm_ascend_kvcompress.methods.base import MethodRuntimeSpec
 from vllm_ascend_kvcompress.stateful import (
     _GROUP_LENGTH_STATE_ATTRIBUTE,
+    _PREFIX_ADMISSION_STATE_ATTRIBUTE,
     SchedulerActiveCompression,
     SchedulerCompressionState,
     SchedulerDeferredRelease,
@@ -46,6 +48,7 @@ def _scheduler(
     hybrid_model_type=None,
     attention_block_size=None,
     prefix_caching=False,
+    chunked_prefill=False,
     async_scheduling=False,
     mamba_cache_mode="none",
     speculative=False,
@@ -73,7 +76,10 @@ def _scheduler(
         if speculative
         else None,
         kv_transfer_config=None,
-        scheduler_config=SimpleNamespace(async_scheduling=async_scheduling),
+        scheduler_config=SimpleNamespace(
+            async_scheduling=async_scheduling,
+            enable_chunked_prefill=chunked_prefill,
+        ),
         parallel_config=parallel,
     )
     if max_concurrent_batches is not None:
@@ -126,7 +132,11 @@ def _scheduler(
         ]
 
     manager = SimpleNamespace(
-        coordinator=SimpleNamespace(single_type_managers=tuple(single_managers)),
+        coordinator=SimpleNamespace(
+            single_type_managers=tuple(single_managers),
+            find_longest_cache_hit=lambda block_hashes, limit: ((), 0, 0),
+        ),
+        get_computed_blocks=lambda request: ((), 0, 0),
         block_pool=SimpleNamespace(
             free_blocks=lambda values: freed.extend(values),
             get_num_free_blocks=lambda: 100,
@@ -219,7 +229,147 @@ def test_scheduler_uses_registered_method_runtime_spec(monkeypatch) -> None:
     state = SchedulerCompressionState(scheduler, selection)
 
     assert seen == [("external", {"option": 1}, scheduler.vllm_config, "shape")]
-    assert (state.threshold, state.budget, state.min_output_tokens) == (256, 128, 32)
+    assert (
+        state.threshold,
+        state.budget,
+        state.required_recompute_tokens,
+        state.min_output_tokens,
+    ) == (256, 128, 128, 32)
+
+
+def test_scheduler_rejects_query_window_larger_than_recompute_window(
+    monkeypatch,
+) -> None:
+    scheduler, _, _ = _scheduler(prefix_caching=True)
+    monkeypatch.setattr(
+        stateful_module, "model_shape_from_config", lambda config: "shape"
+    )
+    monkeypatch.setattr(
+        stateful_module,
+        "create_method",
+        lambda *args: SimpleNamespace(
+            name="external",
+            runtime_spec=MethodRuntimeSpec(True, 256, 8, 128),
+            query_window_tokens=16,
+        ),
+    )
+    selection = ProviderSelection.from_mapping({"method": "external"})
+    with pytest.raises(ValueError, match="no greater than required_recompute_tokens"):
+        SchedulerCompressionState(scheduler, selection)
+
+
+@pytest.mark.parametrize("missing", ["manager", "coordinator"])
+def test_scheduler_rejects_missing_apc_lookup_seam(missing) -> None:
+    scheduler, _, _ = _scheduler(prefix_caching=True)
+    if missing == "manager":
+        del scheduler.kv_cache_manager.get_computed_blocks
+    else:
+        del scheduler.kv_cache_manager.coordinator.find_longest_cache_hit
+    with pytest.raises(RuntimeError, match="APC requires"):
+        SchedulerCompressionState(scheduler, _selection())
+
+
+def test_apc_disabled_does_not_require_prefix_lookup_seam() -> None:
+    scheduler, _, _ = _scheduler(prefix_caching=False)
+    del scheduler.kv_cache_manager.get_computed_blocks
+    del scheduler.kv_cache_manager.coordinator.find_longest_cache_hit
+    SchedulerCompressionState(scheduler, _selection())
+
+
+def test_prefix_cache_hit_cap_reserves_the_method_query_suffix() -> None:
+    scheduler, _, _ = _scheduler()
+    state = SchedulerCompressionState(scheduler, _selection())
+    request = scheduler.requests["r"]
+
+    request.num_prompt_tokens = request.num_tokens = 769
+    request.max_tokens = 128
+    state.threshold = 256
+    state.required_recompute_tokens = 1
+    assert state.prefix_cache_hit_cap(request) == 768
+
+    request.num_tokens = 900
+    assert state.prefix_cache_hit_cap(request) == 768
+
+    request.num_prompt_tokens = request.num_tokens = 648
+    state.required_recompute_tokens = 8
+    assert state.prefix_cache_hit_cap(request) == 640
+
+    request.num_prompt_tokens = request.num_tokens = 4
+    state.threshold = 2
+    assert state.prefix_cache_hit_cap(request) == 0
+
+    state.threshold = 5
+    assert state.prefix_cache_hit_cap(request) is None
+
+    state.threshold = 2
+    state.min_output_tokens = 129
+    assert state.prefix_cache_hit_cap(request) is None
+
+
+def test_prefix_cache_hit_cap_is_stable_with_chunked_prefill() -> None:
+    for chunked_prefill in (False, True):
+        scheduler, _, _ = _scheduler(
+            prefix_caching=True,
+            chunked_prefill=chunked_prefill,
+        )
+        state = SchedulerCompressionState(scheduler, _selection())
+        request = scheduler.requests["r"]
+        request.num_prompt_tokens = request.num_tokens = 648
+        state.threshold = 256
+        state.required_recompute_tokens = 8
+
+        assert state.prefix_cache_hit_cap(request) == 640
+
+
+def test_manager_applies_a_scoped_prefix_cache_hit_cap() -> None:
+    class Coordinator:
+        def __init__(self) -> None:
+            self.lookup_limits = []
+
+        def find_longest_cache_hit(self, block_hashes, max_cache_hit_length):
+            self.lookup_limits.append((block_hashes, max_cache_hit_length))
+            return ((), max_cache_hit_length, 0)
+
+    class Manager:
+        def __init__(self, *, prefix_caching=True) -> None:
+            self.prefix_caching = prefix_caching
+            self.coordinator = Coordinator()
+            self.block_pool = SimpleNamespace(free_blocks=lambda values: None)
+
+        def get_computed_blocks(self, request):
+            if not self.prefix_caching:
+                return ((), 0, 0)
+            return self.coordinator.find_longest_cache_hit(
+                request.block_hashes, request.num_tokens - 1
+            )
+
+        def free(self, request):
+            return request.request_id
+
+    _install_manager_hooks(Manager)
+    request = SimpleNamespace(
+        request_id="r",
+        block_hashes=["hash"],
+        num_tokens=648,
+    )
+    state = SimpleNamespace(prefix_cache_hit_cap=lambda request: 640)
+
+    manager = Manager()
+    setattr(manager, _PREFIX_ADMISSION_STATE_ATTRIBUTE, state)
+    assert manager.get_computed_blocks(request) == ((), 640, 0)
+    assert manager.coordinator.lookup_limits == [(["hash"], 640)]
+
+    # The ContextVar cap is reset after one request and does not leak into an
+    # unbound manager using the same patched coordinator class.
+    unbound = Manager()
+    assert unbound.get_computed_blocks(request) == ((), 647, 0)
+    assert unbound.coordinator.lookup_limits == [(["hash"], 647)]
+
+    # With APC disabled, the host's normal early return remains untouched.
+    disabled = Manager(prefix_caching=False)
+    setattr(disabled, _PREFIX_ADMISSION_STATE_ATTRIBUTE, state)
+    assert disabled.get_computed_blocks(request) == ((), 0, 0)
+    assert not disabled.coordinator.lookup_limits
 
 
 def test_qwen35_scheduler_rejects_wrong_group_lcm_alignment() -> None:
