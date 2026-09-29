@@ -32,6 +32,7 @@ from .model import model_shape_from_config
 from .transaction import PLAN_ATTRIBUTE
 
 RUNNER_PROVIDER_ATTRIBUTE = "_ascend_kvcompress_provider_v3"
+ATTENTION_QUERY_PROVIDER_ATTRIBUTE = "_ascend_kvcompress_query_provider_v1"
 
 
 @dataclass(frozen=True)
@@ -118,6 +119,7 @@ class AscendKVCompressionProvider:
         self._has_active_rows = False
         self._has_per_layer_rows = False
         self._per_layer_metadata_seen = False
+        self._per_layer_step_requires_metadata = False
         self._per_layer_slot_buffers: dict[str, torch.Tensor] = {}
         self._physical_lengths_applied = False
         self._query_step_output: Any | None = None
@@ -242,11 +244,7 @@ class AscendKVCompressionProvider:
         if self.query_window_tokens:
             for cache in self.query_layer_caches:
                 layer = context[cache.name]
-                if not callable(getattr(layer, "register_forward_pre_hook", None)):
-                    raise RuntimeError(
-                        f"full-attention layer {cache.name!r} cannot expose queries"
-                    )
-                layer.register_forward_pre_hook(self._make_query_hook(cache))
+                setattr(layer, ATTENTION_QUERY_PROVIDER_ATTRIBUTE, self)
         pin_memory = bool(getattr(runner, "pin_memory", False))
         self._request_offsets_cpu = torch.zeros(
             runner.max_num_reqs,
@@ -372,26 +370,34 @@ class AscendKVCompressionProvider:
             )
             self.pending.pop(request_id, None)
 
-    def _make_query_hook(self, cache: LayerCache):
-        def capture(layer: Any, args: tuple[Any, ...]) -> None:
-            del layer
-            if self._query_step_output is None:
-                return
-            if not args or not isinstance(args[0], torch.Tensor):
-                raise RuntimeError(
-                    f"attention layer {cache.name!r} has no query tensor"
-                )
-            query = args[0]
-            spans = self._query_spans()
-            if not spans:
-                return
-            if query.ndim < 2 or max(span.end for span in spans) > query.shape[0]:
-                raise RuntimeError(f"attention layer {cache.name!r} query rows changed")
-            self.method.capture_query(cache, query, spans)
-            self._query_tracked_ids.update(span.request_id for span in spans)
-            self._query_seen_layers.add(cache.layer_index)
+    def capture_attention_query(self, layer_name: str, query: torch.Tensor) -> None:
+        """Observe query rows from the attention custom-op execution path.
 
-        return capture
+        Module forward hooks run while Dynamo traces a piecewise graph but are
+        not invoked when the compiled graph is replayed.  Ascend's split
+        ``unified_attention_with_output`` custom op does execute its backend
+        forward for every prefill replay, so the plugin wrapper calls this
+        method there.  Keeping the request spans outside the graph also avoids
+        baking one scheduler batch into the compiled program.
+        """
+        if self._query_step_output is None:
+            return
+        cache = next(
+            (cache for cache in self.query_layer_caches if cache.name == layer_name),
+            None,
+        )
+        if cache is None:
+            raise RuntimeError(
+                f"attention layer {layer_name!r} is not a query-observation layer"
+            )
+        spans = self._query_spans()
+        if not spans:
+            return
+        if query.ndim < 2 or max(span.end for span in spans) > query.shape[0]:
+            raise RuntimeError(f"attention layer {cache.name!r} query rows changed")
+        self.method.capture_query(cache, query, spans)
+        self._query_tracked_ids.update(span.request_id for span in spans)
+        self._query_seen_layers.add(cache.layer_index)
 
     def _query_spans(self) -> tuple[QueryBatchSpan, ...]:
         output = self._query_step_output
@@ -755,8 +761,19 @@ class AscendKVCompressionProvider:
         runner = self.runner
         batch = runner.input_batch
         request_ids = batch.req_ids[:num_reqs]
-        if len(request_ids) != num_reqs or num_tokens < 0:
+        if num_tokens < 0:
             raise RuntimeError("per-layer attention batch dimensions changed")
+        if len(request_ids) != num_reqs:
+            # FULL graph capture builds synthetic decode batches before the
+            # runner has admitted any requests.  There are no compressed rows
+            # to specialize in that phase, and the native layer-keyed metadata
+            # must remain intact so Ascend can record the graph tasks.  Keep
+            # failing closed for a real or partially populated input batch.
+            batch_num_reqs = int(getattr(batch, "num_reqs", len(batch.req_ids)))
+            if self._has_active_rows or batch_num_reqs != 0 or batch.req_ids:
+                raise RuntimeError("per-layer attention batch dimensions changed")
+            self._per_layer_metadata_seen = True
+            return result
         table = batch.block_table.block_tables[self.attention_group_index]
         native = getattr(
             type(table), "_ascend_kvcompress_patch_v3_slot_mapping_original", None
@@ -919,17 +936,26 @@ class AscendKVCompressionProvider:
                 "MTP2 common attention metadata cannot be specialized by layer"
             ) from error
 
-    def begin_per_layer_step(self) -> None:
-        if self.requires_per_layer_physical_state or self._has_per_layer_rows:
+    def begin_per_layer_step(self, scheduler_output: Any) -> None:
+        enabled = self.requires_per_layer_physical_state or self._has_per_layer_rows
+        scheduled = getattr(scheduler_output, "num_scheduled_tokens", {})
+        self._per_layer_step_requires_metadata = enabled and any(
+            int(tokens) > 0 for tokens in scheduled.values()
+        )
+        if self._per_layer_step_requires_metadata:
             self._per_layer_metadata_seen = False
 
     def finish_per_layer_step(self) -> None:
-        if (
-            self.requires_per_layer_physical_state or self._has_per_layer_rows
-        ) and not self._per_layer_metadata_seen:
-            raise RuntimeError(
-                "per-layer attention metadata hook was bypassed by the host"
-            )
+        try:
+            if (
+                self._per_layer_step_requires_metadata
+                and not self._per_layer_metadata_seen
+            ):
+                raise RuntimeError(
+                    "per-layer attention metadata hook was bypassed by the host"
+                )
+        finally:
+            self._per_layer_step_requires_metadata = False
 
     def _sync_request_offset_rows(self) -> None:
         if (

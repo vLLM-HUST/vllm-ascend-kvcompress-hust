@@ -17,6 +17,7 @@ from vllm.logger import logger
 
 from .config import extension_enabled, load_runtime_selection
 from .provider import (
+    ATTENTION_QUERY_PROVIDER_ATTRIBUTE,
     RUNNER_PROVIDER_ATTRIBUTE,
     AscendKVCompressionProvider,
     _supports_mtp2,
@@ -173,6 +174,8 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
             )
             if method_probe.requires_per_layer_physical_state:
                 install_layer_aware_fia_graph_replay(runner_config)
+            if method_probe.query_window_tokens:
+                _install_attention_query_hook()
 
         install_qwen_gdn_list_compat(
             mtp2_reference_fallback=_supports_mtp2(getattr(runner, "vllm_config", None))
@@ -284,7 +287,7 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
             or getattr(provider, "_has_per_layer_rows", False)
         )
         if has_per_layer_metadata:
-            provider.begin_per_layer_step()
+            provider.begin_per_layer_step(output)
         if observes:
             provider.begin_query_step(output)
         try:
@@ -318,6 +321,32 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
     if original_execute_model is not None:
         runner_cls.execute_model = execute_model
     setattr(runner_cls, _PATCH_MARKER, True)
+
+
+def _install_attention_query_hook() -> None:
+    """Observe queries at the graph-splitting attention custom-op boundary."""
+    from vllm_ascend.attention.attention_v1 import AscendAttentionBackendImpl
+
+    marker = "_ascend_kvcompress_query_observer_v1"
+    if AscendAttentionBackendImpl.__dict__.get(marker, False):
+        return
+    original = AscendAttentionBackendImpl.forward
+
+    def forward(
+        backend: Any,
+        layer: Any,
+        query: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        provider = getattr(layer, ATTENTION_QUERY_PROVIDER_ATTRIBUTE, None)
+        if provider is not None:
+            provider.capture_attention_query(layer.layer_name, query)
+        return original(backend, layer, query, *args, **kwargs)
+
+    AscendAttentionBackendImpl.forward = forward
+    setattr(AscendAttentionBackendImpl, f"{marker}_original", original)
+    setattr(AscendAttentionBackendImpl, marker, True)
 
 
 def _install_gdn_metadata_hook() -> None:

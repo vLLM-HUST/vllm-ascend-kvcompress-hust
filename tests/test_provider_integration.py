@@ -134,6 +134,7 @@ def _provider() -> AscendKVCompressionProvider:
     provider._has_active_rows = False
     provider._has_per_layer_rows = False
     provider._per_layer_metadata_seen = False
+    provider._per_layer_step_requires_metadata = False
     provider._per_layer_slot_buffers = {}
     provider._physical_lengths_applied = False
     provider.vllm_config = SimpleNamespace(
@@ -792,6 +793,35 @@ def test_declared_per_layer_state_accepts_layer_aware_full_graph(
     provider._validate_per_layer_host()
 
 
+def test_per_layer_full_graph_capture_accepts_synthetic_empty_batch() -> None:
+    provider = _provider()
+    provider.requires_per_layer_physical_state = True
+    provider._validate_per_layer_host = lambda: None  # type: ignore[method-assign]
+    provider.runner = SimpleNamespace(
+        input_batch=SimpleNamespace(req_ids=[], num_reqs=0),
+    )
+    result = ({"model.layers.0.self_attn": object()}, object())
+
+    assert provider.per_layer_attention_metadata(result, 48, 48) is result
+    assert provider._per_layer_metadata_seen
+
+
+def test_per_layer_full_graph_capture_rejects_partial_real_batch() -> None:
+    provider = _provider()
+    provider.requires_per_layer_physical_state = True
+    provider._validate_per_layer_host = lambda: None  # type: ignore[method-assign]
+    provider.runner = SimpleNamespace(
+        input_batch=SimpleNamespace(req_ids=["real"], num_reqs=1),
+    )
+
+    with pytest.raises(RuntimeError, match="batch dimensions changed"):
+        provider.per_layer_attention_metadata(
+            ({"model.layers.0.self_attn": object()}, object()),
+            48,
+            48,
+        )
+
+
 def test_query_observation_can_exclude_auxiliary_mtp_cache() -> None:
     provider = _provider()
     provider.layer_caches += (
@@ -922,9 +952,19 @@ def test_mtp_rejected_draft_reuses_layer_specific_physical_slots() -> None:
 def test_per_layer_metadata_bypass_fails_closed() -> None:
     provider = _provider()
     provider._has_per_layer_rows = True
-    provider.begin_per_layer_step()
+    provider.begin_per_layer_step(SimpleNamespace(num_scheduled_tokens={"r": 1}))
     with pytest.raises(RuntimeError, match="metadata hook was bypassed"):
         provider.finish_per_layer_step()
+
+
+def test_per_layer_metadata_allows_async_empty_execution_step() -> None:
+    provider = _provider()
+    provider._has_per_layer_rows = True
+
+    provider.begin_per_layer_step(SimpleNamespace(num_scheduled_tokens={}))
+    provider.finish_per_layer_step()
+
+    assert not provider._per_layer_step_requires_metadata
 
 
 def test_worker_skips_short_decode_request() -> None:
@@ -1014,18 +1054,21 @@ def _observing_provider() -> AscendKVCompressionProvider:
 
 def test_query_observation_spans_chunked_prefill_and_matches_plan() -> None:
     provider = _observing_provider()
-    capture = provider._make_query_hook(provider.layer_caches[0])
     first = SimpleNamespace(num_scheduled_tokens={"r": 1})
 
     provider.begin_query_step(first)
-    capture(None, (torch.tensor([[1.0, 2.0]]),))
+    provider.capture_attention_query(
+        "model.layers.0.self_attn", torch.tensor([[1.0, 2.0]])
+    )
     provider.finish_query_step()
     stable_address = provider.method.buffers["r"].data_ptr()
 
     provider.runner.requests["r"].num_computed_tokens = 299
     final = _output_with_plan(300, (2, 0, 3), (50,), 1)
     provider.begin_query_step(final)
-    capture(None, (torch.tensor([[3.0, 4.0]]),))
+    provider.capture_attention_query(
+        "model.layers.0.self_attn", torch.tensor([[3.0, 4.0]])
+    )
     provider.finish_query_step()
     assert provider.method.buffers["r"].data_ptr() == stable_address
     provider.compress_scheduled_requests(final)
@@ -1037,6 +1080,22 @@ def test_query_observation_spans_chunked_prefill_and_matches_plan() -> None:
     assert provider.method.observation.plan is getattr(final, PLAN_ATTRIBUTE)["r"]
     assert provider.method.discarded == ["r"]
     assert provider.method.buffers == {}
+
+
+def test_query_observation_accepts_attention_backend_callback() -> None:
+    provider = _observing_provider()
+    output = SimpleNamespace(num_scheduled_tokens={"r": 1})
+
+    provider.begin_query_step(output)
+    provider.capture_attention_query(
+        "model.layers.0.self_attn", torch.tensor([[1.0, 2.0]])
+    )
+    provider.finish_query_step()
+
+    torch.testing.assert_close(
+        provider.method.buffers["r"][0], torch.tensor([1.0, 2.0])
+    )
+    assert provider.method.counts["r"] == 1
 
 
 def test_query_observation_fails_closed_when_forward_hook_is_bypassed() -> None:
@@ -1056,8 +1115,8 @@ def test_query_observation_is_discarded_on_preemption() -> None:
     provider = _observing_provider()
     output = SimpleNamespace(num_scheduled_tokens={"r": 1})
     provider.begin_query_step(output)
-    provider._make_query_hook(provider.layer_caches[0])(
-        None, (torch.tensor([[1.0, 2.0]]),)
+    provider.capture_attention_query(
+        "model.layers.0.self_attn", torch.tensor([[1.0, 2.0]])
     )
     provider.finish_query_step()
 

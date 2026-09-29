@@ -21,12 +21,14 @@ from vllm_ascend_kvcompress.host_compat import (
 )
 from vllm_ascend_kvcompress.plugin import (
     _configure_message_queue_defaults,
+    _install_attention_query_hook,
     _install_runner_hooks,
     _install_runtime_slot_mapping_hooks,
     _install_slot_mapping_hook,
     _prepare_current_triton_runtime,
     _RunnerPatchLoader,
 )
+from vllm_ascend_kvcompress.provider import ATTENTION_QUERY_PROVIDER_ATTRIBUTE
 
 
 class _Runner:
@@ -139,6 +141,39 @@ def test_layer_aware_graph_replay_uses_validated_host_seam(monkeypatch) -> None:
     assert attention_v1.needs_layer_aware_fia_graph_replay()
     assert Impl._ascend_kvcompress_layer_aware_graph_v1
     assert not install_layer_aware_fia_graph_replay(config)
+
+
+def test_attention_query_hook_runs_at_custom_op_backend_boundary(
+    monkeypatch,
+) -> None:
+    calls = []
+
+    class Impl:
+        def forward(self, layer, query, suffix):
+            calls.append(("native", layer.layer_name, query, suffix))
+            return "output"
+
+    attention_v1 = ModuleType("vllm_ascend.attention.attention_v1")
+    attention_v1.AscendAttentionBackendImpl = Impl
+    monkeypatch.setitem(
+        plugin.sys.modules, "vllm_ascend.attention.attention_v1", attention_v1
+    )
+    provider = SimpleNamespace(
+        capture_attention_query=lambda name, query: calls.append(
+            ("observe", name, query)
+        )
+    )
+    layer = SimpleNamespace(layer_name="model.layers.3.self_attn")
+    setattr(layer, ATTENTION_QUERY_PROVIDER_ATTRIBUTE, provider)
+
+    _install_attention_query_hook()
+    result = Impl().forward(layer, "query", "suffix")
+
+    assert result == "output"
+    assert calls == [
+        ("observe", "model.layers.3.self_attn", "query"),
+        ("native", "model.layers.3.self_attn", "query", "suffix"),
+    ]
 
 
 def test_current_triton_runtime_preloads_gluon_descriptor_namespace(
