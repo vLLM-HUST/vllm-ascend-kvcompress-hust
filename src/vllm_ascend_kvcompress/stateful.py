@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import inspect
 import math
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,7 +28,12 @@ _OFFSETS_ATTRIBUTE = "_ascend_kvcompress_active_offsets_v3"
 _DEFERRED_RELEASES_ATTRIBUTE = "_ascend_kvcompress_deferred_releases_v3"
 _PENDING_ATTRIBUTE = "_ascend_kvcompress_pending_transactions_v3"
 _GROUP_LENGTH_STATE_ATTRIBUTE = "_ascend_kvcompress_group_length_state_v3"
+_PREFIX_ADMISSION_STATE_ATTRIBUTE = "_ascend_kvcompress_prefix_admission_state_v3"
 _PATCH_MARKER = "_ascend_kvcompress_manager_patch_v3"
+_PREFIX_LOOKUP_PATCH_MARKER = "_ascend_kvcompress_prefix_lookup_patch_v3"
+_PREFIX_CACHE_HIT_CAP: ContextVar[tuple[int, int] | None] = ContextVar(
+    "ascend_kvcompress_prefix_cache_hit_cap", default=None
+)
 _SUPPORTED_SCHEDULER_TYPES = frozenset(
     {
         ("vllm.v1.core.sched.scheduler", "Scheduler"),
@@ -74,6 +80,7 @@ class SchedulerCompressionState:
             config = TriAttentionConfig.from_method_config(selection.method_config)
             threshold = config.compression_threshold_tokens
             budget = config.kv_budget
+            required_recompute_tokens = config.recompute_window
             min_output_tokens = config.min_output_tokens_for_compression
         else:
             method = create_method(
@@ -86,10 +93,12 @@ class SchedulerCompressionState:
             _validate_method_runtime_spec(method.name, spec)
             threshold = spec.compression_threshold_tokens
             budget = spec.max_physical_num_tokens
+            required_recompute_tokens = spec.required_recompute_tokens
             min_output_tokens = spec.min_output_tokens_for_compression
         self.scheduler = scheduler
         self.threshold = threshold
         self.budget = budget
+        self.required_recompute_tokens = required_recompute_tokens
         self.min_output_tokens = min_output_tokens
         # Scheduler.block_size is the LCM alignment across every hybrid cache
         # group; it can be larger than the full-attention manager page.
@@ -128,6 +137,11 @@ class SchedulerCompressionState:
             _install_coordinator_hooks(type(coordinator))
             setattr(coordinator, _GROUP_LENGTH_STATE_ATTRIBUTE, self)
         setattr(scheduler.kv_cache_manager, _OFFSETS_ATTRIBUTE, self.active)
+        setattr(
+            scheduler.kv_cache_manager,
+            _PREFIX_ADMISSION_STATE_ATTRIBUTE,
+            self,
+        )
         setattr(scheduler.kv_cache_manager, _PENDING_ATTRIBUTE, self.pending)
         setattr(
             scheduler.kv_cache_manager,
@@ -140,12 +154,29 @@ class SchedulerCompressionState:
         logger.info(
             "Ascend KV compression scheduler bound threshold_tokens=%d "
             "target_tokens=%d min_output_tokens=%d scheduler_alignment=%d "
-            "attention_logical_block_size=%d",
+            "attention_logical_block_size=%d required_recompute_tokens=%d",
             self.threshold,
             self.budget,
             self.min_output_tokens,
             self.scheduler_alignment_size,
             self.scheduler_block_size,
+            self.required_recompute_tokens,
+        )
+
+    def prefix_cache_hit_cap(self, request: Any) -> int | None:
+        """Limit APC so an eligible method receives its required query suffix."""
+        prompt_tokens = int(request.num_prompt_tokens)
+        if (
+            prompt_tokens < self.threshold
+            or _request_max_tokens(request) < self.min_output_tokens
+        ):
+            return None
+        return max(
+            0,
+            min(
+                prompt_tokens - 1,
+                prompt_tokens - self.required_recompute_tokens,
+            ),
         )
 
     def _validate_host(self) -> None:
@@ -569,6 +600,7 @@ def _install_manager_hooks(manager_cls: type[Any]) -> None:
     if manager_cls.__dict__.get(_PATCH_MARKER, False):
         return
     original_free = manager_cls.free
+    original_get_computed_blocks = getattr(manager_cls, "get_computed_blocks", None)
 
     def free(manager: Any, request: Any) -> Any:
         getattr(manager, _OFFSETS_ATTRIBUTE, {}).pop(request.request_id, None)
@@ -584,9 +616,51 @@ def _install_manager_hooks(manager_cls: type[Any]) -> None:
             manager.block_pool.free_blocks(release.blocks)
         return original_free(manager, request)
 
+    def get_computed_blocks(manager: Any, request: Any) -> Any:
+        assert original_get_computed_blocks is not None
+        state = getattr(manager, _PREFIX_ADMISSION_STATE_ATTRIBUTE, None)
+        cap = None if state is None else state.prefix_cache_hit_cap(request)
+        if cap is None:
+            return original_get_computed_blocks(manager, request)
+        coordinator = manager.coordinator
+        _install_prefix_lookup_hook(type(coordinator))
+        token = _PREFIX_CACHE_HIT_CAP.set((id(coordinator), cap))
+        try:
+            return original_get_computed_blocks(manager, request)
+        finally:
+            _PREFIX_CACHE_HIT_CAP.reset(token)
+
     setattr(manager_cls, f"{_PATCH_MARKER}_original_free", original_free)
+    if original_get_computed_blocks is not None:
+        setattr(
+            manager_cls,
+            f"{_PATCH_MARKER}_original_get_computed_blocks",
+            original_get_computed_blocks,
+        )
+        manager_cls.get_computed_blocks = get_computed_blocks
     manager_cls.free = free
     setattr(manager_cls, _PATCH_MARKER, True)
+
+
+def _install_prefix_lookup_hook(coordinator_cls: type[Any]) -> None:
+    """Cap only the lookup made inside the current request's admission call."""
+    if coordinator_cls.__dict__.get(_PREFIX_LOOKUP_PATCH_MARKER, False):
+        return
+    original = coordinator_cls.find_longest_cache_hit
+
+    def find_longest_cache_hit(
+        coordinator: Any,
+        block_hashes: Any,
+        max_cache_hit_length: int,
+    ) -> Any:
+        scoped_cap = _PREFIX_CACHE_HIT_CAP.get()
+        if scoped_cap is not None and scoped_cap[0] == id(coordinator):
+            max_cache_hit_length = min(max_cache_hit_length, scoped_cap[1])
+        return original(coordinator, block_hashes, max_cache_hit_length)
+
+    setattr(coordinator_cls, f"{_PREFIX_LOOKUP_PATCH_MARKER}_original", original)
+    coordinator_cls.find_longest_cache_hit = find_longest_cache_hit
+    setattr(coordinator_cls, _PREFIX_LOOKUP_PATCH_MARKER, True)
 
 
 def _install_coordinator_hooks(coordinator_cls: type[Any]) -> None:
@@ -600,9 +674,7 @@ def _install_coordinator_hooks(coordinator_cls: type[Any]) -> None:
 
     count_signature = inspect.signature(original_count)
 
-    def get_num_blocks_to_allocate(
-        coordinator: Any, *args: Any, **kwargs: Any
-    ) -> int:
+    def get_num_blocks_to_allocate(coordinator: Any, *args: Any, **kwargs: Any) -> int:
         bound = count_signature.bind(coordinator, *args, **kwargs)
         bound.apply_defaults()
         values = bound.arguments
@@ -639,9 +711,7 @@ def _install_coordinator_hooks(coordinator_cls: type[Any]) -> None:
                 "num_tokens_main_model": group_main,
                 "apply_admission_cap": apply_admission_cap,
             }
-            manager_signature = inspect.signature(
-                manager.get_num_blocks_to_allocate
-            )
+            manager_signature = inspect.signature(manager.get_num_blocks_to_allocate)
             if "num_local_computed_tokens" in manager_signature.parameters:
                 manager_values["num_local_computed_tokens"] = group_local
             result += manager.get_num_blocks_to_allocate(**manager_values)

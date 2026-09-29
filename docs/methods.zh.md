@@ -84,6 +84,12 @@ RoPE 融合路径已通过真实昇腾 NPU 的数值检查。随后的 SWE 官�
 - `bind_model_runner(runner, layer_caches)`：公共缓存校验后分配状态；
 - `compress(request)`：同步完成一次物化并返回新物理长度，以及可选的逐层长度。
 
+对于达到方法压缩阈值的请求，自动前缀缓存 admission 会把可复用前缀限制为
+`max(0, min(prompt_tokens - 1, prompt_tokens - required_recompute_tokens))`。
+这样即使启用 chunked prefill，也会实际执行方法声明的末尾 Query 后缀；当 prompt
+短于要求的窗口时，从 token 0 开始完整重算。APC 关闭、低于阈值或输出长度不满足
+压缩门槛的请求继续使用宿主原有 admission 路径。
+
 ### 逐层物理状态
 
 `CompressionResult.per_layer_physical_num_tokens` 可以为每个已绑定的全注意力层
