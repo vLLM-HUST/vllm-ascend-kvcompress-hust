@@ -10,6 +10,7 @@ import vllm_ascend_kvcompress.plugin as plugin
 from vllm_ascend_kvcompress.host_compat import (
     QWEN_GDN_LIST_COMPAT_ENV,
     install_dcp_length_alias,
+    install_layer_aware_fia_graph_replay,
     install_qwen_gdn_list_compat,
     install_removed_async_output_routing_field,
     install_removed_model_routing_flag,
@@ -90,6 +91,54 @@ def test_runner_hook_supplies_removed_xdrope_compatibility_attribute() -> None:
     assert not hasattr(Runner, "uses_xdrope_dim")
     _install_runner_hooks(Runner, object())
     assert Runner.uses_xdrope_dim == 0
+
+
+def test_layer_aware_graph_replay_uses_validated_host_seam(monkeypatch) -> None:
+    class Impl:
+        def _graph_metadata_layer_name(self):
+            return "layer"
+
+        @staticmethod
+        def update_graph_params():
+            layer_name = "layer"
+            metadata_key = layer_name
+            attn_metadata = {metadata_key: object()}
+            return attn_metadata
+
+        def full_graph_fia(self):
+            return None
+
+    utils = ModuleType("vllm_ascend.attention.utils")
+    attention_v1 = ModuleType("vllm_ascend.attention.attention_v1")
+
+    def original_probe():
+        return False
+
+    utils.needs_layer_aware_fia_graph_replay = original_probe
+    attention_v1.needs_layer_aware_fia_graph_replay = original_probe
+    attention_v1.AscendAttentionBackendImpl = Impl
+    attention = ModuleType("vllm_ascend.attention")
+    attention.attention_v1 = attention_v1
+    attention.utils = utils
+    ascend = ModuleType("vllm_ascend")
+    ascend.attention = attention
+    monkeypatch.setitem(plugin.sys.modules, "vllm_ascend", ascend)
+    monkeypatch.setitem(plugin.sys.modules, "vllm_ascend.attention", attention)
+    monkeypatch.setitem(
+        plugin.sys.modules, "vllm_ascend.attention.attention_v1", attention_v1
+    )
+    monkeypatch.setitem(plugin.sys.modules, "vllm_ascend.attention.utils", utils)
+    config = SimpleNamespace(
+        compilation_config=SimpleNamespace(
+            cudagraph_mode=SimpleNamespace(name="FULL_AND_PIECEWISE")
+        )
+    )
+
+    assert install_layer_aware_fia_graph_replay(config)
+    assert utils.needs_layer_aware_fia_graph_replay()
+    assert attention_v1.needs_layer_aware_fia_graph_replay()
+    assert Impl._ascend_kvcompress_layer_aware_graph_v1
+    assert not install_layer_aware_fia_graph_replay(config)
 
 
 def test_current_triton_runtime_preloads_gluon_descriptor_namespace(
@@ -422,9 +471,7 @@ def test_qwen_mtp2_cache_binding_bridge_supports_legacy_inline_binding(
         "mtp.layers.0.self_attn.attn": object(),
         "language_model.model.layers.1.linear_attn": object(),
     }
-    contexts = {
-        name: SimpleNamespace(kv_cache=None) for name in caches
-    }
+    contexts = {name: SimpleNamespace(kv_cache=None) for name in caches}
     runner = []
 
     with qwen_mtp2_cache_binding_bridge():

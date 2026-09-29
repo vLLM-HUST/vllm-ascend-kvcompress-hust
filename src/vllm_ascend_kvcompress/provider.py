@@ -75,6 +75,13 @@ class AscendKVCompressionProvider:
         )
         self.runtime_spec: MethodRuntimeSpec = self.method.runtime_spec
         _validate_method_runtime_spec(self.method.name, self.runtime_spec)
+        self.requires_per_layer_physical_state = (
+            self.method.requires_per_layer_physical_state
+        )
+        if not isinstance(self.requires_per_layer_physical_state, bool):
+            raise TypeError(
+                "method requires_per_layer_physical_state must be a boolean"
+            )
         self.query_window_tokens = self.method.query_window_tokens
         if (
             isinstance(self.query_window_tokens, bool)
@@ -98,6 +105,8 @@ class AscendKVCompressionProvider:
             )
         self.runner: Any | None = None
         self.layer_caches: tuple[LayerCache, ...] = ()
+        self.query_layer_caches: tuple[LayerCache, ...] = ()
+        self.speculative_cache_layer: LayerCache | None = None
         self.pending: dict[str, PendingCompression] = {}
         self.active: dict[str, ActiveCompression] = {}
         self._request_offsets_cpu: torch.Tensor | None = None
@@ -109,6 +118,7 @@ class AscendKVCompressionProvider:
         self._has_active_rows = False
         self._has_per_layer_rows = False
         self._per_layer_metadata_seen = False
+        self._per_layer_slot_buffers: dict[str, torch.Tensor] = {}
         self._physical_lengths_applied = False
         self._query_step_output: Any | None = None
         self._query_seen_layers: set[int] = set()
@@ -217,8 +227,20 @@ class AscendKVCompressionProvider:
         self.runner = runner
         self.layer_caches = tuple(layer_caches)
         self.method.bind_model_runner(runner, self.layer_caches)
+        self.query_layer_caches = self._resolve_query_layer_caches()
+        mtp_caches = tuple(
+            cache for cache in self.layer_caches if ".mtp.layers." in f".{cache.name}."
+        )
+        if getattr(self.vllm_config, "speculative_config", None) is not None:
+            if len(mtp_caches) != 1:
+                raise RuntimeError(
+                    "qualified MTP2 requires exactly one auxiliary attention cache"
+                )
+            self.speculative_cache_layer = mtp_caches[0]
+        if self.requires_per_layer_physical_state:
+            self._validate_per_layer_host()
         if self.query_window_tokens:
-            for cache in self.layer_caches:
+            for cache in self.query_layer_caches:
                 layer = context[cache.name]
                 if not callable(getattr(layer, "register_forward_pre_hook", None)):
                     raise RuntimeError(
@@ -238,6 +260,15 @@ class AscendKVCompressionProvider:
         self._physical_positions = torch.empty(
             runner.max_num_tokens, dtype=torch.int64, device=runner.device
         )
+        if self.requires_per_layer_physical_state:
+            self._per_layer_slot_buffers = {
+                cache.name: torch.empty(
+                    runner.max_num_tokens,
+                    dtype=torch.int64,
+                    device=runner.device,
+                )
+                for cache in self.layer_caches
+            }
         self._semantic_seq_lens_device = torch.empty_like(runner.seq_lens)
         self._semantic_seq_lens_cpu = torch.empty_like(runner.optimistic_seq_lens_cpu)
         setattr(attention_block_table, RUNNER_PROVIDER_ATTRIBUTE, self)
@@ -255,6 +286,39 @@ class AscendKVCompressionProvider:
             self.scheduler_block_size,
             self.cache_block_size,
         )
+
+    def _resolve_query_layer_caches(self) -> tuple[LayerCache, ...]:
+        if not self.query_window_tokens:
+            return ()
+        requested = self.method.query_layer_indices
+        if requested is None:
+            return self.layer_caches
+        if (
+            not isinstance(requested, tuple)
+            or not requested
+            or any(
+                isinstance(index, bool) or not isinstance(index, int)
+                for index in requested
+            )
+            or len(set(requested)) != len(requested)
+        ):
+            raise RuntimeError(
+                "query_layer_indices must be a non-empty tuple of unique integers"
+            )
+        by_index: dict[int, LayerCache] = {}
+        duplicate_indices: set[int] = set()
+        for cache in self.layer_caches:
+            if cache.layer_index in by_index:
+                duplicate_indices.add(cache.layer_index)
+            else:
+                by_index[cache.layer_index] = cache
+        if duplicate_indices & set(requested):
+            raise RuntimeError(
+                "query_layer_indices are ambiguous across bound cache layers"
+            )
+        if any(index not in by_index for index in requested):
+            raise RuntimeError("query_layer_indices contain an unbound model layer")
+        return tuple(by_index[index] for index in requested)
 
     def before_update_states(self, scheduler_output: Any) -> None:
         """Commit the prior step after its synchronous model execution barrier."""
@@ -368,7 +432,7 @@ class AscendKVCompressionProvider:
             return
         try:
             if self._query_spans() and self._query_seen_layers != {
-                layer.layer_index for layer in self.layer_caches
+                layer.layer_index for layer in self.query_layer_caches
             }:
                 raise RuntimeError(
                     "query observation missed a full-attention layer; "
@@ -479,7 +543,7 @@ class AscendKVCompressionProvider:
                         semantic_num_tokens=semantic,
                         window_tokens=self.query_window_tokens,
                         layer_indices=tuple(
-                            layer.layer_index for layer in self.layer_caches
+                            layer.layer_index for layer in self.query_layer_caches
                         ),
                     )
                 )
@@ -573,21 +637,45 @@ class AscendKVCompressionProvider:
         mode = getattr(
             getattr(self.runner, "compilation_config", None), "cudagraph_mode", None
         )
-        if getattr(mode, "name", None) != "NONE":
+        mode_name = getattr(mode, "name", None)
+        if mode_name == "FULL_AND_PIECEWISE":
+            if not self.requires_per_layer_physical_state:
+                raise RuntimeError(
+                    "graph replay requires the method to declare per-layer "
+                    "physical state before capture"
+                )
+            try:
+                from vllm_ascend.attention.attention_v1 import (
+                    AscendAttentionBackendImpl,
+                )
+            except (ImportError, OSError, RuntimeError) as error:
+                raise RuntimeError(
+                    "per-layer graph replay backend is unavailable"
+                ) from error
+            if not getattr(
+                AscendAttentionBackendImpl,
+                "_ascend_kvcompress_layer_aware_graph_v1",
+                False,
+            ):
+                raise RuntimeError(
+                    "per-layer graph replay requires the layer-aware FIA update seam"
+                )
+        elif mode_name != "NONE":
             raise RuntimeError(
-                "per-layer physical state requires eager execution; "
-                "graph replay metadata is unvalidated"
+                "per-layer physical state supports eager or "
+                "FULL_AND_PIECEWISE execution only"
             )
-        if (
-            any(
-                getattr(self.runner, name, False)
-                for name in ("use_dcp", "use_async_spec_decode", "pcp_enabled")
-            )
-            or getattr(self.vllm_config, "speculative_config", None) is not None
+        if any(
+            getattr(self.runner, name, False) for name in ("use_dcp", "pcp_enabled")
         ):
             raise RuntimeError(
-                "per-layer physical state is unvalidated with parallel "
-                "or speculative attention"
+                "per-layer physical state is unvalidated with "
+                "context-parallel attention"
+            )
+        speculative = getattr(self.vllm_config, "speculative_config", None)
+        if speculative is not None and not _supports_mtp2(self.vllm_config):
+            raise RuntimeError(
+                "per-layer physical state supports only the qualified Qwen3.5 MTP2 path"
             )
 
     def physical_positions_for_slot_mapping(
@@ -653,8 +741,8 @@ class AscendKVCompressionProvider:
     def per_layer_attention_metadata(
         self, result: Any, num_tokens: int, num_reqs: int
     ) -> Any:
-        """Give each full-attention layer its own eager KV lengths and write slots."""
-        if not self._has_per_layer_rows:
+        """Give each full-attention layer distinct KV lengths and write slots."""
+        if not (self.requires_per_layer_physical_state or self._has_per_layer_rows):
             return result
         self._validate_per_layer_host()
         if self.runner is None or not isinstance(result, tuple) or len(result) != 2:
@@ -677,12 +765,17 @@ class AscendKVCompressionProvider:
             raise RuntimeError(
                 "per-layer attention requires the native slot mapping hook"
             )
-        if not self._physical_lengths_applied or self._request_offsets_cpu is None:
+        if self._request_offsets_cpu is None:
+            raise RuntimeError("per-layer attention offset buffers are unavailable")
+        if self._has_active_rows and not self._physical_lengths_applied:
             raise RuntimeError("per-layer attention requires saved semantic lengths")
         global_offsets = tuple(
             int(value) for value in self._request_offsets_cpu[:num_reqs]
         )
         original_slots = table.slot_mapping.gpu[:num_tokens].clone()
+        speculative_view: (
+            tuple[list[int], tuple[int, ...], torch.Tensor, torch.Tensor] | None
+        ) = None
         try:
             for layer in self.layer_caches:
                 offsets = tuple(
@@ -694,8 +787,6 @@ class AscendKVCompressionProvider:
                     else 0
                     for request_id in request_ids
                 )
-                if offsets == global_offsets:
-                    continue
                 base = metadata.get(layer.name)
                 if (
                     type(base).__name__ != "AscendMetadata"
@@ -714,41 +805,128 @@ class AscendKVCompressionProvider:
                     )
                 ]
                 seq_lens = base.seq_lens.clone()
-                seq_lens[:num_reqs] += torch.tensor(
-                    delta, dtype=seq_lens.dtype, device=seq_lens.device
-                )
+                if any(delta):
+                    seq_lens[:num_reqs] += torch.tensor(
+                        delta, dtype=seq_lens.dtype, device=seq_lens.device
+                    )
                 seq_lens_list = list(base.seq_lens_list)
                 for index, correction in enumerate(delta):
                     seq_lens_list[index] += correction
-                positions = runner.positions[:num_tokens]
-                req_indices = runner.req_indices.gpu[:num_tokens]
-                offset_tensor = torch.tensor(
-                    offsets, dtype=positions.dtype, device=positions.device
-                )
-                native(
-                    table,
-                    num_reqs,
-                    runner.query_start_loc.gpu[: num_reqs + 1],
-                    positions - offset_tensor[req_indices.long()],
-                )
+                slots = self._per_layer_slot_buffers.get(layer.name)
+                if slots is None and not self.requires_per_layer_physical_state:
+                    slots = torch.empty(
+                        max(num_tokens, int(getattr(runner, "max_num_tokens", 0))),
+                        dtype=torch.int64,
+                        device=original_slots.device,
+                    )
+                    self._per_layer_slot_buffers[layer.name] = slots
+                if slots is None or slots.numel() < num_tokens:
+                    raise RuntimeError(
+                        "per-layer attention slot buffers were not prepared "
+                        "before capture"
+                    )
+                if offsets == global_offsets:
+                    slots[:num_tokens].copy_(original_slots)
+                else:
+                    positions = runner.positions[:num_tokens]
+                    req_indices = runner.req_indices.gpu[:num_tokens]
+                    offset_tensor = torch.tensor(
+                        offsets, dtype=positions.dtype, device=positions.device
+                    )
+                    native(
+                        table,
+                        num_reqs,
+                        runner.query_start_loc.gpu[: num_reqs + 1],
+                        positions - offset_tensor[req_indices.long()],
+                    )
+                    slots[:num_tokens].copy_(table.slot_mapping.gpu[:num_tokens])
                 metadata[layer.name] = replace(
                     base,
                     seq_lens=seq_lens,
                     seq_lens_cpu=seq_lens,
                     seq_lens_list=seq_lens_list,
-                    slot_mapping=table.slot_mapping.gpu[:num_tokens].clone(),
+                    slot_mapping=slots[:num_tokens],
                 )
+                if layer is self.speculative_cache_layer:
+                    speculative_view = delta, offsets, seq_lens, slots[:num_tokens]
         finally:
             table.slot_mapping.gpu[:num_tokens].copy_(original_slots)
+        if self.speculative_cache_layer is not None:
+            if speculative_view is None or common is None:
+                raise RuntimeError("MTP2 per-layer attention metadata is incomplete")
+            delta, offsets, _, slots = speculative_view
+            common = self._speculative_common_metadata(
+                common,
+                delta,
+                offsets,
+                slots,
+                num_reqs,
+            )
         self._per_layer_metadata_seen = True
         return metadata, common
 
+    @staticmethod
+    def _speculative_common_metadata(
+        common: Any,
+        delta: list[int],
+        offsets: tuple[int, ...],
+        slots: torch.Tensor,
+        num_reqs: int,
+    ) -> Any:
+        required = (
+            "seq_lens",
+            "_seq_lens_cpu",
+            "seq_lens_cpu_upper_bound",
+            "slot_mapping",
+        )
+        if any(not hasattr(common, name) for name in required):
+            raise RuntimeError("MTP2 common attention metadata ABI changed")
+
+        def adjusted(value: Any, corrections: list[int] | tuple[int, ...]) -> Any:
+            if value is None:
+                return None
+            if not isinstance(value, torch.Tensor) or value.numel() < num_reqs:
+                raise RuntimeError("MTP2 sequence-length metadata ABI changed")
+            result = value.clone()
+            if any(corrections):
+                result[:num_reqs] += torch.tensor(
+                    corrections,
+                    dtype=result.dtype,
+                    device=result.device,
+                )
+            return result
+
+        changes = {
+            "seq_lens": adjusted(common.seq_lens, delta),
+            "_seq_lens_cpu": adjusted(common._seq_lens_cpu, delta),
+            "seq_lens_cpu_upper_bound": adjusted(
+                common.seq_lens_cpu_upper_bound,
+                delta,
+            ),
+            "slot_mapping": slots,
+        }
+        if hasattr(common, "seq_lens_cpu"):
+            changes["seq_lens_cpu"] = adjusted(common.seq_lens_cpu, delta)
+        if hasattr(common, "num_computed_tokens_cpu"):
+            changes["num_computed_tokens_cpu"] = adjusted(
+                common.num_computed_tokens_cpu,
+                tuple(-offset for offset in offsets),
+            )
+        try:
+            return replace(common, **changes)
+        except (TypeError, ValueError) as error:
+            raise RuntimeError(
+                "MTP2 common attention metadata cannot be specialized by layer"
+            ) from error
+
     def begin_per_layer_step(self) -> None:
-        if self._has_per_layer_rows:
+        if self.requires_per_layer_physical_state or self._has_per_layer_rows:
             self._per_layer_metadata_seen = False
 
     def finish_per_layer_step(self) -> None:
-        if self._has_per_layer_rows and not self._per_layer_metadata_seen:
+        if (
+            self.requires_per_layer_physical_state or self._has_per_layer_rows
+        ) and not self._per_layer_metadata_seen:
             raise RuntimeError(
                 "per-layer attention metadata hook was bypassed by the host"
             )

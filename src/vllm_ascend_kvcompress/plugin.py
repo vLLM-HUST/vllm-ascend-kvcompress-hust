@@ -156,7 +156,23 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
 
     def load_model(runner: Any) -> Any:
         from .calibration import ensure_calibration_for_runner
-        from .host_compat import install_qwen_gdn_list_compat
+        from .host_compat import (
+            install_layer_aware_fia_graph_replay,
+            install_qwen_gdn_list_compat,
+        )
+        from .methods import create_method
+        from .model import model_shape_from_config
+
+        runner_config = getattr(runner, "vllm_config", None)
+        if runner_config is not None:
+            method_probe = create_method(
+                selection.method,
+                selection.method_config,
+                runner_config,
+                model_shape_from_config(runner_config.model_config),
+            )
+            if method_probe.requires_per_layer_physical_state:
+                install_layer_aware_fia_graph_replay(runner_config)
 
         install_qwen_gdn_list_compat(
             mtp2_reference_fallback=_supports_mtp2(getattr(runner, "vllm_config", None))
@@ -227,7 +243,10 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
             result = original_metadata(runner, *args, **kwargs)
         finally:
             _METADATA_PROVIDER.reset(token)
-        if provider is not None and getattr(provider, "_has_per_layer_rows", False):
+        if provider is not None and (
+            getattr(provider, "requires_per_layer_physical_state", False)
+            or getattr(provider, "_has_per_layer_rows", False)
+        ):
             num_tokens = args[0] if args else kwargs["num_tokens"]
             num_reqs = args[1] if len(args) > 1 else kwargs["num_reqs"]
             return provider.per_layer_attention_metadata(result, num_tokens, num_reqs)
@@ -260,13 +279,17 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
         provider = getattr(runner, RUNNER_PROVIDER_ATTRIBUTE, None)
         output = args[0] if args else kwargs.get("scheduler_output")
         observes = provider is not None and getattr(provider, "query_window_tokens", 0)
-        if provider is not None and getattr(provider, "_has_per_layer_rows", False):
+        has_per_layer_metadata = provider is not None and (
+            getattr(provider, "requires_per_layer_physical_state", False)
+            or getattr(provider, "_has_per_layer_rows", False)
+        )
+        if has_per_layer_metadata:
             provider.begin_per_layer_step()
         if observes:
             provider.begin_query_step(output)
         try:
             result = original_execute_model(runner, *args, **kwargs)
-            if provider is not None and getattr(provider, "_has_per_layer_rows", False):
+            if has_per_layer_metadata:
                 provider.finish_per_layer_step()
             if observes:
                 provider.finish_query_step()

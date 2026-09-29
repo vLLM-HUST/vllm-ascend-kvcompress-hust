@@ -102,9 +102,17 @@ worker 在同一次输出确认后的事务中切换逐层锚点；之后每个�
 包含当前逐层长度。GDN 继续使用语义长度。
 
 `None` 或全部等于组上限的结果继续使用原有共享元数据路径，包括 TriAttention。
-不等长结果目前仅支持 eager 模式及标准 Ascend FlashAttention 元数据类型。图重放和
-其他注意力后端在完成硬件验证前会明确拒绝执行。CPU 契约测试不代表外部方法已通过
-服务验证。
+可能返回不等长结果的方法必须在模型加载前声明
+`requires_per_layer_physical_state`。eager 路径仍可在事务执行时发现未预先声明的
+不等长结果；图捕获不允许这样做，因为首次捕获前每层必须已经持有独立且地址稳定的
+slot 缓冲区。
+
+已声明路径支持 eager 和通过校验的 Ascend FIA `FULL_AND_PIECEWISE` 更新接口。
+FULL 重放按层名重新绑定每个 attention task，piecewise prefill 仍执行 Python Query
+观察钩子。对于已限定的 Qwen3.5 MTP2，适配层还会通过 speculative common metadata
+给辅助 draft-attention cache 独立的序列长度和 slot；被拒绝的 draft 位置会在下一步
+覆盖同一个逐层物理槽位。其他图模式、注意力后端、投机方法和上下文并行路径继续
+失败关闭。CPU 契约测试不代表外部方法已通过服务验证。
 
 方法只能使用已校验的 cache binding，不能修改 scheduler 拥有的 request 或
 block table。返回长度必须为正、不超过声明上限；使用逐层长度时必须覆盖全部层。
@@ -116,6 +124,11 @@ block table。返回长度必须为正、不超过声明上限；使用逐层长
 `complete_query_observation(observation)` 和
 `discard_query_observation(request_id)`。
 
+`query_layer_indices` 默认为 `None`，即观察所有已绑定的全注意力 cache 层。混合
+投机运行时可能额外绑定一个不参与目标模型 prefill 的 draft cache。Query 方法可
+返回自己实际消费的目标层编号；适配层只等待这些层完成观察，同时仍要求辅助 cache
+包含在逐层物化结果中。
+
 host 仅在 prefill 中对已绑定的全注意力层调用 `capture_query`。`query` 是注意力层
 应用位置编码后的 Query 张量；每个 `QueryBatchSpan` 给出一个请求在张量中的左闭右开
 行区间。方法在 `bind_model_runner` 中分配并持有地址稳定的缓冲区，可跨分块 prefill
@@ -125,7 +138,7 @@ host 仅在 prefill 中对已绑定的全注意力层调用 `capture_query`。`q
 `CompressionRequest.plan`。方法使用窗口前须检查各层数据完整。压缩完成以及请求
 结束、抢占、重启或执行失败时，host 调用 `discard_query_observation` 清理。
 
-若 prefill 中有全注意力层未触发观察钩子，包括图重放跳过 Python 钩子的情况，
+若 prefill 中有方法请求的层未触发观察钩子，包括图路径跳过 Python 钩子的情况，
 host 会失败关闭。当前 CPU 契约测试不构成任何图模式或外部方法的服务支持证据；
 必须在精确的 host 与设备组合上完成图重放、兼容性和正确性验证后才能启用。
 

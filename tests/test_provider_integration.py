@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import sys
 from dataclasses import dataclass
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -106,7 +107,10 @@ def test_async_scheduling_is_admitted_by_worker_compatibility(monkeypatch) -> No
 def _provider() -> AscendKVCompressionProvider:
     provider = AscendKVCompressionProvider.__new__(AscendKVCompressionProvider)
     provider.method = _RecordingMethod()
+    provider.requires_per_layer_physical_state = False
     provider.query_window_tokens = 0
+    provider.query_layer_caches = ()
+    provider.speculative_cache_layer = None
     provider._query_step_output = None
     provider._query_seen_layers = set()
     provider._query_forward_complete = False
@@ -130,6 +134,7 @@ def _provider() -> AscendKVCompressionProvider:
     provider._has_active_rows = False
     provider._has_per_layer_rows = False
     provider._per_layer_metadata_seen = False
+    provider._per_layer_slot_buffers = {}
     provider._physical_lengths_applied = False
     provider.vllm_config = SimpleNamespace(
         cache_config=SimpleNamespace(enable_prefix_caching=False),
@@ -705,8 +710,10 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> Non
     )
     first, second = (metadata[layer.name] for layer in provider.layer_caches)
     assert common == "common"
-    assert first is shared
+    assert first is not shared
     assert first.seq_lens_list == [129, 21]
+    first_slot_address = first.slot_mapping.data_ptr()
+    second_slot_address = second.slot_mapping.data_ptr()
     assert second.seq_lens_list == [65, 21]
     assert second.seq_lens.tolist() == [65, 21]
     assert second.slot_mapping.tolist() == [100 * 128 + 64, 20 * 128 + 20]
@@ -723,6 +730,14 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> Non
     next_metadata, _ = provider.per_layer_attention_metadata(
         ({layer.name: next_shared for layer in provider.layer_caches}, None), 2, 2
     )
+    assert (
+        next_metadata["model.layers.0.self_attn"].slot_mapping.data_ptr()
+        == first_slot_address
+    )
+    assert (
+        next_metadata["model.layers.1.self_attn"].slot_mapping.data_ptr()
+        == second_slot_address
+    )
     assert next_metadata["model.layers.1.self_attn"].seq_lens_list == [70, 21]
     assert next_metadata["model.layers.1.self_attn"].slot_mapping.tolist() == [
         100 * 128 + 69,
@@ -731,7 +746,7 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> Non
     assert table.slot_mapping.gpu.tolist() == [12933, 2580]
 
 
-def test_nonuniform_lengths_fail_closed_under_graph_replay() -> None:
+def test_undeclared_nonuniform_lengths_fail_closed_under_graph_replay() -> None:
     provider = _provider()
     provider.layer_caches += (
         LayerCache("model.layers.1.self_attn", 1, torch.empty(0), torch.empty(0)),
@@ -741,11 +756,167 @@ def test_nonuniform_lengths_fail_closed_under_graph_replay() -> None:
             cudagraph_mode=SimpleNamespace(name="FULL_AND_PIECEWISE")
         )
     )
-    with pytest.raises(RuntimeError, match="requires eager execution"):
+    with pytest.raises(RuntimeError, match="declare per-layer physical state"):
         provider._validate_per_layer_lengths(
             (("model.layers.0.self_attn", 128), ("model.layers.1.self_attn", 64)),
             128,
         )
+
+
+def test_declared_per_layer_state_accepts_layer_aware_full_graph(
+    monkeypatch,
+) -> None:
+    class AscendAttentionBackendImpl:
+        _ascend_kvcompress_layer_aware_graph_v1 = True
+
+    ascend = ModuleType("vllm_ascend")
+    attention = ModuleType("vllm_ascend.attention")
+    attention_v1 = ModuleType("vllm_ascend.attention.attention_v1")
+    attention_v1.AscendAttentionBackendImpl = AscendAttentionBackendImpl
+    monkeypatch.setitem(sys.modules, "vllm_ascend", ascend)
+    monkeypatch.setitem(sys.modules, "vllm_ascend.attention", attention)
+    monkeypatch.setitem(sys.modules, "vllm_ascend.attention.attention_v1", attention_v1)
+
+    provider = _provider()
+    provider.requires_per_layer_physical_state = True
+    provider.runner = SimpleNamespace(
+        compilation_config=SimpleNamespace(
+            cudagraph_mode=SimpleNamespace(name="FULL_AND_PIECEWISE")
+        ),
+        use_dcp=False,
+        pcp_enabled=False,
+        use_async_spec_decode=True,
+    )
+    provider.vllm_config.speculative_config = None
+
+    provider._validate_per_layer_host()
+
+
+def test_query_observation_can_exclude_auxiliary_mtp_cache() -> None:
+    provider = _provider()
+    provider.layer_caches += (
+        LayerCache("mtp.layers.0.self_attn.attn", 0, torch.empty(0), torch.empty(0)),
+        LayerCache("model.layers.3.self_attn", 3, torch.empty(0), torch.empty(0)),
+    )
+    provider.method = SimpleNamespace(query_layer_indices=(3,))
+    provider.query_window_tokens = 2
+
+    selected = provider._resolve_query_layer_caches()
+
+    assert tuple(cache.name for cache in selected) == ("model.layers.3.self_attn",)
+
+
+def test_mtp_rejected_draft_reuses_layer_specific_physical_slots() -> None:
+    @dataclass
+    class AscendMetadata:
+        seq_lens: torch.Tensor
+        seq_lens_cpu: torch.Tensor
+        seq_lens_list: list[int]
+        slot_mapping: torch.Tensor
+
+    AscendMetadata.__module__ = "vllm_ascend.attention.attention_v1"
+
+    @dataclass
+    class CommonMetadata:
+        seq_lens: torch.Tensor
+        _seq_lens_cpu: torch.Tensor
+        seq_lens_cpu_upper_bound: torch.Tensor
+        slot_mapping: torch.Tensor
+        seq_lens_cpu: torch.Tensor | None = None
+        num_computed_tokens_cpu: torch.Tensor | None = None
+
+    class BlockTable:
+        def __init__(self) -> None:
+            self.slot_mapping = SimpleNamespace(
+                gpu=torch.tensor([128, 129, 130], dtype=torch.int64)
+            )
+
+        def native(self, num_reqs, query_start_loc, positions):
+            assert num_reqs == 1
+            assert int(query_start_loc[-1]) == len(positions)
+            for token, position in enumerate(positions.tolist()):
+                self.slot_mapping.gpu[token] = position
+
+    BlockTable._ascend_kvcompress_patch_v3_slot_mapping_original = BlockTable.native
+    table = BlockTable()
+    provider = _provider()
+    provider.layer_caches += (
+        LayerCache("model.layers.1.self_attn", 1, torch.empty(0), torch.empty(0)),
+    )
+    provider.active["r"] = ActiveCompression(
+        300,
+        128,
+        (("model.layers.0.self_attn", 128), ("model.layers.1.self_attn", 64)),
+    )
+    provider._has_per_layer_rows = True
+    provider._physical_lengths_applied = True
+    provider._request_offsets_cpu = torch.tensor([172])
+    provider.speculative_cache_layer = provider.layer_caches[1]
+    provider.runner = SimpleNamespace(
+        compilation_config=SimpleNamespace(cudagraph_mode=SimpleNamespace(name="NONE")),
+        input_batch=SimpleNamespace(
+            req_ids=["r"],
+            block_table=SimpleNamespace(block_tables=[table]),
+        ),
+        positions=torch.tensor([300, 301, 302]),
+        req_indices=SimpleNamespace(gpu=torch.tensor([0, 0, 0])),
+        query_start_loc=SimpleNamespace(gpu=torch.tensor([0, 3])),
+    )
+    first = AscendMetadata(
+        torch.tensor([131]),
+        torch.tensor([131]),
+        [131],
+        table.slot_mapping.gpu,
+    )
+    first_common = CommonMetadata(
+        torch.tensor([131]),
+        torch.tensor([131]),
+        torch.tensor([131]),
+        table.slot_mapping.gpu,
+        torch.tensor([131]),
+        torch.tensor([300]),
+    )
+    metadata, common = provider.per_layer_attention_metadata(
+        ({layer.name: first for layer in provider.layer_caches}, first_common),
+        3,
+        1,
+    )
+    assert metadata["model.layers.1.self_attn"].slot_mapping.tolist() == [64, 65, 66]
+    assert common.seq_lens.tolist() == [67]
+    assert common._seq_lens_cpu.tolist() == [67]
+    assert common.num_computed_tokens_cpu.tolist() == [64]
+    assert common.slot_mapping.tolist() == [64, 65, 66]
+
+    # Only the first speculative token was accepted. The next iteration writes
+    # semantic position 301 again and must overwrite the rejected draft slot.
+    provider.runner.positions = torch.tensor([301])
+    provider.runner.req_indices.gpu = torch.tensor([0])
+    provider.runner.query_start_loc.gpu = torch.tensor([0, 1])
+    table.slot_mapping.gpu[0] = 129
+    second = AscendMetadata(
+        torch.tensor([130]),
+        torch.tensor([130]),
+        [130],
+        table.slot_mapping.gpu[:1],
+    )
+    second_common = CommonMetadata(
+        torch.tensor([130]),
+        torch.tensor([130]),
+        torch.tensor([130]),
+        table.slot_mapping.gpu[:1],
+        torch.tensor([130]),
+        torch.tensor([301]),
+    )
+    metadata, common = provider.per_layer_attention_metadata(
+        ({layer.name: second for layer in provider.layer_caches}, second_common),
+        1,
+        1,
+    )
+    assert metadata["model.layers.1.self_attn"].slot_mapping.tolist() == [65]
+    assert metadata["model.layers.1.self_attn"].seq_lens_list == [66]
+    assert common.seq_lens.tolist() == [66]
+    assert common.num_computed_tokens_cpu.tolist() == [65]
+    assert common.slot_mapping.tolist() == [65]
 
 
 def test_per_layer_metadata_bypass_fails_closed() -> None:
@@ -825,6 +996,7 @@ def _observing_provider() -> AscendKVCompressionProvider:
     provider = _provider()
     provider.method = _ObservingMethod()
     provider.query_window_tokens = 2
+    provider.query_layer_caches = provider.layer_caches
     request = SimpleNamespace(
         num_computed_tokens=298,
         num_prompt_tokens=300,
