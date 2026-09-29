@@ -3,6 +3,7 @@
 import pickle
 from types import SimpleNamespace
 
+import pytest
 import torch
 from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
@@ -131,7 +132,11 @@ def _scheduler(
         ]
 
     manager = SimpleNamespace(
-        coordinator=SimpleNamespace(single_type_managers=tuple(single_managers)),
+        coordinator=SimpleNamespace(
+            single_type_managers=tuple(single_managers),
+            find_longest_cache_hit=lambda block_hashes, limit: ((), 0, 0),
+        ),
+        get_computed_blocks=lambda request: ((), 0, 0),
         block_pool=SimpleNamespace(
             free_blocks=lambda values: freed.extend(values),
             get_num_free_blocks=lambda: 100,
@@ -230,6 +235,45 @@ def test_scheduler_uses_registered_method_runtime_spec(monkeypatch) -> None:
         state.required_recompute_tokens,
         state.min_output_tokens,
     ) == (256, 128, 128, 32)
+
+
+def test_scheduler_rejects_query_window_larger_than_recompute_window(
+    monkeypatch,
+) -> None:
+    scheduler, _, _ = _scheduler(prefix_caching=True)
+    monkeypatch.setattr(
+        stateful_module, "model_shape_from_config", lambda config: "shape"
+    )
+    monkeypatch.setattr(
+        stateful_module,
+        "create_method",
+        lambda *args: SimpleNamespace(
+            name="external",
+            runtime_spec=MethodRuntimeSpec(True, 256, 8, 128),
+            query_window_tokens=16,
+        ),
+    )
+    selection = ProviderSelection.from_mapping({"method": "external"})
+    with pytest.raises(ValueError, match="no greater than required_recompute_tokens"):
+        SchedulerCompressionState(scheduler, selection)
+
+
+@pytest.mark.parametrize("missing", ["manager", "coordinator"])
+def test_scheduler_rejects_missing_apc_lookup_seam(missing) -> None:
+    scheduler, _, _ = _scheduler(prefix_caching=True)
+    if missing == "manager":
+        del scheduler.kv_cache_manager.get_computed_blocks
+    else:
+        del scheduler.kv_cache_manager.coordinator.find_longest_cache_hit
+    with pytest.raises(RuntimeError, match="APC requires"):
+        SchedulerCompressionState(scheduler, _selection())
+
+
+def test_apc_disabled_does_not_require_prefix_lookup_seam() -> None:
+    scheduler, _, _ = _scheduler(prefix_caching=False)
+    del scheduler.kv_cache_manager.get_computed_blocks
+    del scheduler.kv_cache_manager.coordinator.find_longest_cache_hit
+    SchedulerCompressionState(scheduler, _selection())
 
 
 def test_prefix_cache_hit_cap_reserves_the_method_query_suffix() -> None:

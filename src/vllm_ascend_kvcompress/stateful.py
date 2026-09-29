@@ -91,6 +91,17 @@ class SchedulerCompressionState:
             )
             spec = method.runtime_spec
             _validate_method_runtime_spec(method.name, spec)
+            query_window = getattr(method, "query_window_tokens", 0)
+            if (
+                isinstance(query_window, bool)
+                or not isinstance(query_window, int)
+                or query_window < 0
+                or query_window > spec.required_recompute_tokens
+            ):
+                raise ValueError(
+                    "method query_window_tokens must be a non-negative integer "
+                    "no greater than required_recompute_tokens"
+                )
             threshold = spec.compression_threshold_tokens
             budget = spec.max_physical_num_tokens
             required_recompute_tokens = spec.required_recompute_tokens
@@ -199,6 +210,14 @@ class SchedulerCompressionState:
             )
         if config.kv_transfer_config is not None:
             reasons.append("KV transfer is unsupported")
+        if bool(getattr(config.cache_config, "enable_prefix_caching", False)):
+            cache_manager = scheduler.kv_cache_manager
+            if not callable(getattr(cache_manager, "get_computed_blocks", None)):
+                reasons.append("APC requires KVCacheManager.get_computed_blocks")
+            if not callable(
+                getattr(cache_manager.coordinator, "find_longest_cache_hit", None)
+            ):
+                reasons.append("APC requires KVCacheCoordinator.find_longest_cache_hit")
         parallel = config.parallel_config
         for name, attr in (
             ("pipeline parallel", "pipeline_parallel_size"),

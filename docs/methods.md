@@ -136,6 +136,9 @@ This guarantees that the method's declared trailing query suffix is executed,
 including with chunked prefill. Prompts shorter than the required window
 recompute from token zero. APC-disabled, below-threshold, and output-ineligible
 requests keep the host's original admission path.
+Query-observing methods must declare a recompute window at least as long as
+`query_window_tokens`. With APC enabled, the adapter checks the required host
+lookup hooks at startup and fails closed if they are unavailable.
 
 ### Per-layer physical state
 
