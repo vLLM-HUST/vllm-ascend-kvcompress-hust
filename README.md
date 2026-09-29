@@ -5,10 +5,12 @@ English | [简体中文](README.zh.md)
 An independently packaged TriAttention KV-cache compression plugin for the
 upstream-aligned vLLM-HUST and vLLM-Ascend-HUST stacks. The 0.7 release added
 the paper's V3 position policy and experimental Qwen3.5 support. Version 0.8
-adapts to the synchronized hosts without
-changing their source repositories.
+adapted to the synchronized hosts without changing their source repositories.
+Version 0.9 publishes method API v1 for separately packaged compression
+methods, including per-layer physical-state and query-observation contracts.
 
-> Status: 0.8.0 has bounded engineering validation, not production or formal
+> Status: 0.9.0 is a release candidate for the method-host API added after the
+> 0.8.0 wheel. The underlying runtime has bounded engineering validation, not production or formal
 > leaderboard qualification. On merged source commit `17ffdc7`, Qwen3.5 BF16/TP=2
 > passed separate official AgentX and SWE C4/900-second B0/B1 protocols at
 > 262,144 configured context. AgentX output throughput improved **11.18%** and
@@ -57,7 +59,7 @@ and [calibration artifacts](docs/calibration-artifacts.md).
 
 | Component | Supported line | Validated snapshot |
 | --- | --- | --- |
-| vLLM-HUST / `vllm` | `>=0.29.1.post1.dev0,<0.30` (0.8.0) | `fc06902b7d` (`0.29.1.post1.dev843+gfc06902b7.empty`) |
+| vLLM-HUST / `vllm` | `>=0.29.1.post1.dev0,<0.30` (0.9.0) | `fc06902b7d` (`0.29.1.post1.dev843+gfc06902b7.empty`) |
 | vLLM-Ascend-HUST / `vllm-ascend` | `>=0.25.1rc2.dev0,<0.26` | `5422a07c4` (`0.25.1rc2.dev616+hust.20260903.4.g5422a07c4`) |
 | Unified Frontier legacy line | Core `0.23.0+empty`, Ascend `0.23.0.post1` | Core `d0f22d2bda562156e4dbf433ce645e1769b4f804`, Ascend `03766ac696fde5ab1980d80ca0b8543d3580c989` |
 | Extension Manager | `>=0.2.0.dev0,<0.3` | installed `0.2.0.dev0` |
@@ -95,11 +97,11 @@ vLLM line requires `opencv-python-headless>=4.13`, whose available wheels
 require NumPy 2. Downgrading OpenCV to 4.9 violates the vLLM requirement. Use
 the matched Triton-Ascend 3.6 host stack instead.
 
-After provisioning the matched host stack, install version 0.8.0 without
+After provisioning the matched host stack, install version 0.9.0 without
 re-resolving hardware-specific dependencies:
 
 ```bash
-python -m pip install --no-deps vllm-ascend-kvcompress-hust==0.8.0
+python -m pip install --no-deps vllm-ascend-kvcompress-hust==0.9.0
 ```
 
 For a fresh environment, install `vllm-hust-ext` separately from its approved

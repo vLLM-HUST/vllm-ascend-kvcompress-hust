@@ -4,9 +4,11 @@
 
 面向与上游对齐的 vLLM-HUST、vLLM-Ascend-HUST 的独立 TriAttention KV-cache
 压缩插件。0.7 版加入论文 V3 位置策略与实验性 Qwen3.5 支持；0.8 版适配同步后
-的宿主，且不修改宿主源码仓库。
+的宿主，且不修改宿主源码仓库。0.9 版发布供独立压缩方法使用的 method API v1，
+包括逐层物理状态与 Query 观测契约。
 
-> 状态：0.8.0 具备有边界的工程验证，但不宣称生产可用或正式榜单验收。合并源码提交
+> 状态：0.9.0 是在 0.8.0 wheel 之后新增 method-host API 的发布候选；底层运行线
+> 具备有边界的工程验证，但不宣称生产可用或正式榜单验收。合并源码提交
 > `17ffdc7` 上，Qwen3.5 BF16/TP=2 在配置 262,144 上下文的官方 AgentX 与
 > SWE C4／900 秒 B0/B1 配对均协议有效。AgentX 总输出吞吐提升 **11.18%**、
 > 解码 P90 提升 **5.27%**，TTFT P95 则变差 **16.06%**。SWE 在真实 MTP2、
@@ -49,7 +51,7 @@ wheel/sdist。仓库中仅供开发使用的统计产物缺少完整模型/数�
 
 | 组件 | 支持版本 | 已验证快照 |
 | --- | --- | --- |
-| vLLM-HUST / `vllm` | `>=0.29.1.post1.dev0,<0.30`（0.8 候选） | `fc06902b7d`（`0.29.1.post1.dev843+gfc06902b7.empty`） |
+| vLLM-HUST / `vllm` | `>=0.29.1.post1.dev0,<0.30`（0.9.0） | `fc06902b7d`（`0.29.1.post1.dev843+gfc06902b7.empty`） |
 | vLLM-Ascend-HUST / `vllm-ascend` | `>=0.25.1rc2.dev0,<0.26` | `5422a07c4`（`0.25.1rc2.dev616+hust.20260903.4.g5422a07c4`） |
 | Extension Manager | `>=0.2.0.dev0,<0.3` | 已安装 `0.2.0.dev0` |
 | Python | `>=3.10,<3.15` | 3.11.16 |
@@ -77,10 +79,10 @@ Ascend 宿主使用 32,768-token 跨组 scheduler 对齐、2,048-token 全注意
 `opencv-python-headless>=4.13`，其可用 wheel 要求 NumPy 2；把 OpenCV 降到
 4.9 又会违反 vLLM 的依赖约束。应使用宿主栈配套的 Triton-Ascend 3.6。
 
-先部署经过匹配验证的宿主栈，再安装 0.8.0，且不重新解析硬件相关依赖：
+先部署经过匹配验证的宿主栈，再安装 0.9.0，且不重新解析硬件相关依赖：
 
 ```bash
-python -m pip install --no-deps vllm-ascend-kvcompress-hust==0.8.0
+python -m pip install --no-deps vllm-ascend-kvcompress-hust==0.9.0
 ```
 
 全新环境需先从项目组认可的软件源单独安装 `vllm-hust-ext`，再执行上述命令。

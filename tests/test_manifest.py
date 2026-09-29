@@ -12,7 +12,7 @@ def test_extension_manager_manifest_is_enableable_and_versioned() -> None:
     manifest = parse_manifest(raw_manifest)
 
     assert manifest.bundle_id == "org.vllm-hust.ascend-kvcompress"
-    assert manifest.bundle_version == "0.8.0"
+    assert manifest.bundle_version == "0.9.0"
     assert manifest.host.name == "vllm-ascend"
     assert manifest.host.version_range == (
         ">=0.23.0.post1,<0.26,!=0.24.*,!=0.25.0.*"

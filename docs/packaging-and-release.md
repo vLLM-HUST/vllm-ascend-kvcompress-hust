@@ -14,17 +14,17 @@ version identical; run CPU, package, NPU, lifecycle, and declared service
 tests; freeze host/model/calibration/data provenance; and review the complete
 diff. PyPI files are immutable, so any code change requires a new version.
 
-Version 0.8.0 remains experimental. Its validation supports bounded engineering
-performance statements, not production readiness or an official website score.
+Version 0.9.0 remains experimental. It publishes method API v1 for external
+compression methods. Its validation supports bounded engineering performance
+statements, not production readiness or an official website score.
 The release gate is the current
 [Frontier protocol](frontier-benchmarking.md): matched synchronized host runtime,
 complete 262,144-context APC/MTP2/async/FULL_AND_PIECEWISE/align service checks,
 auditable B0/B1 runs for both official 900-second SWE and AgentX workloads, and
 at least one positive, protocol-valid Frontier workload result. Disclose any
 regression in the other workload. Historical V4.6 records do not substitute
-for those results. Do not
-change the version or upload to PyPI until the user confirms the release. The
-user requested publication on 2026-09-27. The post-merge AgentX 900-second
+for those results. Do not upload to PyPI until the release owner confirms the
+exact candidate. The post-merge AgentX 900-second
 pair improved output throughput by 11.18% and decode P90 by 5.27%; the SWE
 pair was protocol-valid but regressed by 2.95% and 1.34% respectively. Neither
 pair reached a 256K actual prompt, and neither is an official website result.
@@ -59,11 +59,11 @@ Then inspect exactly the candidate files:
 
 ```bash
 python -m zipfile -l \
-  dist/vllm_ascend_kvcompress_hust-0.8.0-py3-none-any.whl
+  dist/vllm_ascend_kvcompress_hust-0.9.0-py3-none-any.whl
 python -m twine check \
-  dist/vllm_ascend_kvcompress_hust-0.8.0-py3-none-any.whl \
-  dist/vllm_ascend_kvcompress_hust-0.8.0.tar.gz
-sha256sum dist/vllm_ascend_kvcompress_hust-0.8.0*
+  dist/vllm_ascend_kvcompress_hust-0.9.0-py3-none-any.whl \
+  dist/vllm_ascend_kvcompress_hust-0.9.0.tar.gz
+sha256sum dist/vllm_ascend_kvcompress_hust-0.9.0*
 ```
 
 The wheel must contain code, `LICENSE`, `NOTICE`, and
@@ -82,7 +82,7 @@ source checkout on `PYTHONPATH`:
 
 ```bash
 python -m pip install --no-deps \
-  dist/vllm_ascend_kvcompress_hust-0.8.0-py3-none-any.whl
+  dist/vllm_ascend_kvcompress_hust-0.9.0-py3-none-any.whl
 vllm-hust-ext extension validate org.vllm-hust.ascend-kvcompress
 vllm-hust-ext extension configure org.vllm-hust.ascend-kvcompress \
   --file /absolute/path/triattention.json
@@ -115,12 +115,12 @@ organization/project. Do not pass the token on the command line or commit it:
 ```bash
 export UV_PUBLISH_TOKEN='<read from the secret store>'
 uv publish --check-url https://pypi.org/simple \
-  dist/vllm_ascend_kvcompress_hust-0.8.0-py3-none-any.whl \
-  dist/vllm_ascend_kvcompress_hust-0.8.0.tar.gz
+  dist/vllm_ascend_kvcompress_hust-0.9.0-py3-none-any.whl \
+  dist/vllm_ascend_kvcompress_hust-0.9.0.tar.gz
 unset UV_PUBLISH_TOKEN
 ```
 
 If the protected publisher uses Twine instead, set `TWINE_USERNAME=__token__`
 and `TWINE_PASSWORD` from the secret store, then upload the same two explicit
-files. Finally install 0.8.0 from production PyPI without cache, verify hashes,
+files. Finally install 0.9.0 from production PyPI without cache, verify hashes,
 manager discovery, enablement, `/health`, and one correctness case.
