@@ -148,6 +148,29 @@ class KVCompressionMethod(ABC):
         """
         return 0
 
+    @property
+    def query_layer_indices(self) -> tuple[int, ...] | None:
+        """Model-layer indices whose Query rows the method observes.
+
+        ``None`` keeps the original contract and observes every bound
+        full-attention cache layer.  Hybrid speculative runtimes can expose
+        auxiliary attention caches (for example an MTP draft layer) that do
+        not execute in the target-model prefill.  Query-based methods may
+        exclude those auxiliary caches by returning the exact target-layer
+        indices they consume.
+        """
+        return None
+
+    @property
+    def requires_per_layer_physical_state(self) -> bool:
+        """Whether graph capture must prepare layer-distinct KV metadata.
+
+        Eager execution can discover a non-uniform result at compression
+        time.  Graph capture happens earlier, so a method that may return
+        unequal per-layer lengths must opt in before the first capture.
+        """
+        return False
+
     def capture_query(
         self,
         layer: LayerCache,

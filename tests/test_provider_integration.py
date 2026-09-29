@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import sys
 from dataclasses import dataclass
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -106,7 +107,10 @@ def test_async_scheduling_is_admitted_by_worker_compatibility(monkeypatch) -> No
 def _provider() -> AscendKVCompressionProvider:
     provider = AscendKVCompressionProvider.__new__(AscendKVCompressionProvider)
     provider.method = _RecordingMethod()
+    provider.requires_per_layer_physical_state = False
     provider.query_window_tokens = 0
+    provider.query_layer_caches = ()
+    provider.speculative_cache_layer = None
     provider._query_step_output = None
     provider._query_seen_layers = set()
     provider._query_forward_complete = False
@@ -130,6 +134,8 @@ def _provider() -> AscendKVCompressionProvider:
     provider._has_active_rows = False
     provider._has_per_layer_rows = False
     provider._per_layer_metadata_seen = False
+    provider._per_layer_step_requires_metadata = False
+    provider._per_layer_slot_buffers = {}
     provider._physical_lengths_applied = False
     provider.vllm_config = SimpleNamespace(
         cache_config=SimpleNamespace(enable_prefix_caching=False),
@@ -705,8 +711,10 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> Non
     )
     first, second = (metadata[layer.name] for layer in provider.layer_caches)
     assert common == "common"
-    assert first is shared
+    assert first is not shared
     assert first.seq_lens_list == [129, 21]
+    first_slot_address = first.slot_mapping.data_ptr()
+    second_slot_address = second.slot_mapping.data_ptr()
     assert second.seq_lens_list == [65, 21]
     assert second.seq_lens.tolist() == [65, 21]
     assert second.slot_mapping.tolist() == [100 * 128 + 64, 20 * 128 + 20]
@@ -723,6 +731,14 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> Non
     next_metadata, _ = provider.per_layer_attention_metadata(
         ({layer.name: next_shared for layer in provider.layer_caches}, None), 2, 2
     )
+    assert (
+        next_metadata["model.layers.0.self_attn"].slot_mapping.data_ptr()
+        == first_slot_address
+    )
+    assert (
+        next_metadata["model.layers.1.self_attn"].slot_mapping.data_ptr()
+        == second_slot_address
+    )
     assert next_metadata["model.layers.1.self_attn"].seq_lens_list == [70, 21]
     assert next_metadata["model.layers.1.self_attn"].slot_mapping.tolist() == [
         100 * 128 + 69,
@@ -731,7 +747,7 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> Non
     assert table.slot_mapping.gpu.tolist() == [12933, 2580]
 
 
-def test_nonuniform_lengths_fail_closed_under_graph_replay() -> None:
+def test_undeclared_nonuniform_lengths_fail_closed_under_graph_replay() -> None:
     provider = _provider()
     provider.layer_caches += (
         LayerCache("model.layers.1.self_attn", 1, torch.empty(0), torch.empty(0)),
@@ -741,19 +757,214 @@ def test_nonuniform_lengths_fail_closed_under_graph_replay() -> None:
             cudagraph_mode=SimpleNamespace(name="FULL_AND_PIECEWISE")
         )
     )
-    with pytest.raises(RuntimeError, match="requires eager execution"):
+    with pytest.raises(RuntimeError, match="declare per-layer physical state"):
         provider._validate_per_layer_lengths(
             (("model.layers.0.self_attn", 128), ("model.layers.1.self_attn", 64)),
             128,
         )
 
 
+def test_declared_per_layer_state_accepts_layer_aware_full_graph(
+    monkeypatch,
+) -> None:
+    class AscendAttentionBackendImpl:
+        _ascend_kvcompress_layer_aware_graph_v1 = True
+
+    ascend = ModuleType("vllm_ascend")
+    attention = ModuleType("vllm_ascend.attention")
+    attention_v1 = ModuleType("vllm_ascend.attention.attention_v1")
+    attention_v1.AscendAttentionBackendImpl = AscendAttentionBackendImpl
+    monkeypatch.setitem(sys.modules, "vllm_ascend", ascend)
+    monkeypatch.setitem(sys.modules, "vllm_ascend.attention", attention)
+    monkeypatch.setitem(sys.modules, "vllm_ascend.attention.attention_v1", attention_v1)
+
+    provider = _provider()
+    provider.requires_per_layer_physical_state = True
+    provider.runner = SimpleNamespace(
+        compilation_config=SimpleNamespace(
+            cudagraph_mode=SimpleNamespace(name="FULL_AND_PIECEWISE")
+        ),
+        use_dcp=False,
+        pcp_enabled=False,
+        use_async_spec_decode=True,
+    )
+    provider.vllm_config.speculative_config = None
+
+    provider._validate_per_layer_host()
+
+
+def test_per_layer_full_graph_capture_accepts_synthetic_empty_batch() -> None:
+    provider = _provider()
+    provider.requires_per_layer_physical_state = True
+    provider._validate_per_layer_host = lambda: None  # type: ignore[method-assign]
+    provider.runner = SimpleNamespace(
+        input_batch=SimpleNamespace(req_ids=[], num_reqs=0),
+    )
+    result = ({"model.layers.0.self_attn": object()}, object())
+
+    assert provider.per_layer_attention_metadata(result, 48, 48) is result
+    assert provider._per_layer_metadata_seen
+
+
+def test_per_layer_full_graph_capture_rejects_partial_real_batch() -> None:
+    provider = _provider()
+    provider.requires_per_layer_physical_state = True
+    provider._validate_per_layer_host = lambda: None  # type: ignore[method-assign]
+    provider.runner = SimpleNamespace(
+        input_batch=SimpleNamespace(req_ids=["real"], num_reqs=1),
+    )
+
+    with pytest.raises(RuntimeError, match="batch dimensions changed"):
+        provider.per_layer_attention_metadata(
+            ({"model.layers.0.self_attn": object()}, object()),
+            48,
+            48,
+        )
+
+
+def test_query_observation_can_exclude_auxiliary_mtp_cache() -> None:
+    provider = _provider()
+    provider.layer_caches += (
+        LayerCache("mtp.layers.0.self_attn.attn", 0, torch.empty(0), torch.empty(0)),
+        LayerCache("model.layers.3.self_attn", 3, torch.empty(0), torch.empty(0)),
+    )
+    provider.method = SimpleNamespace(query_layer_indices=(3,))
+    provider.query_window_tokens = 2
+
+    selected = provider._resolve_query_layer_caches()
+
+    assert tuple(cache.name for cache in selected) == ("model.layers.3.self_attn",)
+
+
+def test_mtp_rejected_draft_reuses_layer_specific_physical_slots() -> None:
+    @dataclass
+    class AscendMetadata:
+        seq_lens: torch.Tensor
+        seq_lens_cpu: torch.Tensor
+        seq_lens_list: list[int]
+        slot_mapping: torch.Tensor
+
+    AscendMetadata.__module__ = "vllm_ascend.attention.attention_v1"
+
+    @dataclass
+    class CommonMetadata:
+        seq_lens: torch.Tensor
+        _seq_lens_cpu: torch.Tensor
+        seq_lens_cpu_upper_bound: torch.Tensor
+        slot_mapping: torch.Tensor
+        seq_lens_cpu: torch.Tensor | None = None
+        num_computed_tokens_cpu: torch.Tensor | None = None
+
+    class BlockTable:
+        def __init__(self) -> None:
+            self.slot_mapping = SimpleNamespace(
+                gpu=torch.tensor([128, 129, 130], dtype=torch.int64)
+            )
+
+        def native(self, num_reqs, query_start_loc, positions):
+            assert num_reqs == 1
+            assert int(query_start_loc[-1]) == len(positions)
+            for token, position in enumerate(positions.tolist()):
+                self.slot_mapping.gpu[token] = position
+
+    BlockTable._ascend_kvcompress_patch_v3_slot_mapping_original = BlockTable.native
+    table = BlockTable()
+    provider = _provider()
+    provider.layer_caches += (
+        LayerCache("model.layers.1.self_attn", 1, torch.empty(0), torch.empty(0)),
+    )
+    provider.active["r"] = ActiveCompression(
+        300,
+        128,
+        (("model.layers.0.self_attn", 128), ("model.layers.1.self_attn", 64)),
+    )
+    provider._has_per_layer_rows = True
+    provider._physical_lengths_applied = True
+    provider._request_offsets_cpu = torch.tensor([172])
+    provider.speculative_cache_layer = provider.layer_caches[1]
+    provider.runner = SimpleNamespace(
+        compilation_config=SimpleNamespace(cudagraph_mode=SimpleNamespace(name="NONE")),
+        input_batch=SimpleNamespace(
+            req_ids=["r"],
+            block_table=SimpleNamespace(block_tables=[table]),
+        ),
+        positions=torch.tensor([300, 301, 302]),
+        req_indices=SimpleNamespace(gpu=torch.tensor([0, 0, 0])),
+        query_start_loc=SimpleNamespace(gpu=torch.tensor([0, 3])),
+    )
+    first = AscendMetadata(
+        torch.tensor([131]),
+        torch.tensor([131]),
+        [131],
+        table.slot_mapping.gpu,
+    )
+    first_common = CommonMetadata(
+        torch.tensor([131]),
+        torch.tensor([131]),
+        torch.tensor([131]),
+        table.slot_mapping.gpu,
+        torch.tensor([131]),
+        torch.tensor([300]),
+    )
+    metadata, common = provider.per_layer_attention_metadata(
+        ({layer.name: first for layer in provider.layer_caches}, first_common),
+        3,
+        1,
+    )
+    assert metadata["model.layers.1.self_attn"].slot_mapping.tolist() == [64, 65, 66]
+    assert common.seq_lens.tolist() == [67]
+    assert common._seq_lens_cpu.tolist() == [67]
+    assert common.num_computed_tokens_cpu.tolist() == [64]
+    assert common.slot_mapping.tolist() == [64, 65, 66]
+
+    # Only the first speculative token was accepted. The next iteration writes
+    # semantic position 301 again and must overwrite the rejected draft slot.
+    provider.runner.positions = torch.tensor([301])
+    provider.runner.req_indices.gpu = torch.tensor([0])
+    provider.runner.query_start_loc.gpu = torch.tensor([0, 1])
+    table.slot_mapping.gpu[0] = 129
+    second = AscendMetadata(
+        torch.tensor([130]),
+        torch.tensor([130]),
+        [130],
+        table.slot_mapping.gpu[:1],
+    )
+    second_common = CommonMetadata(
+        torch.tensor([130]),
+        torch.tensor([130]),
+        torch.tensor([130]),
+        table.slot_mapping.gpu[:1],
+        torch.tensor([130]),
+        torch.tensor([301]),
+    )
+    metadata, common = provider.per_layer_attention_metadata(
+        ({layer.name: second for layer in provider.layer_caches}, second_common),
+        1,
+        1,
+    )
+    assert metadata["model.layers.1.self_attn"].slot_mapping.tolist() == [65]
+    assert metadata["model.layers.1.self_attn"].seq_lens_list == [66]
+    assert common.seq_lens.tolist() == [66]
+    assert common.num_computed_tokens_cpu.tolist() == [65]
+    assert common.slot_mapping.tolist() == [65]
+
+
 def test_per_layer_metadata_bypass_fails_closed() -> None:
     provider = _provider()
     provider._has_per_layer_rows = True
-    provider.begin_per_layer_step()
+    provider.begin_per_layer_step(SimpleNamespace(num_scheduled_tokens={"r": 1}))
     with pytest.raises(RuntimeError, match="metadata hook was bypassed"):
         provider.finish_per_layer_step()
+
+
+def test_per_layer_metadata_allows_async_empty_execution_step() -> None:
+    provider = _provider()
+    provider._has_per_layer_rows = True
+
+    provider.begin_per_layer_step(SimpleNamespace(num_scheduled_tokens={}))
+    provider.finish_per_layer_step()
+
+    assert not provider._per_layer_step_requires_metadata
 
 
 def test_worker_skips_short_decode_request() -> None:
@@ -825,6 +1036,7 @@ def _observing_provider() -> AscendKVCompressionProvider:
     provider = _provider()
     provider.method = _ObservingMethod()
     provider.query_window_tokens = 2
+    provider.query_layer_caches = provider.layer_caches
     request = SimpleNamespace(
         num_computed_tokens=298,
         num_prompt_tokens=300,
@@ -842,18 +1054,21 @@ def _observing_provider() -> AscendKVCompressionProvider:
 
 def test_query_observation_spans_chunked_prefill_and_matches_plan() -> None:
     provider = _observing_provider()
-    capture = provider._make_query_hook(provider.layer_caches[0])
     first = SimpleNamespace(num_scheduled_tokens={"r": 1})
 
     provider.begin_query_step(first)
-    capture(None, (torch.tensor([[1.0, 2.0]]),))
+    provider.capture_attention_query(
+        "model.layers.0.self_attn", torch.tensor([[1.0, 2.0]])
+    )
     provider.finish_query_step()
     stable_address = provider.method.buffers["r"].data_ptr()
 
     provider.runner.requests["r"].num_computed_tokens = 299
     final = _output_with_plan(300, (2, 0, 3), (50,), 1)
     provider.begin_query_step(final)
-    capture(None, (torch.tensor([[3.0, 4.0]]),))
+    provider.capture_attention_query(
+        "model.layers.0.self_attn", torch.tensor([[3.0, 4.0]])
+    )
     provider.finish_query_step()
     assert provider.method.buffers["r"].data_ptr() == stable_address
     provider.compress_scheduled_requests(final)
@@ -865,6 +1080,22 @@ def test_query_observation_spans_chunked_prefill_and_matches_plan() -> None:
     assert provider.method.observation.plan is getattr(final, PLAN_ATTRIBUTE)["r"]
     assert provider.method.discarded == ["r"]
     assert provider.method.buffers == {}
+
+
+def test_query_observation_accepts_attention_backend_callback() -> None:
+    provider = _observing_provider()
+    output = SimpleNamespace(num_scheduled_tokens={"r": 1})
+
+    provider.begin_query_step(output)
+    provider.capture_attention_query(
+        "model.layers.0.self_attn", torch.tensor([[1.0, 2.0]])
+    )
+    provider.finish_query_step()
+
+    torch.testing.assert_close(
+        provider.method.buffers["r"][0], torch.tensor([1.0, 2.0])
+    )
+    assert provider.method.counts["r"] == 1
 
 
 def test_query_observation_fails_closed_when_forward_hook_is_bypassed() -> None:
@@ -884,8 +1115,8 @@ def test_query_observation_is_discarded_on_preemption() -> None:
     provider = _observing_provider()
     output = SimpleNamespace(num_scheduled_tokens={"r": 1})
     provider.begin_query_step(output)
-    provider._make_query_hook(provider.layer_caches[0])(
-        None, (torch.tensor([[1.0, 2.0]]),)
+    provider.capture_attention_query(
+        "model.layers.0.self_attn", torch.tensor([[1.0, 2.0]])
     )
     provider.finish_query_step()
 

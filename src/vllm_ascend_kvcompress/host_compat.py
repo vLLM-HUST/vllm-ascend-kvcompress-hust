@@ -27,6 +27,69 @@ _gdn_metadata_cache: OrderedDict[
 ] = OrderedDict()
 
 
+def install_layer_aware_fia_graph_replay(vllm_config: Any) -> bool:
+    """Enable the host's existing layer-keyed FULL graph update path.
+
+    The validated Ascend host already records an attention layer name in each
+    captured FIA task and can rebind that task from the current per-layer
+    metadata.  It enables the path only for built-in mixed-attention model
+    families.  External compression methods with unequal physical lengths
+    need the same method-neutral mechanism, so opt into it only after checking
+    that every expected host seam is present.
+    """
+    mode = getattr(vllm_config.compilation_config, "cudagraph_mode", None)
+    mode_name = getattr(mode, "name", str(mode))
+    if mode_name == "NONE":
+        return False
+    if mode_name != "FULL_AND_PIECEWISE":
+        raise RuntimeError(
+            "per-layer KV compression requires FULL_AND_PIECEWISE graph mode"
+        )
+
+    from vllm_ascend.attention import attention_v1
+    from vllm_ascend.attention import utils as attention_utils
+
+    impl = attention_v1.AscendAttentionBackendImpl
+    marker = "_ascend_kvcompress_layer_aware_graph_v1"
+    if getattr(impl, marker, False):
+        return False
+    required_impl_seams = (
+        "_graph_metadata_layer_name",
+        "update_graph_params",
+        "full_graph_fia",
+    )
+    if any(not callable(getattr(impl, name, None)) for name in required_impl_seams):
+        raise RuntimeError(
+            "Ascend attention backend lacks layer-aware FIA graph replay seams"
+        )
+    original = getattr(attention_utils, "needs_layer_aware_fia_graph_replay", None)
+    if not callable(original):
+        raise RuntimeError("Ascend layer-aware graph capability probe is unavailable")
+    if attention_v1.needs_layer_aware_fia_graph_replay is not original:
+        raise RuntimeError("Ascend layer-aware graph capability probe changed")
+
+    # Validate semantics rather than enabling a similarly named older hook.
+    update_source = inspect.getsource(impl.update_graph_params)
+    if not all(
+        token in update_source
+        for token in ("layer_name", "metadata_key", "attn_metadata")
+    ):
+        raise RuntimeError(
+            "Ascend FIA graph updater cannot consume layer-distinct metadata"
+        )
+
+    def layer_aware_replay_enabled() -> bool:
+        return True
+
+    attention_utils.needs_layer_aware_fia_graph_replay = layer_aware_replay_enabled
+    attention_v1.needs_layer_aware_fia_graph_replay = layer_aware_replay_enabled
+    setattr(impl, marker, True)
+    logger.warning(
+        "Enabled layer-aware FIA graph replay for external per-layer KV compression"
+    )
+    return True
+
+
 @contextmanager
 def qwen_mtp2_cache_binding_bridge():
     """Bind Qwen3.5's MTP layer alongside target layer zero, only at startup.
@@ -93,9 +156,7 @@ def qwen_mtp2_cache_binding_bridge():
             for layer_name, kv_cache in kv_caches.items():
                 forward_context[layer_name].kv_cache = kv_cache
         else:
-            bind_to_layers(
-                kv_caches, forward_context, num_attn_module, kv_cache_groups
-            )
+            bind_to_layers(kv_caches, forward_context, num_attn_module, kv_cache_groups)
         logger.warning("Bound exact Qwen3.5 target/MTP layer-zero KV pair")
 
     worker_utils.bind_kv_cache = bind_kv_cache

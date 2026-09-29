@@ -153,11 +153,21 @@ slots and attention lengths independently during decode. A later
 if the request is compressed again. GDN continues to receive semantic lengths.
 
 `None` and all-equal-to-maximum maps use the established shared metadata path,
-including TriAttention. Unequal maps currently require eager execution and
-the standard Ascend FlashAttention metadata class. Graph replay and other
-attention backends fail closed until their per-layer metadata path is
-validated on hardware. CPU contract tests do not qualify an external method
-for serving.
+including TriAttention. A method that may return unequal maps must set
+`requires_per_layer_physical_state` before model loading. Eager execution can
+still discover an undeclared unequal result at transaction time; graph capture
+cannot, because every layer needs a distinct address-stable slot buffer before
+the first capture.
+
+The declared path supports eager execution and the validated
+`FULL_AND_PIECEWISE` Ascend FIA update seam. FULL replay rebinds each captured
+attention task by layer name, while piecewise prefill continues through the
+Python observation hooks. With qualified Qwen3.5 MTP2, the adapter also gives
+the auxiliary draft-attention cache its own sequence lengths and slots through
+the speculative common metadata. Rejected draft positions therefore overwrite
+the same per-layer physical slots on the next step. Other graph modes,
+attention backends, speculative methods, and context-parallel attention fail
+closed. CPU contract tests do not qualify an external method for serving.
 
 ### Optional query observation
 
@@ -166,6 +176,13 @@ TriAttention, install no query hooks. A method that sets a positive integer
 must implement `capture_query(layer, query, spans)`,
 `complete_query_observation(observation)`, and
 `discard_query_observation(request_id)`.
+
+`query_layer_indices` defaults to `None`, meaning every bound full-attention
+cache layer. A hybrid speculative runtime may bind an auxiliary draft cache
+that does not execute in the target-model prefill. Query-based methods can
+return the exact target-layer indices they consume; the adapter then observes
+and completes only those layers while the auxiliary cache remains part of the
+materialized per-layer result.
 
 The host calls `capture_query` only for bound full-attention layers during
 prefill. `query` is the attention layer's post-position-encoding query tensor;
@@ -181,11 +198,11 @@ The method must check that every required layer has a complete window before
 using it. The host calls `discard_query_observation` after compression and on
 request finish, preemption, restart, or failed execution.
 
-The host fails closed when an observing method misses a full-attention layer
-during a prefill forward, including graph replay that bypasses the Python
-hook. This CPU-tested contract does not qualify any graph mode or external
-method for serving. Graph replay, compatibility, and correctness must be
-validated on the exact host and device stack before enabling such a method.
+The host fails closed when an observing method misses a requested layer during
+a prefill forward, including a graph path that bypasses the Python hook. This
+CPU-tested contract does not qualify any graph mode or external method for
+serving. Graph replay, compatibility, and correctness must be validated on the
+exact host and device stack before enabling such a method.
 
 Methods receive validated cache bindings. They must not mutate scheduler-owned
 request objects or block tables. Returned lengths must be positive, no larger
