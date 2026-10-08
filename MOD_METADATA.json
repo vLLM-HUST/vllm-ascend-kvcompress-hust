@@ -1,0 +1,46 @@
+{
+  "canonical_repository": "https://github.com/vLLM-HUST/vllm-ascend-kvcompress-hust",
+  "display_name": "Ascend KV Compression",
+  "evidence": {
+    "index": "https://github.com/vLLM-HUST/vllm-hust-website/blob/main/docs/FRONTIER-QWEN35-KVCOMPRESS.md",
+    "latest_result": "https://github.com/vLLM-HUST/vllm-hust-website/blob/main/docs/FRONTIER-QWEN35-KVCOMPRESS.md",
+    "performance_claims": [],
+    "qualification": "unqualified"
+  },
+  "lifecycle": {
+    "activation_contract": "See the extension manifest and README; discovery alone does not enable this MOD.",
+    "default_enabled": false,
+    "rollback_contract": "Disable the MOD and return to the unmodified host path.",
+    "status": "incubating"
+  },
+  "metadata_source": {
+    "commit": "7df1647048ac5f05fcc502ce4bea94f26d0f5362",
+    "repository": "vLLM-HUST/vllm-hust-website"
+  },
+  "mod_id": "kvcompress-ascend",
+  "repository": "vllm-ascend-kvcompress-hust",
+  "responsibility": {
+    "advisor_status": "declared",
+    "advisors": [
+      {
+        "name": "Yao Wan / 万瑶",
+        "relationship": "internal"
+      }
+    ],
+    "maintainers": [
+      {
+        "github": "Jiawan23",
+        "name": "张家万"
+      }
+    ],
+    "organization": "vLLM-HUST"
+  },
+  "schema_version": "vllm-hust-mod-metadata-v1",
+  "scope": {
+    "mechanism": "kv_state_manager",
+    "out_of_scope": [],
+    "supported_workloads": [
+      "Qwen3.5-35B-A3B — Frontier contract verified"
+    ]
+  }
+}
