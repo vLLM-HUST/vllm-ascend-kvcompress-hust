@@ -184,7 +184,7 @@ def test_qwen35_hybrid_accepts_host_promoted_logical_block_size() -> None:
         )
     )
 
-    assert _allowed_scheduler_block_sizes(config) == frozenset({128, 2048})
+    assert _allowed_scheduler_block_sizes(config) == frozenset({128, 1152, 2048})
 
 
 def test_prefix_caching_is_admitted_with_private_destination_protocol(

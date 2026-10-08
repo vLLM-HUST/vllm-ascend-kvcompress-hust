@@ -1102,9 +1102,9 @@ def _allowed_scheduler_block_sizes(vllm_config: Any) -> frozenset[int]:
     """Return fail-closed logical page sizes for a supported model family.
 
     Ascend keeps 128-token kernel cache blocks. Its hybrid cache adapter may
-    promote the full-attention manager page to 2048 tokens, representing one
-    logical attention block as 16 consecutive kernel blocks. The scheduler's
-    cross-group LCM alignment is validated separately.
+    promote the full-attention manager page to 1152 or 2048 tokens,
+    representing one logical attention block as 9 or 16 consecutive kernel
+    blocks. The scheduler's cross-group LCM alignment is validated separately.
     """
     model_config = getattr(vllm_config, "model_config", None)
     if not bool(getattr(model_config, "is_hybrid", False)):
@@ -1112,7 +1112,7 @@ def _allowed_scheduler_block_sizes(vllm_config: Any) -> frozenset[int]:
     text_config = getattr(model_config, "hf_text_config", None)
     model_type = str(getattr(text_config, "model_type", ""))
     if model_type in {"qwen3_5_text", "qwen3_5_moe_text"}:
-        return frozenset({ASCEND_BLOCK_SIZE, 2048})
+        return frozenset({ASCEND_BLOCK_SIZE, 1152, 2048})
     return frozenset({ASCEND_BLOCK_SIZE})
 
 
