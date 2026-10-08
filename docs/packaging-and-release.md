@@ -28,6 +28,13 @@ exact candidate. The post-merge AgentX 900-second
 pair improved output throughput by 11.18% and decode P90 by 5.27%; the SWE
 pair was protocol-valid but regressed by 2.95% and 1.34% respectively. Neither
 pair reached a 256K actual prompt, and neither is an official website result.
+The 2026-10-08 exact 0.9.0 candidate repeated both official 900-second pairs on
+the pinned release stack. SWE decode P90 improved 1.05% while throughput and
+TTFT regressed; AgentX decode P90 improved 1.14%, TTFT and ITL improved, and
+throughput was flat within 0.0001%. Both pairs were protocol-valid with no
+failed requests or invalidity reasons. These local smokes satisfy the bounded
+release gate, but remain single engineering observations rather than formal
+one-hour or official website results.
 
 The exact 0.8.0 wheel passed Ascend kernel and plugin-owned GDN fallback
 numerical smokes in the locked CANN 9.1/PyTorch 2.13 environment. A Qwen2.5-

@@ -9,19 +9,19 @@ adapted to the synchronized hosts without changing their source repositories.
 Version 0.9 publishes method API v1 for separately packaged compression
 methods, including per-layer physical-state and query-observation contracts.
 
-> Status: 0.9.0 is a release candidate for the method-host API added after the
-> 0.8.0 wheel. The underlying runtime has bounded engineering validation, not production or formal
-> leaderboard qualification. On merged source commit `17ffdc7`, Qwen3.5 BF16/TP=2
-> passed separate official AgentX and SWE C4/900-second B0/B1 protocols at
-> 262,144 configured context. AgentX output throughput improved **11.18%** and
-> decode P90 **5.27%**, while TTFT P95 worsened **16.06%**. SWE, with real
-> MTP2, APC, async, align, and FULL_AND_PIECEWISE, remained valid but regressed
-> output throughput **2.95%** and decode P90 **1.34%**. Both SWE arms passed
-> separate 60-second protocol checks. Maximum observed inputs were about 169K
-> (AgentX) and 75K (SWE), not 256K. This is a local 900-second engineering
-> result, not a formal one-hour AgentX result, semantic-quality certification,
-> or official website submission. MTP2 is experimental and rejected by default;
-> both AgentX arms disabled it under that workload's forced-acceptance rule.
+> Status: 0.9.0 is an experimental method-host API release with bounded
+> engineering validation, not production or formal leaderboard qualification.
+> On the pinned Qwen3.5 BF16/TP=2 release stack, separate SWE and AgentX
+> C4/900-second B0/B1 pairs were protocol-valid at 262,144 configured context.
+> SWE used real MTP2, APC, async, align, and FULL_AND_PIECEWISE; decode P90
+> improved **1.05%**, while total throughput regressed **2.71%** and TTFT P95
+> regressed **9.36%**. AgentX disabled MTP under its forced-acceptance rule;
+> decode P90 improved **1.14%**, TTFT P95 improved **1.43%**, and total
+> throughput was effectively flat at **−0.00009%**. Maximum observed inputs
+> were about 91.6K (AgentX) and 52.5K (SWE), not 256K. These are local
+> 900-second engineering results, not a formal one-hour AgentX result,
+> semantic-quality certification, or official website submission. MTP2 remains
+> experimental and rejected by default.
 > See the [current frontier protocol](docs/frontier-benchmarking.md). The
 > [0.7 validation record](docs/validation.md) remains historical.
 
@@ -59,10 +59,10 @@ and [calibration artifacts](docs/calibration-artifacts.md).
 
 | Component | Supported line | Validated snapshot |
 | --- | --- | --- |
-| vLLM-HUST / `vllm` | `>=0.29.1.post1.dev0,<0.30` (0.9.0) | `fc06902b7d` (`0.29.1.post1.dev843+gfc06902b7.empty`) |
-| vLLM-Ascend-HUST / `vllm-ascend` | `>=0.25.1rc2.dev0,<0.26` | `5422a07c4` (`0.25.1rc2.dev616+hust.20260903.4.g5422a07c4`) |
+| vLLM-HUST / `vllm` | `>=0.29.1.post1.dev0,<0.30` (0.9.0) | `ebfcfba650` (`0.29.1.post1.dev456+gebfcfba65.empty`) |
+| vLLM-Ascend-HUST / `vllm-ascend` | `>=0.25.1rc2.dev0,<0.26` | `7c8ec865a1` (`0.25.1rc2.dev774+hust.20260903.4.g7c8ec865a`) |
 | Unified Frontier legacy line | Core `0.23.0+empty`, Ascend `0.23.0.post1` | Core `d0f22d2bda562156e4dbf433ce645e1769b4f804`, Ascend `03766ac696fde5ab1980d80ca0b8543d3580c989` |
-| Extension Manager | `>=0.2.0.dev0,<0.3` | installed `0.2.0.dev0` |
+| Extension Manager | `>=0.2.0.dev0,<0.3` | `075dbcbee6` (`0.2.0.dev0`) |
 | Python | `>=3.10,<3.15` | 3.11.16 |
 
 The standard acceptance topology remains one Ascend NPU, the v1 scheduler and

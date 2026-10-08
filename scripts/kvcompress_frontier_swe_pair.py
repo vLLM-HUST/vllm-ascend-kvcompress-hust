@@ -30,6 +30,74 @@ def _valid(summary: dict[str, Any], config: dict[str, Any]) -> bool:
     )
 
 
+def _server_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Read the original SWE handoff metadata without rewriting the raw report."""
+    if isinstance(metadata.get("mod"), dict):
+        return metadata
+    required = (
+        "runtime_base_commits",
+        "model",
+        "model_path",
+        "model_revision",
+        "tokenizer_fingerprint",
+        "precision",
+        "hardware",
+        "serving_chips",
+        "serving_npus",
+        "runtime_environment",
+        "server_configuration",
+        "mod_repository",
+        "mod_revision",
+        "mod_wheel_sha256",
+        "calibration_sha256",
+        "launch_command_redacted",
+    )
+    missing = [field for field in required if field not in metadata]
+    if missing:
+        raise ValueError(f"SWE server metadata missing {', '.join(missing)}")
+    config = metadata["server_configuration"]
+    for field in ("kvcompress_kv_budget", "kvcompress_recompute_window"):
+        if field not in config:
+            raise ValueError(f"SWE server configuration missing {field}")
+    environment = dict(metadata["runtime_environment"])
+    environment.pop("VLLM_HUST_EXT_CONFIG", None)
+    return {
+        "engine": {"revision": metadata["runtime_base_commits"]["vllm"]},
+        "backend": {"revision": metadata["runtime_base_commits"]["vllm-ascend"]},
+        "model": {
+            "name": metadata["model"],
+            "path": metadata["model_path"],
+            "revision": metadata["model_revision"],
+        },
+        "tokenizer": {
+            "revision": metadata["model_revision"],
+            "fingerprint": metadata["tokenizer_fingerprint"],
+        },
+        "precision": metadata["precision"],
+        "hardware": {
+            "accelerator": metadata["hardware"],
+            "accelerator_count": metadata["serving_chips"],
+            "serving_npus": metadata["serving_npus"],
+        },
+        "runtime": {
+            "extension_manager_revision": metadata.get("extension_manager_revision"),
+            "environment": environment,
+            "worker_class": metadata.get("worker_class"),
+        },
+        "mod": {
+            "repository": metadata["mod_repository"],
+            "revision": metadata["mod_revision"],
+            "wheel_sha256": metadata["mod_wheel_sha256"],
+            "calibration_sha256": metadata["calibration_sha256"],
+            "calibration_path": metadata.get("calibration_artifact"),
+            "kv_budget_tokens": config["kvcompress_kv_budget"],
+            "recompute_window_tokens": config["kvcompress_recompute_window"],
+        },
+        "server_configuration": config,
+        "launch_command_without_secrets": metadata["launch_command_redacted"],
+    }
+
+
 def compare(baseline: Path, candidate: Path) -> dict[str, Any]:
     b0, c0 = _read_run(baseline)
     b1, c1 = _read_run(candidate)
@@ -56,7 +124,8 @@ def compare(baseline: Path, candidate: Path) -> dict[str, Any]:
     for field in same_fields:
         if c0.get(field) != c1.get(field):
             raise ValueError(f"SWE arms differ in {field}")
-    m0, m1 = c0["server_metadata"], c1["server_metadata"]
+    m0 = _server_metadata(c0["server_metadata"])
+    m1 = _server_metadata(c1["server_metadata"])
     for field in (
         "engine",
         "backend",
@@ -68,6 +137,17 @@ def compare(baseline: Path, candidate: Path) -> dict[str, Any]:
     ):
         if m0.get(field) != m1.get(field):
             raise ValueError(f"SWE server arms differ in {field}")
+    settings0 = dict(m0.get("server_configuration", {}))
+    settings1 = dict(m1.get("server_configuration", {}))
+    for settings in (settings0, settings1):
+        for field in (
+            "kvcompress_kv_budget",
+            "kvcompress_recompute_window",
+            "compression_eligible",
+        ):
+            settings.pop(field, None)
+    if settings0 != settings1:
+        raise ValueError("SWE server arms differ in serving configuration")
     mod0, mod1 = dict(m0["mod"]), dict(m1["mod"])
     for mod in (mod0, mod1):
         for field in (

@@ -102,3 +102,50 @@ def test_compare_rejects_invalid_or_unclear_compression_arms(tmp_path: Path) -> 
     baseline_config.write_text(json.dumps(config), encoding="utf-8")
     with pytest.raises(ValueError, match="compression-off"):
         compare(b0, b1)
+
+
+def test_compare_accepts_original_flat_handoff_metadata(tmp_path: Path) -> None:
+    b0 = _run(tmp_path, "B0", 262144)
+    b1 = _run(tmp_path, "B1", 8192)
+    for directory, budget in ((b0, 262144), (b1, 8192)):
+        path = directory / "config.json"
+        config = json.loads(path.read_text(encoding="utf-8"))
+        config["server_metadata"] = {
+            "runtime_base_commits": {"vllm": "a", "vllm-ascend": "b"},
+            "model": "Qwen3.5-35B-A3B",
+            "model_path": "/models/qwen",
+            "model_revision": "c",
+            "tokenizer_fingerprint": "d",
+            "precision": "bfloat16",
+            "hardware": "Ascend 910B2",
+            "serving_chips": 2,
+            "serving_npus": [2, 7],
+            "runtime_environment": {
+                "TORCH_CACHING_PRECOMPILE": "0",
+                "VLLM_HUST_EXT_CONFIG": f"/configs/{directory.name}",
+            },
+            "server_configuration": {
+                "max_model_len": 262144,
+                "kvcompress_kv_budget": budget,
+                "kvcompress_recompute_window": 128,
+            },
+            "mod_repository": "repo",
+            "mod_revision": "rev",
+            "mod_wheel_sha256": "wheel",
+            "calibration_sha256": "cal",
+            "launch_command_redacted": "vllm serve model",
+        }
+        path.write_text(json.dumps(config), encoding="utf-8")
+    assert compare(b0, b1)["deltas"]["output_tps_pct"] == pytest.approx(10)
+    path = b1 / "config.json"
+    config = json.loads(path.read_text(encoding="utf-8"))
+    config["server_metadata"]["runtime_environment"]["TORCH_CACHING_PRECOMPILE"] = "1"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    with pytest.raises(ValueError, match="runtime"):
+        compare(b0, b1)
+
+    config["server_metadata"]["runtime_environment"]["TORCH_CACHING_PRECOMPILE"] = "0"
+    config["server_metadata"]["server_configuration"]["max_model_len"] = 131072
+    path.write_text(json.dumps(config), encoding="utf-8")
+    with pytest.raises(ValueError, match="serving configuration"):
+        compare(b0, b1)

@@ -1,8 +1,8 @@
-# Frontier benchmark protocol (0.8.0)
+# Frontier benchmark protocol (0.9.0)
 
 English | [简体中文](frontier-benchmarking.zh.md)
 
-This protocol replaces the former V4.6 A2/A3 matrix as the project's current leaderboard target. Earlier results remain historical evidence and must not be pooled with the new workloads. A paired AgentX 900-second smoke reproduced a positive throughput result on merged source commit `17ffdc7`; the SWE regression is disclosed below. These local results are not an official website submission.
+This protocol replaces the former V4.6 A2/A3 matrix as the project's current leaderboard target. Earlier results remain historical evidence and must not be pooled with the new workloads. The 0.9.0 release validation uses the same Frontier protocol with a newly pinned model revision and host stack; the 2026-09-27 AgentX positive result and SWE regression below are historical results on merged source commit `17ffdc7`. These local results are not an official website submission.
 
 For SWE run qualification and any later submission to the official website, follow the [Frontier submission guide](https://github.com/vLLM-HUST/vllm-hust-website/blob/codex/frontier-submission-example/data/examples/frontier-submission/README.md). In particular, run a 60-second C4 protocol check before the separate 900-second measurement, preserve the raw `summary.json` and `config.json`, and map `output_tokens_per_second` to total `metrics.output_tps` (the website divides by chip count). A local run or a point on this plugin's HTML page does not automatically publish an official website point. MTP in SWE must use actual generated tokens and observed acceptance, not the historical AgentX synthetic sampler or fixed acceptance length.
 
@@ -15,7 +15,7 @@ For SWE run qualification and any later submission to the official website, foll
 
 The current model is Qwen3.5-35B-A3B BF16 on Ascend 910B2 with TP=2. Qwen3.8-27B BF16 would be a separate future model cohort. Freeze the exact model and tokenizer revisions, prepared-file SHA-256, dataset revision, client commit, host commits, plugin commit, and wheel hash. Both SWE arms must use the **same prepared file**; a changed file hash or token delta is a different workload. Do not filter AgentX sessions, clip output, shorten its original warmup, or alter its DAG and delays.
 
-The locally downloaded model and tokenizer revision is `59d61f3ce65a6d9863b86d2e96597125219dc754`. The official website's historical BetterScale example uses a different `712cf743...` revision; its model/cohort ID must not be reused for these measurements.
+The 2026-09-27 historical runs used model and tokenizer revision `59d61f3ce65a6d9863b86d2e96597125219dc754`. The 0.9.0 release validation uses `712cf74392b05026a6db2bf213d343747d1f6d45`, the revision also used by an older BetterScale website example. It is a separate measurement and must not reuse that example's model/cohort ID.
 
 ### CPU-only workload preparation receipt (2026-09-27)
 
@@ -41,7 +41,57 @@ SWE measures a fixed long-conversation serving shape, not SWE task-solving accur
 
 The local HTML page now separates **Frontier measured points** from **historical records**, following the official [Frontier view](https://vllm-hust.sage.org.ai/leaderboard-runs.html#frontier). The plotted axes are the official P90 decode speed and output tokens/s/chip. `evidence/frontier-results.json` contains both arms of two positive AgentX 900-second smoke pairs, including the post-merge repeat; the SWE cohort remains without a positive point. Each pair shares a `pair_id`, cohort, concurrency, and chip count, with actual maximum input length, raw run IDs, report hashes, evidence URL, and measurement scope preserved. These are plugin-local leaderboard points, not official website submissions or one-hour AgentX results. Run `python scripts/kvcompress_leaderboard.py` to regenerate both browser bundles and `python scripts/kvcompress_leaderboard.py --check` before publishing. No point is inferred from historical percentage deltas.
 
-The old [V4.6 requirements](kv-compress-test-requirements.md), [A2/A3 procedure](benchmarking.md), and [public long-context experiments](public-long-context-benchmarks.md) are historical archives, no longer 0.8 release gates.
+The old [V4.6 requirements](kv-compress-test-requirements.md), [A2/A3 procedure](benchmarking.md), and [public long-context experiments](public-long-context-benchmarks.md) are historical archives, no longer release gates.
+
+## 2026-10-08 local 0.9.0 release validation
+
+The release candidate wheel ran Qwen3.5-35B-A3B revision
+`712cf74392b05026a6db2bf213d343747d1f6d45` in BF16/TP=2 on 910B2
+devices 2 and 7. The matched vLLM and Ascend commits were `ebfcfba` and
+`7c8ec86`; the wheel SHA-256 was `c8de9f51...`. The configured context was
+262,144 tokens with APC, real MTP2, async scheduling, align, and
+FULL_AND_PIECEWISE graphs. Both separate SWE C4/60-second protocol checks and
+both 900-second windows were valid, with zero failed requests and identical
+prepared-workload SHA-256.
+
+| SWE C4/900-second metric | B0, compression off | B1, compression on | B1 vs B0 |
+| --- | ---: | ---: | ---: |
+| Total output tokens/s | 153.297 | 149.143 | −2.71% |
+| Output tokens/s/chip | 76.648 | 74.572 | −2.71% |
+| P90 decode tokens/s | 47.920 | 48.424 | +1.05% |
+| TTFT P95, ms | 1,472.57 | 1,610.33 | +9.36% (worse) |
+| Requests completed in window | 221 | 218 | — |
+| Maximum prompt observed | 52,505 | 52,505 | — |
+
+This pair has a protocol-valid **decode P90 improvement**, with regressions
+in total throughput and TTFT P95. The longest observed prompt was 52,505
+tokens, so it does not establish performance at an actual 256K prompt. During
+the B1 service lifetime, 60 scheduler compression commits each had an
+acknowledgement from both TP ranks; real MTP acceptance and server-side prefix
+hits were logged. The original reports and logs are retained locally, and the
+[machine-readable release record](evidence/kvcompress-qwen35-20261008-v090-swe-pair.json)
+provides their hashes. This is one local engineering pair, not an official
+website point or evidence of repeatability.
+
+The same candidate then ran the paired AgentX C4/900-second smoke with MTP
+disabled in both arms, as required without matched forced-acceptance evidence.
+Both original AIPerf reports were submission-valid, with no invalidity reasons,
+65 completed requests per arm, and a maximum observed input of about 91.6K.
+
+| AgentX C4/900-second metric | B0, compression off | B1, compression on | B1 vs B0 |
+| --- | ---: | ---: | ---: |
+| Total output tokens/s | 33.86587 | 33.86584 | −0.00009% (flat) |
+| Output tokens/s/chip | 16.93294 | 16.93292 | −0.00009% (flat) |
+| P90 decode tokens/s | 27.709 | 28.024 | +1.14% |
+| TTFT P95, ms | 1,819.22 | 1,793.15 | −1.43% (better) |
+| ITL P90, ms | 45.779 | 43.226 | −5.58% (better) |
+
+The B1 service recorded 31 scheduler compression commits and 62 worker
+acknowledgements, with no service errors or preemptions. A post-window cleanup
+timeout was logged after all 66 credits returned; the original report remained
+valid. This is a protocol-valid **decode P90 and latency improvement**, while
+total throughput is effectively unchanged. See the
+[machine-readable AgentX release record](evidence/kvcompress-qwen35-20261008-v090-agentx-pair.json).
 
 ## 2026-09-27 engineering smoke (not a leaderboard result)
 

@@ -7,16 +7,15 @@
 的宿主，且不修改宿主源码仓库。0.9 版发布供独立压缩方法使用的 method API v1，
 包括逐层物理状态与 Query 观测契约。
 
-> 状态：0.9.0 是在 0.8.0 wheel 之后新增 method-host API 的发布候选；底层运行线
-> 具备有边界的工程验证，但不宣称生产可用或正式榜单验收。合并源码提交
-> `17ffdc7` 上，Qwen3.5 BF16/TP=2 在配置 262,144 上下文的官方 AgentX 与
-> SWE C4／900 秒 B0/B1 配对均协议有效。AgentX 总输出吞吐提升 **11.18%**、
-> 解码 P90 提升 **5.27%**，TTFT P95 则变差 **16.06%**。SWE 在真实 MTP2、
-> APC、异步调度、align 与 FULL_AND_PIECEWISE 下仍协议有效，但吞吐下降
-> **2.95%**、解码 P90 下降 **1.34%**；两侧另行通过 60 秒协议短测。
-> 实际最长输入约为 AgentX 169K、SWE 75K，并非实测 256K。这是本地
-> 900 秒工程结果，不是一小时 AgentX 正式成绩、语义质量认证或官网提交。
-> MTP2 仍为默认拒绝启动的实验功能；AgentX 两侧按强制接受率规则关闭 MTP。
+> 状态：0.9.0 是实验性的 method-host API 版本，具备有边界的工程验证，但不宣称
+> 生产可用或正式榜单验收。在固定的 Qwen3.5 BF16/TP=2 发布栈上，SWE 与 AgentX
+> 的 C4／900 秒 B0/B1 配对均协议有效，配置上下文为 262,144。SWE 使用真实
+> MTP2、APC、异步调度、align 与 FULL_AND_PIECEWISE；解码 P90 提升
+> **1.05%**，总吞吐下降 **2.71%**，TTFT P95 变差 **9.36%**。AgentX 按其
+> 强制接受率规则关闭 MTP；解码 P90 提升 **1.14%**、TTFT P95 改善 **1.43%**，
+> 总吞吐基本持平（**−0.00009%**）。实际最长输入约为 AgentX 91.6K、SWE 52.5K，
+> 并非实测 256K。这些是本地 900 秒工程结果，不是一小时 AgentX 正式成绩、
+> 语义质量认证或官网提交。MTP2 仍为默认拒绝启动的实验功能。
 > 详见
 > [当前前沿测试协议](docs/frontier-benchmarking.zh.md)；
 > [0.7 验收记录](docs/validation.zh.md)仅作为历史资料。
@@ -51,9 +50,9 @@ wheel/sdist。仓库中仅供开发使用的统计产物缺少完整模型/数�
 
 | 组件 | 支持版本 | 已验证快照 |
 | --- | --- | --- |
-| vLLM-HUST / `vllm` | `>=0.29.1.post1.dev0,<0.30`（0.9.0） | `fc06902b7d`（`0.29.1.post1.dev843+gfc06902b7.empty`） |
-| vLLM-Ascend-HUST / `vllm-ascend` | `>=0.25.1rc2.dev0,<0.26` | `5422a07c4`（`0.25.1rc2.dev616+hust.20260903.4.g5422a07c4`） |
-| Extension Manager | `>=0.2.0.dev0,<0.3` | 已安装 `0.2.0.dev0` |
+| vLLM-HUST / `vllm` | `>=0.29.1.post1.dev0,<0.30`（0.9.0） | `ebfcfba650`（`0.29.1.post1.dev456+gebfcfba65.empty`） |
+| vLLM-Ascend-HUST / `vllm-ascend` | `>=0.25.1rc2.dev0,<0.26` | `7c8ec865a1`（`0.25.1rc2.dev774+hust.20260903.4.g7c8ec865a`） |
+| Extension Manager | `>=0.2.0.dev0,<0.3` | `075dbcbee6`（`0.2.0.dev0`） |
 | Python | `>=3.10,<3.15` | 3.11.16 |
 
 标准验收拓扑仍为单 Ascend NPU、v1 调度器与 `NPUModelRunner`、单一全注意力

@@ -1,8 +1,8 @@
-# Frontier 刷榜规程（0.8 候选版）
+# Frontier 刷榜规程（0.9.0）
 
 [English](frontier-benchmarking.md) | 简体中文
 
-本规程替代旧 V4.6 A2/A3 作为当前项目的刷榜目标；旧结果保留为历史证据，不能与新工作负载合并。AgentX 的 900 秒配对吞吐正结果已在合并源码提交 `17ffdc7` 上复现；SWE 退化如下披露。本地结果不等于官网正式提交。
+本规程替代旧 V4.6 A2/A3 作为当前项目的刷榜目标；旧结果保留为历史证据，不能与新工作负载合并。0.9.0 发布验证沿用本规程，但固定了新的模型 revision 和宿主栈；下文 2026-09-27 的 AgentX 正收益与 SWE 退化是合并源码提交 `17ffdc7` 上的历史结果。本地结果不等于官网正式提交。
 
 SWE 的测试资格及将来向官网提交成绩，按[Frontier 成绩提交指南](https://github.com/vLLM-HUST/vllm-hust-website/blob/codex/frontier-submission-example/data/examples/frontier-submission/README.md)执行：先做独立的 C4／60 秒协议检查，再测 900 秒；保留原始 `summary.json`、`config.json`，将 `output_tokens_per_second` 填为总吞吐 `metrics.output_tps`（官网再按卡数相除）。本地测试或插件 HTML 页面上的点不会自动登上官网。SWE 使用 MTP 时必须保留真实生成 token 和实测接受率，不能套用历史 AgentX 的 synthetic sampler 或固定接受长度。
 
@@ -15,7 +15,7 @@ SWE 的测试资格及将来向官网提交成绩，按[Frontier 成绩提交指
 
 当前模型为 Qwen3.5-35B-A3B BF16、Ascend 910B2 TP=2。Qwen3.8-27B BF16 属于后续独立模型 cohort。冻结精确模型与 tokenizer revision、准备文件 SHA-256、数据集 revision、客户端提交、宿主提交、插件提交与 wheel hash。SWE 的两次对照必须使用**同一个**准备文件；准备文件哈希或 token 增量不同就不是直接可比较的点。AgentX 不得筛选会话、裁剪输出、缩短原版预热或重写 DAG 与延迟。
 
-本地下载的模型与 tokenizer revision 为 `59d61f3ce65a6d9863b86d2e96597125219dc754`。官网 BetterScale 历史样例使用另一 `712cf743...` revision，不得复用其模型或 cohort ID 来承载本次成绩。
+2026-09-27 历史运行的模型与 tokenizer revision 为 `59d61f3ce65a6d9863b86d2e96597125219dc754`。0.9.0 发布验证采用 `712cf74392b05026a6db2bf213d343747d1f6d45`；官网早期 BetterScale 样例也使用过该 revision，但本次测量独立，不得复用其模型或 cohort ID。
 
 ### 仅 CPU 的工作负载准备记录（2026-09-27）
 
@@ -41,7 +41,48 @@ SWE 测的是固定长会话的服务形状，不是 SWE 任务求解正确率�
 
 插件 HTML 页面现按官方 [Frontier 视图](https://vllm-hust.sage.org.ai/leaderboard-runs.html#frontier) 将**实测点**与**历史记录**分开，固定坐标为 P90 解码速度和每卡输出 token/s。`evidence/frontier-results.json` 已收入两组 AgentX 900 秒正收益配对的四个 B0/B1 点，含合并后复测；SWE cohort 仍无正收益点。每组点共用 `pair_id`、cohort、并发和设备数，并保留实际最长输入、原始运行 ID、报告哈希、证据链接和测量范围。这是插件本地榜单，不等于官网提交或 AgentX 一小时正式成绩。运行 `python scripts/kvcompress_leaderboard.py` 生成两个浏览器数据包，并在发布前运行 `python scripts/kvcompress_leaderboard.py --check`。不得从旧记录的百分比增量推算 Frontier 点。
 
-旧 [V4.6 测试要求](kv-compress-test-requirements.zh.md)、[A2/A3 规程](benchmarking.zh.md)及[公开长上下文实验](public-long-context-benchmarks.zh.md)仅作为历史归档，不再是 0.8 的发布门槛。
+旧 [V4.6 测试要求](kv-compress-test-requirements.zh.md)、[A2/A3 规程](benchmarking.zh.md)及[公开长上下文实验](public-long-context-benchmarks.zh.md)仅作为历史归档，不再是当前发布门槛。
+
+## 2026-10-08 本地 0.9.0 发布验证
+
+发布候选 wheel 在 910B2 设备 2、7 上以 BF16/TP=2 运行 Qwen3.5-35B-A3B，
+模型 revision 为 `712cf74392b05026a6db2bf213d343747d1f6d45`。匹配的 vLLM
+与 Ascend 提交分别为 `ebfcfba`、`7c8ec86`，wheel SHA-256 为 `c8de9f51...`。
+服务配置 262,144 上下文、APC、真实 MTP2、异步调度、align 和
+FULL_AND_PIECEWISE 图。SWE 两组各自的 C4／60 秒协议检查及 900 秒测量均有效，
+请求失败数为零，准备文件 SHA-256 相同。
+
+| SWE C4／900 秒指标 | B0，关闭压缩 | B1，启用压缩 | B1 相对 B0 |
+| --- | ---: | ---: | ---: |
+| 总输出 token/s | 153.297 | 149.143 | −2.71% |
+| 每卡输出 token/s | 76.648 | 74.572 | −2.71% |
+| P90 解码 token/s | 47.920 | 48.424 | +1.05% |
+| 首 token P95，毫秒 | 1,472.57 | 1,610.33 | +9.36%（变差） |
+| 窗口内完成请求 | 221 | 218 | — |
+| 实际最长 prompt | 52,505 | 52,505 | — |
+
+该配对的协议有效，**解码 P90 提升**，但总吞吐与首 token P95 退化。
+实际最长 prompt 为 52,505 token，未证明真实 256K prompt 的性能。B1
+服务全生命周期的 60 次调度压缩提交均有 TP0、TP1 回执；服务端还记录了真实
+MTP 接受率和前缀命中。原始报告与日志保留在本机，[机器可读发布记录](evidence/kvcompress-qwen35-20261008-v090-swe-pair.json)
+列出其哈希。这是单组本地工程测试，不是官网成绩或可重复性证明。
+
+同一候选随后完成 AgentX C4／900 秒配对。由于没有匹配的强制接受率证据，两组均按
+规程关闭 MTP。两份 AIPerf 原始报告均标记有效、无无效原因，每组完成 65 个请求，
+实际最长输入约 91.6K。
+
+| AgentX C4／900 秒指标 | B0，关闭压缩 | B1，启用压缩 | B1 相对 B0 |
+| --- | ---: | ---: | ---: |
+| 总输出 token/s | 33.86587 | 33.86584 | −0.00009%（持平） |
+| 每卡输出 token/s | 16.93294 | 16.93292 | −0.00009%（持平） |
+| P90 解码 token/s | 27.709 | 28.024 | +1.14% |
+| 首 token P95，毫秒 | 1,819.22 | 1,793.15 | −1.43%（改善） |
+| token 间延迟 P90，毫秒 | 45.779 | 43.226 | −5.58%（改善） |
+
+B1 服务记录 31 次调度压缩提交和 62 次 worker 回执，无服务错误或抢占。测量结束后
+的清理阶段记录过一次超时，但全部 66 个 credit 已归还，原始报告仍有效。该结果的
+**解码 P90 和延迟指标改善**，总吞吐基本不变。详见
+[机器可读 AgentX 发布记录](evidence/kvcompress-qwen35-20261008-v090-agentx-pair.json)。
 
 ## 2026-09-27 工程冒烟记录（非榜单结果）
 

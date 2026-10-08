@@ -35,10 +35,13 @@ def _run(root: Path, arm: str, budget: int) -> Path:
             "host_kv_budget_gib": 0,
             "precision": {"weights": "bfloat16"},
             "speculative_decoding": {"enabled": False},
+            "plugin": {"revision": "same", "wheel_sha256": "same"},
+            "runtime_environment": {"TORCH_CACHING_PRECOMPILE": "0"},
             "engine": {
+                "name": "vllm",
                 "revision": "same",
                 "launch_command_without_secrets": (
-                    "vllm serve VLLM_ASCEND_KVCOMPRESS_CONFIG=/configs/" + arm
+                    "VLLM_HUST_EXT_CONFIG=/configs/" + arm + " vllm serve"
                 ),
             },
             "serving": {
@@ -91,6 +94,18 @@ def test_compare_maps_agentx_metrics_and_pair_identity(tmp_path: Path) -> None:
     candidate["target"]["model_revision"] = "different"
     b1.write_text(json.dumps(candidate), encoding="utf-8")
     with pytest.raises(ValueError, match="target.model_revision"):
+        compare(b0, b1)
+
+    candidate["target"]["model_revision"] = "same"
+    candidate["target"]["plugin"]["wheel_sha256"] = "different"
+    b1.write_text(json.dumps(candidate), encoding="utf-8")
+    with pytest.raises(ValueError, match="target.plugin"):
+        compare(b0, b1)
+
+    candidate["target"]["plugin"]["wheel_sha256"] = "same"
+    candidate["target"]["runtime_environment"]["TORCH_CACHING_PRECOMPILE"] = "1"
+    b1.write_text(json.dumps(candidate), encoding="utf-8")
+    with pytest.raises(ValueError, match="target.runtime_environment"):
         compare(b0, b1)
 
 

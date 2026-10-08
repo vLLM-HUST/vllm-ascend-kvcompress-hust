@@ -38,8 +38,8 @@ def _load_arm(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 def _matched_command(run: dict[str, Any]) -> str:
     launch = run["target"]["engine"]["launch_command_without_secrets"]
     return re.sub(
-        r"VLLM_ASCEND_KVCOMPRESS_CONFIG=\S+",
-        "VLLM_ASCEND_KVCOMPRESS_CONFIG=<arm-config>",
+        r"VLLM_(?:ASCEND_KVCOMPRESS_CONFIG|HUST_EXT_CONFIG)=\S+",
+        "VLLM_HUST_EXT_CONFIG=<arm-config>",
         launch,
     )
 
@@ -83,14 +83,16 @@ def compare(baseline_path: Path, candidate_path: Path) -> dict[str, Any]:
         "host_kv_budget_gib",
         "precision",
         "speculative_decoding",
+        "plugin",
+        "runtime_environment",
     ):
         if baseline["target"].get(field) != candidate["target"].get(field):
             raise ValueError(f"AgentX pair differs in target.{field}")
-    if (
-        baseline["target"]["engine"]["revision"]
-        != candidate["target"]["engine"]["revision"]
-    ):
-        raise ValueError("AgentX pair differs in engine revision")
+    for field in ("name", "revision"):
+        if baseline["target"]["engine"].get(field) != candidate["target"]["engine"].get(
+            field
+        ):
+            raise ValueError(f"AgentX pair differs in engine {field}")
     if _matched_command(baseline) != _matched_command(candidate):
         raise ValueError("AgentX pair differs in server launch beyond arm config")
     if _client_command(baseline) != _client_command(candidate):
