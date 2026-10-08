@@ -1200,9 +1200,12 @@ def _validate_cache_tensor(
             f"attention layer {layer_name!r} {kind} cache dtype {cache.dtype} "
             "is unsupported"
         )
-    if not cache.is_contiguous():
+    inner_stride = (expected_tail[1] * expected_tail[2], expected_tail[2], 1)
+    page_elements = expected_tail[0] * inner_stride[0]
+    if cache.stride()[1:] != inner_stride or cache.stride(0) < page_elements:
         raise RuntimeError(
-            f"attention layer {layer_name!r} {kind} cache must be contiguous"
+            f"attention layer {layer_name!r} {kind} cache must have contiguous "
+            "inner blocks and a nonoverlapping page stride"
         )
 
 

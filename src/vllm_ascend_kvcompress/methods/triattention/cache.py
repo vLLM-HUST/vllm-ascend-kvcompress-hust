@@ -15,6 +15,36 @@ def token_slots(
     return block_ids.index_select(0, block_offsets) * block_size + within_block
 
 
+def _gather_slots(
+    cache: torch.Tensor, slots: torch.Tensor, out: torch.Tensor | None = None
+) -> torch.Tensor:
+    block_size = cache.shape[1]
+    if cache.is_contiguous():
+        flat = cache.view(-1, cache.shape[2], cache.shape[3])
+        if out is not None:
+            return torch.index_select(flat, 0, slots, out=out)
+        return flat.index_select(0, slots)
+    blocks = torch.div(slots, block_size, rounding_mode="floor")
+    offsets = torch.remainder(slots, block_size)
+    gathered = cache[blocks, offsets]
+    if out is not None:
+        out.copy_(gathered)
+        return out
+    return gathered
+
+
+def _write_slots(
+    cache: torch.Tensor, slots: torch.Tensor, values: torch.Tensor
+) -> None:
+    block_size = cache.shape[1]
+    if cache.is_contiguous():
+        cache.view(-1, cache.shape[2], cache.shape[3]).index_copy_(0, slots, values)
+        return
+    blocks = torch.div(slots, block_size, rounding_mode="floor")
+    offsets = torch.remainder(slots, block_size)
+    cache[blocks, offsets] = values
+
+
 def gather_paged_tokens(
     cache: torch.Tensor,
     block_ids: torch.Tensor,
@@ -25,8 +55,7 @@ def gather_paged_tokens(
     if cache.ndim != 4 or cache.shape[1] != block_size:
         raise ValueError("cache must use [blocks, block, heads, dim] layout")
     slots = token_slots(block_ids, token_indices, block_size)
-    flattened = cache.view(-1, cache.shape[2], cache.shape[3])
-    return flattened.index_select(0, slots)
+    return _gather_slots(cache, slots)
 
 
 def gather_paged_range(
@@ -57,17 +86,15 @@ def materialize_selected_tokens(
 ) -> None:
     """Gather K and V before writing selected tokens into dense destinations."""
     source_slots = token_slots(source_block_ids, keep_indices, block_size)
-    flat_k = k_cache.view(-1, k_cache.shape[2], k_cache.shape[3])
-    flat_v = v_cache.view(-1, v_cache.shape[2], v_cache.shape[3])
-    gathered_k = flat_k.index_select(0, source_slots)
-    gathered_v = flat_v.index_select(0, source_slots)
+    gathered_k = _gather_slots(k_cache, source_slots)
+    gathered_v = _gather_slots(v_cache, source_slots)
 
     dense_indices = torch.arange(
         keep_indices.shape[0], device=keep_indices.device, dtype=torch.long
     )
     destination_slots = token_slots(destination_block_ids, dense_indices, block_size)
-    flat_k.index_copy_(0, destination_slots, gathered_k)
-    flat_v.index_copy_(0, destination_slots, gathered_v)
+    _write_slots(k_cache, destination_slots, gathered_k)
+    _write_slots(v_cache, destination_slots, gathered_v)
 
 
 def materialize_token_slots(
@@ -79,9 +106,7 @@ def materialize_token_slots(
     v_workspace: torch.Tensor,
 ) -> None:
     """Move precomputed slots through persistent, overlap-safe workspaces."""
-    flat_k = k_cache.view(-1, k_cache.shape[2], k_cache.shape[3])
-    flat_v = v_cache.view(-1, v_cache.shape[2], v_cache.shape[3])
-    torch.index_select(flat_k, 0, source_slots, out=k_workspace)
-    torch.index_select(flat_v, 0, source_slots, out=v_workspace)
-    flat_k.index_copy_(0, destination_slots, k_workspace)
-    flat_v.index_copy_(0, destination_slots, v_workspace)
+    _gather_slots(k_cache, source_slots, out=k_workspace)
+    _gather_slots(v_cache, source_slots, out=v_workspace)
+    _write_slots(k_cache, destination_slots, k_workspace)
+    _write_slots(v_cache, destination_slots, v_workspace)
