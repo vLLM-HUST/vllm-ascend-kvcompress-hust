@@ -335,8 +335,10 @@ def test_manager_applies_a_scoped_prefix_cache_hit_cap() -> None:
             self.prefix_caching = prefix_caching
             self.coordinator = Coordinator()
             self.block_pool = SimpleNamespace(free_blocks=lambda values: None)
+            self.emit_flags = []
 
-        def get_computed_blocks(self, request):
+        def get_computed_blocks(self, request, *, emit_event=True):
+            self.emit_flags.append(emit_event)
             if not self.prefix_caching:
                 return ((), 0, 0)
             return self.coordinator.find_longest_cache_hit(
@@ -356,7 +358,8 @@ def test_manager_applies_a_scoped_prefix_cache_hit_cap() -> None:
 
     manager = Manager()
     setattr(manager, _PREFIX_ADMISSION_STATE_ATTRIBUTE, state)
-    assert manager.get_computed_blocks(request) == ((), 640, 0)
+    assert manager.get_computed_blocks(request, emit_event=False) == ((), 640, 0)
+    assert manager.emit_flags == [False]
     assert manager.coordinator.lookup_limits == [(["hash"], 640)]
 
     # The ContextVar cap is reset after one request and does not leak into an
@@ -538,14 +541,16 @@ def test_hybrid_cache_groups_keep_distinct_length_spaces() -> None:
     )
     state.active["r"] = SchedulerActiveCompression(300, 128)
     for manager in (attention, mamba):
-        manager.get_num_blocks_to_allocate("r", 301, [], 300, 300, 301)
+        manager.get_num_blocks_to_allocate("r", 301, [], 300, 300, 301, prefill_end=300)
         manager.allocate_new_blocks("r", 301, 301)
         manager.remove_skipped_blocks("r", 300, 300)
 
     assert seen[0][2] == ("r", 129, [], 128, 128, 129)
+    assert seen[0][3]["prefill_end"] == 128
     assert seen[1][2] == ("r", 129, 129)
     assert seen[2][2] == ("r", 128, 300)
     assert seen[3][2] == ("r", 301, [], 300, 300, 301)
+    assert seen[3][3]["prefill_end"] == 300
     assert seen[4][2] == ("r", 301, 301)
     assert seen[5][2] == ("r", 300, 300)
     assert scheduler.requests["r"].num_computed_tokens == 300
@@ -595,6 +600,7 @@ def test_hybrid_coordinator_translates_only_full_attention_lengths() -> None:
             num_local_computed_tokens,
             num_tokens_main_model,
             apply_admission_cap=False,
+            prefill_end=0,
         ):
             self.count_calls.append(
                 (
@@ -604,6 +610,7 @@ def test_hybrid_coordinator_translates_only_full_attention_lengths() -> None:
                     num_local_computed_tokens,
                     num_tokens_main_model,
                     apply_admission_cap,
+                    prefill_end,
                 )
             )
             return 1
@@ -639,6 +646,7 @@ def test_hybrid_coordinator_translates_only_full_attention_lengths() -> None:
             num_local_computed_tokens,
             num_tokens_main_model,
             apply_admission_cap=False,
+            prefill_end=0,
         ):
             raise AssertionError("active request must use group translation")
 
@@ -664,7 +672,15 @@ def test_hybrid_coordinator_translates_only_full_attention_lengths() -> None:
 
     assert (
         coordinator.get_num_blocks_to_allocate(
-            "r", 305, ((), ()), 0, 300, 300, 305, apply_admission_cap=True
+            "r",
+            305,
+            ((), ()),
+            0,
+            300,
+            300,
+            305,
+            apply_admission_cap=True,
+            prefill_end=300,
         )
         == 2
     )
@@ -672,8 +688,8 @@ def test_hybrid_coordinator_translates_only_full_attention_lengths() -> None:
     coordinator.remove_skipped_blocks("r", 300, 300)
 
     attention, mamba = coordinator.single_type_managers
-    assert attention.count_calls == [("r", 133, 128, 128, 133, True)]
-    assert mamba.count_calls == [("r", 305, 300, 300, 305, True)]
+    assert attention.count_calls == [("r", 133, 128, 128, 133, True, 128)]
+    assert mamba.count_calls == [("r", 305, 300, 300, 305, True, 300)]
     assert attention.allocate_calls == [("r", 133, 133)]
     assert mamba.allocate_calls == [("r", 305, 305)]
     assert attention.remove_calls == [("r", 128, 300)]

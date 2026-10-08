@@ -439,7 +439,11 @@ class SchedulerCompressionState:
                 num_local_computed_tokens: int,
                 num_tokens_main_model: int,
                 apply_admission_cap: bool = False,
+                prefill_end: int | None = None,
             ) -> Any:
+                options: dict[str, Any] = {"apply_admission_cap": apply_admission_cap}
+                if prefill_end is not None:
+                    options["prefill_end"] = physical(request_id, prefill_end)
                 return original_count(
                     request_id,
                     physical(request_id, num_tokens),
@@ -447,7 +451,7 @@ class SchedulerCompressionState:
                     physical(request_id, total_computed_tokens),
                     physical(request_id, num_local_computed_tokens),
                     physical(request_id, num_tokens_main_model),
-                    apply_admission_cap=apply_admission_cap,
+                    **options,
                 )
 
             cache_manager.get_num_blocks_to_allocate = get_num_blocks_to_allocate
@@ -635,17 +639,19 @@ def _install_manager_hooks(manager_cls: type[Any]) -> None:
             manager.block_pool.free_blocks(release.blocks)
         return original_free(manager, request)
 
-    def get_computed_blocks(manager: Any, request: Any) -> Any:
+    def get_computed_blocks(
+        manager: Any, request: Any, *args: Any, **kwargs: Any
+    ) -> Any:
         assert original_get_computed_blocks is not None
         state = getattr(manager, _PREFIX_ADMISSION_STATE_ATTRIBUTE, None)
         cap = None if state is None else state.prefix_cache_hit_cap(request)
         if cap is None:
-            return original_get_computed_blocks(manager, request)
+            return original_get_computed_blocks(manager, request, *args, **kwargs)
         coordinator = manager.coordinator
         _install_prefix_lookup_hook(type(coordinator))
         token = _PREFIX_CACHE_HIT_CAP.set((id(coordinator), cap))
         try:
-            return original_get_computed_blocks(manager, request)
+            return original_get_computed_blocks(manager, request, *args, **kwargs)
         finally:
             _PREFIX_CACHE_HIT_CAP.reset(token)
 
@@ -706,6 +712,7 @@ def _install_coordinator_hooks(coordinator_cls: type[Any]) -> None:
         )
         num_tokens_main_model = values["num_tokens_main_model"]
         apply_admission_cap = values.get("apply_admission_cap", False)
+        prefill_end = values.get("prefill_end")
         state = getattr(coordinator, _GROUP_LENGTH_STATE_ATTRIBUTE, None)
         active = None if state is None else state.active.get(request_id)
         if active is None:
@@ -733,6 +740,15 @@ def _install_coordinator_hooks(coordinator_cls: type[Any]) -> None:
             manager_signature = inspect.signature(manager.get_num_blocks_to_allocate)
             if "num_local_computed_tokens" in manager_signature.parameters:
                 manager_values["num_local_computed_tokens"] = group_local
+            if (
+                prefill_end is not None
+                and "prefill_end" in manager_signature.parameters
+            ):
+                manager_values["prefill_end"] = (
+                    _physical_tokens(prefill_end, active)
+                    if index == state.attention_group_index
+                    else prefill_end
+                )
             result += manager.get_num_blocks_to_allocate(**manager_values)
         return result
 
