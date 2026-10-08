@@ -158,6 +158,7 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
     def load_model(runner: Any) -> Any:
         from .calibration import ensure_calibration_for_runner
         from .host_compat import (
+            install_grouped_topk_router_compat,
             install_layer_aware_fia_graph_replay,
             install_qwen_gdn_list_compat,
         )
@@ -193,6 +194,7 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
 
             if install_missing_chunk_output_op():
                 logger.info("Using plugin-owned Triton Qwen GDN output operator")
+        install_grouped_topk_router_compat()
         generated = ensure_calibration_for_runner(runner, selection)
         if generated:
             logger.info(

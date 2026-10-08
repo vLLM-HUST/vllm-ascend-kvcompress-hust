@@ -27,6 +27,53 @@ _gdn_metadata_cache: OrderedDict[
 ] = OrderedDict()
 
 
+def install_grouped_topk_router_compat() -> bool:
+    """Preserve the Ascend router's scaling check on newer vLLM hosts.
+
+    The Ascend router still passes ``routed_scaling_factor`` to vLLM's
+    classifier. Newer vLLM removed that argument, but the old classifier
+    returned ``Unspecified`` for a biased, ungrouped sigmoid router with a
+    non-unit scale. Keep that behavior without changing the host itself.
+    """
+    from vllm.model_executor.layers.fused_moe.config import RoutingMethodType
+    from vllm_ascend.ops.fused_moe.router import grouped_topk_router
+
+    classify = grouped_topk_router.get_routing_method_type
+    if getattr(classify, "_ascend_kvcompress_scaling_compat", False):
+        return False
+    if "routed_scaling_factor" in inspect.signature(classify).parameters:
+        return False
+
+    def classify_with_scaling(
+        *,
+        scoring_func: str,
+        top_k: int,
+        renormalize: bool,
+        num_expert_group: int | None,
+        has_e_score_bias: bool,
+        routed_scaling_factor: float | None = 1.0,
+    ) -> RoutingMethodType:
+        if (
+            has_e_score_bias
+            and scoring_func == "sigmoid"
+            and not num_expert_group
+            and routed_scaling_factor not in (None, 1.0)
+        ):
+            return RoutingMethodType.Unspecified
+        return classify(
+            scoring_func=scoring_func,
+            top_k=top_k,
+            renormalize=renormalize,
+            num_expert_group=num_expert_group,
+            has_e_score_bias=has_e_score_bias,
+        )
+
+    classify_with_scaling._ascend_kvcompress_scaling_compat = True  # type: ignore[attr-defined]
+    grouped_topk_router.get_routing_method_type = classify_with_scaling
+    logger.warning("Installed Ascend grouped TopK router scaling compatibility")
+    return True
+
+
 def install_layer_aware_fia_graph_replay(vllm_config: Any) -> bool:
     """Enable the host's existing layer-keyed FULL graph update path.
 
