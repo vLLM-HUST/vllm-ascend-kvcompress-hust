@@ -258,10 +258,9 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
         raise ValueError("calibration input produced fewer than two tokens")
 
     text_config = getattr(config, "text_config", config)
-    is_qwen35_multimodal = (
-        text_config is not config
-        and str(getattr(config, "model_type", "")).startswith("qwen3_5")
-    )
+    is_qwen35_multimodal = text_config is not config and str(
+        getattr(config, "model_type", "")
+    ).startswith("qwen3_5")
     load_options: dict[str, Any] = {
         "config": text_config if is_qwen35_multimodal else config,
         "revision": request.revision,
@@ -275,9 +274,7 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
         # The published Qwen3.5 checkpoint nests text weights below
         # model.language_model. Loading only the causal text model avoids
         # constructing an unused vision tower during calibration.
-        load_options["key_mapping"] = {
-            r"^model\.language_model\.(.+)$": r"model.\1"
-        }
+        load_options["key_mapping"] = {r"^model\.language_model\.(.+)$": r"model.\1"}
 
     model: torch.nn.Module | None = None
     handles: list[Any] = []

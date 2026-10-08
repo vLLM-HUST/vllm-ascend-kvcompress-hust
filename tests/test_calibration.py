@@ -133,9 +133,7 @@ def test_generator_creates_safe_model_matched_artifact(
     assert artifact.layers[0].inv_freq is not None
 
 
-def test_generator_loads_only_qwen35_text_model(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_generator_loads_only_qwen35_text_model(tmp_path: Path, monkeypatch) -> None:
     import transformers
 
     config = _FakeConfig()
@@ -176,9 +174,7 @@ def test_generator_loads_only_qwen35_text_model(
     )
     assert generate_calibration_artifact(request)
     assert captured[0]["config"] is config.text_config
-    assert captured[0]["key_mapping"] == {
-        r"^model\.language_model\.(.+)$": r"model.\1"
-    }
+    assert captured[0]["key_mapping"] == {r"^model\.language_model\.(.+)$": r"model.\1"}
 
 
 def test_generator_rejects_empty_explicit_input(tmp_path: Path) -> None:
