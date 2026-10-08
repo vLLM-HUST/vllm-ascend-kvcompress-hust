@@ -773,6 +773,85 @@ def test_hybrid_coordinator_supports_fixed_host_count_signature() -> None:
     assert mamba.calls == [("r", 305, 300, 305, True)]
 
 
+def test_hybrid_coordinator_omits_new_prefill_option_for_legacy_mamba() -> None:
+    class Manager:
+        def __init__(self, supports_prefill):
+            self.supports_prefill = supports_prefill
+            self.calls = []
+
+        def get_num_blocks_to_allocate(
+            self,
+            request_id,
+            num_tokens,
+            new_computed_blocks,
+            total_computed_tokens,
+            num_local_computed_tokens,
+            num_tokens_main_model,
+            apply_admission_cap=False,
+            prefill_end=0,
+        ):
+            self.calls.append((num_tokens, prefill_end))
+            return 1
+
+        def legacy_count(
+            self,
+            request_id,
+            num_tokens,
+            new_computed_blocks,
+            total_computed_tokens,
+            num_local_computed_tokens,
+            num_tokens_main_model,
+            apply_admission_cap=False,
+        ):
+            self.calls.append((num_tokens, None))
+            return 1
+
+    class Coordinator:
+        def __init__(self):
+            attention = Manager(True)
+            mamba = Manager(False)
+            mamba.get_num_blocks_to_allocate = mamba.legacy_count
+            self.single_type_managers = (attention, mamba)
+            self.retention_interval = 0
+
+        def get_num_blocks_to_allocate(
+            self,
+            request_id,
+            num_tokens,
+            new_computed_blocks,
+            num_encoder_tokens,
+            total_computed_tokens,
+            num_local_computed_tokens,
+            num_tokens_main_model,
+            apply_admission_cap=False,
+            prefill_end=0,
+        ):
+            raise AssertionError("legacy Mamba must not receive prefill_end")
+
+        def allocate_new_blocks(self, *args, **kwargs):
+            raise AssertionError
+
+        def remove_skipped_blocks(self, *args, **kwargs):
+            raise AssertionError
+
+    _install_coordinator_hooks(Coordinator)
+    coordinator = Coordinator()
+    setattr(
+        coordinator,
+        _GROUP_LENGTH_STATE_ATTRIBUTE,
+        SimpleNamespace(attention_group_index=0, active={}),
+    )
+    assert (
+        coordinator.get_num_blocks_to_allocate(
+            "r", 305, ((), ()), 0, 300, 300, 305, prefill_end=300
+        )
+        == 2
+    )
+    attention, mamba = coordinator.single_type_managers
+    assert attention.calls == [(305, 300)]
+    assert mamba.calls == [(305, None)]
+
+
 def test_finished_request_discards_pending_state() -> None:
     scheduler, _, freed = _scheduler()
     state = SchedulerCompressionState(scheduler, _selection())

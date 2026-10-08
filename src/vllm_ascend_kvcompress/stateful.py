@@ -715,11 +715,22 @@ def _install_coordinator_hooks(coordinator_cls: type[Any]) -> None:
         prefill_end = values.get("prefill_end")
         state = getattr(coordinator, _GROUP_LENGTH_STATE_ATTRIBUTE, None)
         active = None if state is None else state.active.get(request_id)
-        if active is None:
+        if state is None:
             return original_count(coordinator, *args, **kwargs)
+        if active is None and all(
+            "prefill_end"
+            in inspect.signature(manager.get_num_blocks_to_allocate).parameters
+            for manager in coordinator.single_type_managers
+        ):
+            return original_count(coordinator, *args, **kwargs)
+        # The current Ascend Mamba manager still has the older signature.
+        # Route uncompressed requests through the same group loop so that
+        # prefill_end is passed only to managers that support it.
+        if active is None and getattr(coordinator, "retention_interval", 0):
+            prefill_end = 0
         result = 0
         for index, manager in enumerate(coordinator.single_type_managers):
-            if index == state.attention_group_index:
+            if active is not None and index == state.attention_group_index:
                 group_tokens = _physical_tokens(num_tokens, active)
                 group_computed = _physical_tokens(total_computed_tokens, active)
                 group_local = _physical_tokens(num_local_computed_tokens, active)
@@ -746,7 +757,7 @@ def _install_coordinator_hooks(coordinator_cls: type[Any]) -> None:
             ):
                 manager_values["prefill_end"] = (
                     _physical_tokens(prefill_end, active)
-                    if index == state.attention_group_index
+                    if active is not None and index == state.attention_group_index
                     else prefill_end
                 )
             result += manager.get_num_blocks_to_allocate(**manager_values)
