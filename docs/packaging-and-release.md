@@ -74,7 +74,7 @@ sha256sum dist/vllm_ascend_kvcompress_hust-0.9.0*
 ```
 
 The wheel must contain code, `LICENSE`, `NOTICE`, and
-`manifests/vllm-hust-extension-v0.2.json`; entry-point metadata must contain
+`manifests/vllm-hust-extension-v0.3.json`; entry-point metadata must contain
 `vllm.general_plugins`, `vllm_hust.extension_bundles`, and the
 `vllm-ascend-kvcompress-calibrate` console script. Neither archive
 may contain `artifacts/*.pt`, raw data, service logs, or historical
