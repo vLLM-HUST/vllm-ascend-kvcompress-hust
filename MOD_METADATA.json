@@ -4,8 +4,14 @@
   "evidence": {
     "index": "https://github.com/vLLM-HUST/vllm-hust-website/blob/main/docs/FRONTIER-QWEN35-KVCOMPRESS.md",
     "latest_result": "https://github.com/vLLM-HUST/vllm-hust-website/blob/main/docs/FRONTIER-QWEN35-KVCOMPRESS.md",
-    "performance_claims": [],
-    "qualification": "unqualified"
+    "performance_claims": [
+      {
+        "label": "matched-real-online-negative",
+        "scope": "Qwen3.5-35B BF16, shared five-point Native comparison, measured artifact 2ca0f933",
+        "result": "Geometric-mean output throughput changed by -3.55%; the tested artifact is not beneficial and the result is not inherited by current main."
+      }
+    ],
+    "qualification": "not-beneficial-in-tested-cell"
   },
   "lifecycle": {
     "activation_contract": "See the extension manifest and README; discovery alone does not enable this MOD.",

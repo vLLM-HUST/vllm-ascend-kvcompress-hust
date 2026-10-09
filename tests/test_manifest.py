@@ -7,11 +7,13 @@ from vllm_hust_ext.manifest import activation_blocker, parse_manifest
 
 
 def test_extension_manager_manifest_is_enableable_and_versioned() -> None:
-    path = files("vllm_ascend_kvcompress.manifests") / "vllm-hust-extension-v0.2.json"
+    path = files("vllm_ascend_kvcompress.manifests") / "vllm-hust-extension-v0.3.json"
     raw_manifest = json.loads(path.read_text(encoding="utf-8"))
     manifest = parse_manifest(raw_manifest)
 
     assert manifest.bundle_id == "org.vllm-hust.ascend-kvcompress"
+    assert manifest.schema_version == "0.3-experimental"
+    assert manifest.resource_claims
     assert manifest.bundle_version == "0.9.0"
     assert manifest.host.name == "vllm-ascend"
     assert manifest.host.version_range == (">=0.23.0.post1,<0.26,!=0.24.*,!=0.25.0.*")
