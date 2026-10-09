@@ -766,14 +766,32 @@ class AscendKVCompressionProvider:
         if len(request_ids) != num_reqs:
             # FULL graph capture builds synthetic decode batches before the
             # runner has admitted any requests.  There are no compressed rows
-            # to specialize in that phase, and the native layer-keyed metadata
-            # must remain intact so Ascend can record the graph tasks.  Keep
+            # to specialize in that phase, but graph cache-write kernels must
+            # capture the same per-layer slot buffers used during replay. Keep
             # failing closed for a real or partially populated input batch.
             batch_num_reqs = int(getattr(batch, "num_reqs", len(batch.req_ids)))
             if self._has_active_rows or batch_num_reqs != 0 or batch.req_ids:
                 raise RuntimeError("per-layer attention batch dimensions changed")
+            for layer in self.layer_caches:
+                base = metadata.get(layer.name)
+                slots = self._per_layer_slot_buffers.get(layer.name)
+                if (
+                    base is None
+                    or not isinstance(getattr(base, "slot_mapping", None), torch.Tensor)
+                    or slots is None
+                    or slots.numel() < num_tokens
+                    or base.slot_mapping.numel() < num_tokens
+                ):
+                    raise RuntimeError("per-layer capture slot buffers are unavailable")
+                slots[num_tokens:].fill_(-1)
+                slots[:num_tokens].copy_(base.slot_mapping[:num_tokens])
+                metadata[layer.name] = replace(base, slot_mapping=slots[:num_tokens])
+                if layer is self.speculative_cache_layer:
+                    if common is None:
+                        raise RuntimeError("MTP2 capture metadata is unavailable")
+                    common = replace(common, slot_mapping=slots[:num_tokens])
             self._per_layer_metadata_seen = True
-            return result
+            return metadata, common
         table = batch.block_table.block_tables[self.attention_group_index]
         native = getattr(
             type(table), "_ascend_kvcompress_patch_v3_slot_mapping_original", None
@@ -842,6 +860,9 @@ class AscendKVCompressionProvider:
                         "per-layer attention slot buffers were not prepared "
                         "before capture"
                     )
+                # Replay may use a larger captured bucket than the live batch.
+                # Never let padded cache writes reuse a previous request's slots.
+                slots[num_tokens:].fill_(-1)
                 if offsets == global_offsets:
                     slots[:num_tokens].copy_(original_slots)
                 else:
