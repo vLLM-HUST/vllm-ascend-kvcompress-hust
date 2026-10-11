@@ -691,6 +691,7 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> Non
     provider._physical_lengths_applied = True
     provider._request_offsets_cpu = torch.tensor([172, 0])
     provider.runner = SimpleNamespace(
+        max_num_tokens=4,
         compilation_config=SimpleNamespace(cudagraph_mode=SimpleNamespace(name="NONE")),
         input_batch=SimpleNamespace(
             req_ids=["compressed", "plain"],
@@ -719,6 +720,9 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> Non
     assert second.seq_lens.tolist() == [65, 21]
     assert second.slot_mapping.tolist() == [100 * 128 + 64, 20 * 128 + 20]
     assert table.slot_mapping.gpu.tolist() == [12928, 2580]
+    for slots in provider._per_layer_slot_buffers.values():
+        assert slots[2:].tolist() == [-1, -1]
+        slots[2:].fill_(777)
 
     provider.runner.positions[0] = 305
     table.slot_mapping.gpu[0] = 12933
@@ -745,6 +749,8 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> Non
         20 * 128 + 20,
     ]
     assert table.slot_mapping.gpu.tolist() == [12933, 2580]
+    for slots in provider._per_layer_slot_buffers.values():
+        assert slots[2:].tolist() == [-1, -1]
 
 
 def test_undeclared_nonuniform_lengths_fail_closed_under_graph_replay() -> None:
@@ -794,15 +800,42 @@ def test_declared_per_layer_state_accepts_layer_aware_full_graph(
 
 
 def test_per_layer_full_graph_capture_accepts_synthetic_empty_batch() -> None:
+    @dataclass
+    class Metadata:
+        slot_mapping: torch.Tensor
+
     provider = _provider()
     provider.requires_per_layer_physical_state = True
     provider._validate_per_layer_host = lambda: None  # type: ignore[method-assign]
     provider.runner = SimpleNamespace(
         input_batch=SimpleNamespace(req_ids=[], num_reqs=0),
     )
-    result = ({"model.layers.0.self_attn": object()}, object())
-
-    assert provider.per_layer_attention_metadata(result, 48, 48) is result
+    provider.layer_caches += (
+        LayerCache("mtp.layers.0.self_attn", 0, torch.empty(0), torch.empty(0)),
+    )
+    provider.speculative_cache_layer = provider.layer_caches[-1]
+    provider._per_layer_slot_buffers = {
+        layer.name: torch.empty(48, dtype=torch.int64)
+        for layer in provider.layer_caches
+    }
+    shared = Metadata(torch.arange(48))
+    metadata, common = provider.per_layer_attention_metadata(
+        ({layer.name: shared for layer in provider.layer_caches}, shared), 48, 48
+    )
+    captured_slots = [
+        metadata[layer.name].slot_mapping for layer in provider.layer_caches
+    ]
+    assert all(
+        slots.data_ptr() != shared.slot_mapping.data_ptr() for slots in captured_slots
+    )
+    assert captured_slots[0].data_ptr() != captured_slots[1].data_ptr()
+    assert common.slot_mapping.data_ptr() == captured_slots[1].data_ptr()
+    # A captured cache-write kernel keeps this address: replay must update
+    # its contents independently for unequal physical layer lengths.
+    for index, layer in enumerate(provider.layer_caches):
+        provider._per_layer_slot_buffers[layer.name][0] = 64 + index
+    assert [int(slots[0]) for slots in captured_slots] == [64, 65]
+    assert int(shared.slot_mapping[0]) == 0
     assert provider._per_layer_metadata_seen
 
 
