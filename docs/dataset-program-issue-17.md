@@ -1,6 +1,8 @@
 # Pujiang five-dataset adaptation — issue #17
 
-The [candidate matrix](https://github.com/vLLM-HUST/vllm-hust-benchmark/tree/6ef387046bfa13cfb6d0b7a7e33f0f95a9f917b3/reports/kvcompress-five-dataset-applicability-20261011) is proposed in [benchmark PR #276](https://github.com/vLLM-HUST/vllm-hust-benchmark/pull/276), with review tracked in [this MOD's issue #17](https://github.com/vLLM-HUST/vllm-ascend-kvcompress-hust/issues/17) and the [program ledger #254](https://github.com/vLLM-HUST/vllm-hust-benchmark/issues/254). Maintainer review is pending. There is no five-dataset task-quality result or optimization claim.
+English | [简体中文](dataset-program-issue-17.zh.md)
+
+The [candidate matrix](https://github.com/vLLM-HUST/vllm-hust-benchmark/tree/6c49429c3211de0363c534a83fcffef5267c5d9d/reports/kvcompress-five-dataset-applicability-20261011) is proposed in [benchmark PR #276](https://github.com/vLLM-HUST/vllm-hust-benchmark/pull/276), with review tracked in [this MOD's issue #17](https://github.com/vLLM-HUST/vllm-ascend-kvcompress-hust/issues/17) and the [program ledger #254](https://github.com/vLLM-HUST/vllm-hust-benchmark/issues/254). Maintainer review is pending. There is no five-dataset task-quality result or optimization claim.
 
 | Dataset | Status | Gate |
 | --- | --- | --- |
