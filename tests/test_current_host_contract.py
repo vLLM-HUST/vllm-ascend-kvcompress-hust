@@ -23,7 +23,7 @@ def test_installed_host_versions_are_in_the_validated_lines() -> None:
     assert ascend_version == "0.23.0.post1" or ascend_version in SpecifierSet(
         ">=0.25.1rc2.dev0,<0.26"
     )
-    assert version("vllm-hust-ext") in SpecifierSet(">=0.2.0.dev0,<0.3")
+    assert version("vllm-hust-ext") in SpecifierSet(">=0.3,<0.4")
 
 
 def test_scheduler_and_cache_manager_seams_match_current_host() -> None:

@@ -41,9 +41,9 @@ dependencies = []
 test = [
     "pytest>=8",
     "ruff>=0.16",
-    "vllm-hust-ext>=0.2.0.dev0,<0.3",
+    "vllm-hust-ext>=0.3,<0.4",
 ]
-manager = ["vllm-hust-ext>=0.2.0.dev0,<0.3"]
+manager = ["vllm-hust-ext>=0.3,<0.4"]
 calibration = ["accelerate>=1.10,<2"]
 
 [project.urls]
