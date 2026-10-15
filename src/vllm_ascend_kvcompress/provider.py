@@ -110,6 +110,7 @@ class AscendKVCompressionProvider:
         self.speculative_cache_layer: LayerCache | None = None
         self.pending: dict[str, PendingCompression] = {}
         self.active: dict[str, ActiveCompression] = {}
+        self._native_projection_markers: dict[str, Any] = {}
         self._request_offsets_cpu: torch.Tensor | None = None
         self._request_offsets_device: torch.Tensor | None = None
         self._physical_positions: torch.Tensor | None = None
@@ -328,6 +329,7 @@ class AscendKVCompressionProvider:
         for request_id in reset_ids:
             self.pending.pop(request_id, None)
             self.active.pop(request_id, None)
+            self._native_projection_markers.pop(request_id, None)
             if self.query_window_tokens:
                 self.method.discard_query_observation(request_id)
                 self._query_tracked_ids.discard(request_id)
@@ -359,6 +361,15 @@ class AscendKVCompressionProvider:
                 pending.semantic_anchor,
                 pending.physical_anchor,
                 pending.per_layer_physical_num_tokens,
+            )
+            # The original Host update still must materialize a missing row and
+            # append actual scheduler headroom. Do not observe a nonexistent row.
+            from vllm.plugins.native_kv_materialized_projection_observer import (
+                capture_marker,
+            )
+
+            self._native_projection_markers[request_id] = capture_marker(
+                self, scheduler_output, request_id, pending
             )
             logger.info(
                 "KV compression worker commit acknowledged request_id=%s "
@@ -459,14 +470,29 @@ class AscendKVCompressionProvider:
             self._query_tracked_ids.discard(request_id)
 
     def after_update_states(self, scheduler_output: Any) -> None:
-        del scheduler_output
         if self.runner is not None:
             live = self.runner.requests.keys()
-            for request_id in (self.pending.keys() | self.active.keys()) - live:
+            for request_id in (
+                self.pending.keys()
+                | self.active.keys()
+                | self._native_projection_markers.keys()
+            ) - live:
                 self.pending.pop(request_id, None)
                 self.active.pop(request_id, None)
+                self._native_projection_markers.pop(request_id, None)
         self._physical_lengths_applied = False
         self._sync_request_offset_rows()
+        # original_update has now added/condensed/reordered real CPU rows. This
+        # observation precedes Ascend _prepare_inputs and its actual H2D commit.
+        from vllm.plugins.native_kv_materialized_projection_observer import (
+            observe_materialized_projection,
+        )
+
+        for request_id, marker in tuple(self._native_projection_markers.items()):
+            if request_id not in scheduler_output.num_scheduled_tokens:
+                continue
+            observe_materialized_projection(self, scheduler_output, request_id, marker)
+            self._native_projection_markers.pop(request_id)
 
     def compress_scheduled_requests(self, scheduler_output: Any) -> None:
         """Run scheduler-authorized transactions after the attention step."""

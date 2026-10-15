@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import torch
 
+from ... import native_tensor_witness
+
 
 def token_slots(
     block_ids: torch.Tensor, token_indices: torch.Tensor, block_size: int
@@ -104,9 +106,18 @@ def materialize_token_slots(
     destination_slots: torch.Tensor,
     k_workspace: torch.Tensor,
     v_workspace: torch.Tensor,
+    *,
+    witness_binding=None,
 ) -> None:
     """Move precomputed slots through persistent, overlap-safe workspaces."""
+    reference = native_tensor_witness.capture_before_actual_gather(
+        k_cache, v_cache, witness_binding, source_slots, destination_slots
+    )
     _gather_slots(k_cache, source_slots, out=k_workspace)
     _gather_slots(v_cache, source_slots, out=v_workspace)
+    native_tensor_witness.observe_actual_workspace(reference, k_workspace, v_workspace)
     _write_slots(k_cache, destination_slots, k_workspace)
     _write_slots(v_cache, destination_slots, v_workspace)
+    native_tensor_witness.observe_after_actual_write(
+        reference, k_cache, v_cache, destination_slots, _gather_slots
+    )
