@@ -16,7 +16,20 @@ SPEC.loader.exec_module(module)
 
 
 def test_token_budget_boundary_and_duplicate_rejection(tmp_path: Path) -> None:
-    config = ROOT / ".benchmarks/config/qwen3.5-35b-a3b-v3-batched-stride2-min512.json"
+    config = tmp_path / "method.json"
+    config.write_text(
+        json.dumps(
+            {
+                "provider": "ascend_kvcompress",
+                "method": "triattention",
+                "method_config": {
+                    "kv_budget": 8192,
+                    "recompute_window": 1024,
+                    "min_output_tokens_for_compression": 512,
+                },
+            }
+        )
+    )
     manifest = tmp_path / "tasks.jsonl"
     rows = [
         {
