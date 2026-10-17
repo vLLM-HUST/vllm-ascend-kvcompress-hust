@@ -270,7 +270,45 @@ class TriAttentionMethod(KVCompressionMethod):
             self.dense_indices,
             cache_block_size,
         )
+        from ... import native_tensor_witness
+        from vllm.plugins.native_tensor_artifact_bootstrap import ensure_registered
+
+        if not native_tensor_witness.enabled():
+            ensure_registered(native_tensor_witness.register_candidate_sink)
+
         for layer in self.materialization_caches:
+            witness_binding = None
+            if native_tensor_witness.enabled():
+                from vllm.distributed import get_tp_group
+
+                rank = int(get_tp_group().rank_in_group) if self.tensor_parallel_size > 1 else 0
+                if request.plan is None:
+                    raise RuntimeError("actual source CompressionRequest.plan required")
+                plan = request.plan
+                witness_binding = {
+                    "runtime_request_id": request.request_id,
+                    "compression_plan": {
+                        "semantic_anchor": plan.semantic_anchor,
+                        "physical_anchor": plan.physical_anchor,
+                        "source_block_ids": list(plan.source_block_ids),
+                        "destination_block_ids": list(plan.destination_block_ids),
+                    },
+                    "cache_blocks_per_scheduler_block": (
+                        len(request.source_block_ids_device)
+                        // len(plan.source_block_ids)
+                    ),
+                    "layer_name": layer.name,
+                    "layer_index": layer.layer_index,
+                    "expected_layer_indices": list(self.model_shape.full_attention_layer_indices),
+                    "tensor_parallel_size": self.tensor_parallel_size,
+                    "rank": rank,
+                    "physical_num_tokens": request.physical_num_tokens,
+                    "semantic_num_tokens": request.semantic_num_tokens,
+                    "source_blocks": request.source_block_ids_device.cpu().tolist(),
+                    "destination_blocks": request.destination_block_ids_device.cpu().tolist(),
+                    "block_size": cache_block_size,
+                    "keep_indices": keep_indices,
+                }
             materialize_token_slots(
                 layer.k_cache,
                 layer.v_cache,
@@ -278,6 +316,7 @@ class TriAttentionMethod(KVCompressionMethod):
                 destination_slots,
                 self.k_workspace,
                 self.v_workspace,
+                witness_binding=witness_binding,
             )
         layer_lengths = tuple(
             (layer.name, self.config.kv_budget) for layer in self.materialization_caches
