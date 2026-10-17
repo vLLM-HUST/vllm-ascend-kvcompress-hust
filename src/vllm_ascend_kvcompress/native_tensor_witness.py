@@ -239,6 +239,10 @@ def capture_before_actual_gather(
 ):
     if not enabled():
         return None
+    selector = getattr(_sink, "native_request_selected", None)
+    if selector is not None and not selector(binding["runtime_request_id"]):
+        # Before witness sync/export; actual product gather is unchanged.
+        return None
     _sync(k_cache)
     keep = binding["keep_indices"].detach().cpu().tolist()
     source_blocks = list(binding["source_blocks"])
