@@ -9,7 +9,7 @@
     "calibration_device": "auto",
     "calibration_attn_implementation": "eager",
     "calibration_local_files_only": true,
-    "kv_budget": 8192,
+    "kv_budget": 4608,
     "recompute_window": 1024,
     "position_policy": "v3",
     "protected_prefix_window": 128,
@@ -18,7 +18,7 @@
     "score_aggregation": "mean",
     "layer_aggregation": "mean",
     "score_chunk_size": 8192,
-    "score_layer_stride": 1,
-    "min_output_tokens_for_compression": 64
+    "score_layer_stride": 2,
+    "min_output_tokens_for_compression": 2048
   }
 }

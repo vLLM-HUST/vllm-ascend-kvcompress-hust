@@ -75,6 +75,7 @@ class TriAttentionMethod(KVCompressionMethod):
         self.v_workspace: torch.Tensor | None = None
         self.score_workspace: torch.Tensor | None = None
         self.aggregate_workspace: torch.Tensor | None = None
+        self.parallel_score_workspace: torch.Tensor | None = None
         self.dense_indices: torch.Tensor | None = None
         self.scoring_omega: torch.Tensor | None = None
         self.scoring_offset_cos: torch.Tensor | None = None
@@ -242,6 +243,12 @@ class TriAttentionMethod(KVCompressionMethod):
             dtype=torch.float32,
             device=runner.device,
         )
+        if self.tensor_parallel_size > 1:
+            self.parallel_score_workspace = torch.empty(
+                len(scoring_layers) * int(self.vllm_config.model_config.max_model_len),
+                dtype=torch.float32,
+                device=runner.device,
+            )
         self.dense_indices = torch.arange(
             self.config.kv_budget, device=runner.device, dtype=torch.long
         )
@@ -304,6 +311,15 @@ class TriAttentionMethod(KVCompressionMethod):
         # materializing the selected KV tokens for every cache layer.
         scoring_layers = self.layer_caches[:: self.config.score_layer_stride]
         layer_count = len(scoring_layers)
+        parallel_scores = None
+        if tensor_parallel_size > 1:
+            if self.parallel_score_workspace is None:
+                raise RuntimeError(
+                    "TriAttention parallel score workspace is not initialized"
+                )
+            parallel_scores = self.parallel_score_workspace[
+                : layer_count * physical_num_tokens
+            ].view(layer_count, physical_num_tokens)
         phase_inputs = (
             getattr(self, "scoring_omega", None),
             getattr(self, "scoring_offset_cos", None),
@@ -363,21 +379,27 @@ class TriAttentionMethod(KVCompressionMethod):
                 head_variance, head_mean = torch.var_mean(
                     raw_scores, dim=-1, correction=0
                 )
-                if tensor_parallel_size != 1 or not aggregate_normalized_scores(
+                layer_output = (
+                    parallel_scores[layer_index]
+                    if parallel_scores is not None
+                    else aggregated_scores
+                )
+                if not aggregate_normalized_scores(
                     raw_scores,
                     head_mean,
                     head_variance,
-                    aggregated_scores,
+                    layer_output,
                     physical_num_tokens,
                     layer_aggregation=self.config.layer_aggregation,
-                    first_layer=layer_index == 0,
+                    first_layer=parallel_scores is not None or layer_index == 0,
                 ):
                     self._aggregate_torch(
                         raw_scores,
                         head_mean,
                         head_variance,
-                        aggregated_scores,
+                        layer_output,
                         layer_index,
+                        defer_tp_reduce=parallel_scores is not None,
                     )
                 continue
             raw_scores = score_workspace[:, :, :physical_num_tokens]
@@ -399,22 +421,44 @@ class TriAttentionMethod(KVCompressionMethod):
                 )
                 raw_scores[:, :, start : start + count].copy_(chunk_scores)
             head_variance, head_mean = torch.var_mean(raw_scores, dim=-1, correction=0)
-            if tensor_parallel_size != 1 or not aggregate_normalized_scores(
+            layer_output = (
+                parallel_scores[layer_index]
+                if parallel_scores is not None
+                else aggregated_scores
+            )
+            if not aggregate_normalized_scores(
                 raw_scores,
                 head_mean,
                 head_variance,
-                aggregated_scores,
+                layer_output,
                 physical_num_tokens,
                 layer_aggregation=self.config.layer_aggregation,
-                first_layer=layer_index == 0,
+                first_layer=parallel_scores is not None or layer_index == 0,
             ):
                 self._aggregate_torch(
                     raw_scores,
                     head_mean,
                     head_variance,
-                    aggregated_scores,
+                    layer_output,
                     layer_index,
+                    defer_tp_reduce=parallel_scores is not None,
                 )
+
+        if parallel_scores is not None:
+            import torch.distributed as dist
+            from vllm.distributed import get_tp_group
+
+            # MAX is independent for every layer and token, so one contiguous
+            # collective is equivalent to one collective per scoring layer.
+            dist.all_reduce(
+                parallel_scores,
+                op=dist.ReduceOp.MAX,
+                group=get_tp_group().device_group,
+            )
+            reduction = (
+                torch.sum if self.config.layer_aggregation == "mean" else torch.amax
+            )
+            reduction(parallel_scores, dim=0, out=aggregated_scores)
 
         if self.config.layer_aggregation == "mean":
             aggregated_scores.div_(float(layer_count))
@@ -437,10 +481,12 @@ class TriAttentionMethod(KVCompressionMethod):
         head_variance: torch.Tensor,
         aggregated_scores: torch.Tensor,
         layer_index: int,
+        *,
+        defer_tp_reduce: bool = False,
     ) -> None:
         normalized = normalize_head_scores(raw_scores, head_mean, head_variance)
         layer_scores = normalized.amax(dim=(0, 1))
-        if getattr(self, "tensor_parallel_size", 1) > 1:
+        if getattr(self, "tensor_parallel_size", 1) > 1 and not defer_tp_reduce:
             import torch.distributed as dist
             from vllm.distributed import get_tp_group
 
@@ -449,7 +495,7 @@ class TriAttentionMethod(KVCompressionMethod):
                 op=dist.ReduceOp.MAX,
                 group=get_tp_group().device_group,
             )
-        if layer_index == 0:
+        if layer_index == 0 or defer_tp_reduce:
             aggregated_scores.copy_(layer_scores)
         elif self.config.layer_aggregation == "mean":
             aggregated_scores.add_(layer_scores)

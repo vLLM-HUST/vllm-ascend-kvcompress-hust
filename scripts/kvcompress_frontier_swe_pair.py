@@ -48,13 +48,14 @@ def _server_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         "server_configuration",
         "mod_repository",
         "mod_revision",
-        "mod_wheel_sha256",
         "calibration_sha256",
         "launch_command_redacted",
     )
     missing = [field for field in required if field not in metadata]
     if missing:
         raise ValueError(f"SWE server metadata missing {', '.join(missing)}")
+    if not metadata.get("mod_wheel_sha256") and not metadata.get("mod_source_sha256"):
+        raise ValueError("SWE server metadata needs a wheel or source hash")
     config = metadata["server_configuration"]
     for field in ("kvcompress_kv_budget", "kvcompress_recompute_window"):
         if field not in config:
@@ -87,7 +88,8 @@ def _server_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         "mod": {
             "repository": metadata["mod_repository"],
             "revision": metadata["mod_revision"],
-            "wheel_sha256": metadata["mod_wheel_sha256"],
+            "wheel_sha256": metadata.get("mod_wheel_sha256"),
+            "source_sha256": metadata.get("mod_source_sha256"),
             "calibration_sha256": metadata["calibration_sha256"],
             "calibration_path": metadata.get("calibration_artifact"),
             "kv_budget_tokens": config["kvcompress_kv_budget"],
@@ -143,6 +145,7 @@ def compare(baseline: Path, candidate: Path) -> dict[str, Any]:
         for field in (
             "kvcompress_kv_budget",
             "kvcompress_recompute_window",
+            "kvcompress_min_output_tokens",
             "compression_eligible",
         ):
             settings.pop(field, None)

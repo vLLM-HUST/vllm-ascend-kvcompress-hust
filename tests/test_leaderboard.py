@@ -11,8 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_leaderboard_history_and_browser_bundle_are_in_sync() -> None:
-    history = ROOT / "docs/evidence/leaderboard-history.json"
-    bundle = ROOT / "docs/evidence/leaderboard-history.js"
+    history = ROOT / "docs/results/evidence/leaderboard-history.json"
+    bundle = ROOT / "docs/results/evidence/leaderboard-history.js"
     payload = json.loads(history.read_text(encoding="utf-8"))
 
     assert payload["schema_version"] == 1
@@ -21,7 +21,9 @@ def test_leaderboard_history_and_browser_bundle_are_in_sync() -> None:
 
 
 def test_leaderboard_html_loads_the_history_bundle() -> None:
-    page = (ROOT / "docs/benchmark-leaderboard.html").read_text(encoding="utf-8")
+    page = (ROOT / "docs/results/benchmark-leaderboard.html").read_text(
+        encoding="utf-8"
+    )
 
     assert 'src="evidence/leaderboard-history.js"' in page
     assert "KV Compression" in page
@@ -32,8 +34,8 @@ def test_leaderboard_html_loads_the_history_bundle() -> None:
 
 
 def test_frontier_bundle_is_separate_from_history_and_has_no_synthetic_points() -> None:
-    source = ROOT / "docs/evidence/frontier-results.json"
-    bundle = ROOT / "docs/evidence/frontier-results.js"
+    source = ROOT / "docs/results/evidence/frontier-results.json"
+    bundle = ROOT / "docs/results/evidence/frontier-results.js"
     payload = json.loads(source.read_text(encoding="utf-8"))
 
     assert payload["schema_version"] == "leaderboard-frontier/v1"
@@ -54,7 +56,7 @@ def test_frontier_bundle_is_separate_from_history_and_has_no_synthetic_points() 
 def test_frontier_bundle_rejects_unmeasured_and_incomplete_points(
     tmp_path: Path,
 ) -> None:
-    source = ROOT / "docs/evidence/frontier-results.json"
+    source = ROOT / "docs/results/evidence/frontier-results.json"
     payload = json.loads(source.read_text(encoding="utf-8"))
     point = {
         "id": "test-point",

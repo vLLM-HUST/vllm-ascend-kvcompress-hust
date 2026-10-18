@@ -128,22 +128,22 @@ def main() -> int:
     parser.add_argument(
         "--history",
         type=Path,
-        default=Path("docs/evidence/leaderboard-history.json"),
+        default=Path("docs/results/evidence/leaderboard-history.json"),
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("docs/evidence/leaderboard-history.js"),
+        default=Path("docs/results/evidence/leaderboard-history.js"),
     )
     parser.add_argument(
         "--frontier",
         type=Path,
-        default=Path("docs/evidence/frontier-results.json"),
+        default=Path("docs/results/evidence/frontier-results.json"),
     )
     parser.add_argument(
         "--frontier-output",
         type=Path,
-        default=Path("docs/evidence/frontier-results.js"),
+        default=Path("docs/results/evidence/frontier-results.js"),
     )
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()

@@ -389,7 +389,9 @@ def _aggregate_normalized_scores_kernel(
     variance = tl.load(variance_ptr + head_offsets, mask=head_mask, other=0.0).to(
         tl.float32
     )
-    normalized = (scores - mean[None, :]) * tl.rsqrt(variance[None, :] + 1e-6)
+    normalized = (scores - mean[None, :]) * tl.rsqrt(
+        tl.maximum(variance[None, :], 1e-6)
+    )
     layer_score = tl.max(normalized, axis=1)
     if FIRST_LAYER:
         result = layer_score

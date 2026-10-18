@@ -196,6 +196,90 @@ def test_selection_reuses_first_pass_score_chunks(monkeypatch) -> None:
     assert keep.shape == (128,)
 
 
+def test_tensor_parallel_scores_use_one_collective_for_all_layers(monkeypatch) -> None:
+    import torch.distributed as dist
+    import vllm.distributed as vllm_distributed
+
+    method = object.__new__(TriAttentionMethod)
+    method.config = TriAttentionConfig(
+        stats_path=Path("unused.pt"),
+        kv_budget=128,
+        recompute_window=128,
+        protected_recent_window=0,
+        score_chunk_size=256,
+        score_layer_stride=1,
+    )
+    stats = SimpleNamespace(q_mean_real=torch.zeros((1, 1, 1)), omega=torch.ones(1))
+    method.layer_caches = tuple(
+        TriAttentionLayerCache(
+            name=f"layer.{index}",
+            k_cache=torch.empty(0),
+            v_cache=torch.empty(0),
+            stats=stats,
+        )
+        for index in range(2)
+    )
+    method.offsets = torch.tensor([1.0])
+    method.score_workspace = torch.empty((1, 1, 256), dtype=torch.float32)
+    method.aggregate_workspace = torch.empty(256, dtype=torch.float32)
+    method.parallel_score_workspace = torch.empty(512, dtype=torch.float32)
+    method.tensor_parallel_size = 2
+
+    tokens = torch.arange(256, dtype=torch.float32)
+    raw_layers = (tokens, tokens.square() / 256)
+    remote_layers = torch.stack((tokens / 128 - 0.5, 1 - tokens / 256))
+    score_calls = 0
+    collective_calls = 0
+    captured = None
+
+    def fake_score(_keys, *_args, **_kwargs):
+        nonlocal score_calls
+        scores = raw_layers[score_calls].view(1, 1, 256)
+        score_calls += 1
+        return scores
+
+    def fake_all_reduce(scores, *, op, group):
+        nonlocal collective_calls
+        assert scores.is_contiguous()
+        assert scores.shape == (2, 256)
+        assert op == dist.ReduceOp.MAX
+        assert group == "test-group"
+        collective_calls += 1
+        torch.maximum(scores, remote_layers, out=scores)
+
+    def fake_select(scores, **_kwargs):
+        nonlocal captured
+        captured = scores.clone()
+        return torch.arange(128)
+
+    monkeypatch.setattr(
+        triattention_method,
+        "gather_paged_range",
+        lambda *_args, **_kwargs: torch.empty(256, 1, 2),
+    )
+    monkeypatch.setattr(triattention_method, "score_post_rope_keys", fake_score)
+    monkeypatch.setattr(triattention_method, "select_keep_indices", fake_select)
+    monkeypatch.setattr(dist, "all_reduce", fake_all_reduce)
+    monkeypatch.setattr(
+        vllm_distributed,
+        "get_tp_group",
+        lambda: SimpleNamespace(device_group="test-group"),
+    )
+
+    method._select_keep_indices(torch.tensor([0, 1]), 256, 256)
+
+    local_layers = torch.stack(
+        tuple(
+            (layer - layer.mean()) * torch.rsqrt(layer.var(correction=0) + 1e-6)
+            for layer in raw_layers
+        )
+    )
+    expected = torch.maximum(local_layers, remote_layers).mean(dim=0)
+    assert score_calls == 2
+    assert collective_calls == 1
+    torch.testing.assert_close(captured, expected)
+
+
 def test_selection_scores_uniform_layer_sample(monkeypatch) -> None:
     method = object.__new__(TriAttentionMethod)
     method.config = TriAttentionConfig(

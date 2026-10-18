@@ -24,7 +24,7 @@ uv pip install -e '.[test]'
   方法名称的条件分支。
 - provider 配置保持扁平 JSON 标量映射，这是 vLLM-HUST schema v1 协议。
 
-详见[压缩方法架构](docs/methods.zh.md)。
+详见[压缩方法架构](docs/design/methods.zh.md)。
 
 ## 必需检查
 
@@ -36,13 +36,14 @@ python -m compileall -q src tests
 git diff --check
 ```
 
-运行时改动需要在空闲且已分配的 NPU 上执行长上下文压缩关闭/开启匹配测试。
-确认所有服务进程退出并释放 NPU。不得为了让本插件通过测试而修改相邻的 HUST
-仓库。
+运行时改动须检查受影响的路径。作性能结论前，从
+[测试规程索引](docs/benchmark/README.zh.md)选择适用规程，
+按其要求比较基线与候选并报告退化。使用空闲且已分配的 NPU，测试后确认
+服务进程退出并释放 NPU。不得为了让本插件通过测试而修改相邻的 HUST 仓库。
 
 ## 文档
 
 公开、可发布的行为放在 README 或 `docs/` 下的公开文件中。中间测试报告和
-机器专用开发日志放在被 git ignore 的 `docs/dev/`；生成的校准产物放在被
-git ignore 的 `artifacts/`。每次修改公开英文文档时，必须同步更新对应的
+机器专用开发日志放在被 Git 忽略的 `dev/`；生成的校准产物放在本地被忽略的
+位置，提交前核对 `git status`。每次修改公开英文文档时，必须同步更新对应的
 `.zh.md` 中文版本。

@@ -149,3 +149,58 @@ def test_compare_accepts_original_flat_handoff_metadata(tmp_path: Path) -> None:
     path.write_text(json.dumps(config), encoding="utf-8")
     with pytest.raises(ValueError, match="serving configuration"):
         compare(b0, b1)
+
+
+def test_compare_accepts_matched_source_hashes_without_wheel(tmp_path: Path) -> None:
+    b0 = _run(tmp_path, "B0", 262144)
+    b1 = _run(tmp_path, "B1", 8192)
+    for directory, budget in ((b0, 262144), (b1, 8192)):
+        path = directory / "config.json"
+        config = json.loads(path.read_text(encoding="utf-8"))
+        config["server_metadata"] = {
+            "runtime_base_commits": {"vllm": "a", "vllm-ascend": "b"},
+            "model": "Qwen3.5-35B-A3B",
+            "model_path": "/models/qwen",
+            "model_revision": "c",
+            "tokenizer_fingerprint": "d",
+            "precision": "bfloat16",
+            "hardware": "Ascend 910B2",
+            "serving_chips": 2,
+            "serving_npus": [2, 7],
+            "runtime_environment": {},
+            "server_configuration": {
+                "max_model_len": 262144,
+                "kvcompress_kv_budget": budget,
+                "kvcompress_recompute_window": 128,
+            },
+            "mod_repository": "repo",
+            "mod_revision": "rev+working-tree",
+            "mod_source_sha256": {"method": "same", "kernels": "same"},
+            "calibration_sha256": "cal",
+            "launch_command_redacted": "vllm serve model",
+        }
+        path.write_text(json.dumps(config), encoding="utf-8")
+
+    assert compare(b0, b1)["deltas"]["output_tps_pct"] == pytest.approx(10)
+    path = b1 / "config.json"
+    config = json.loads(path.read_text(encoding="utf-8"))
+    config["server_metadata"]["mod_source_sha256"]["kernels"] = "different"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    with pytest.raises(ValueError, match="MOD identity or source"):
+        compare(b0, b1)
+
+
+def test_compare_allows_compression_guard_as_candidate_setting(tmp_path: Path) -> None:
+    b0 = _run(tmp_path, "B0", 262144)
+    b1 = _run(tmp_path, "B1", 4608)
+    for directory, minimum in ((b0, 512), (b1, 1024)):
+        path = directory / "config.json"
+        config = json.loads(path.read_text(encoding="utf-8"))
+        config["server_metadata"]["server_configuration"] = {
+            "max_model_len": 262144,
+            "kvcompress_kv_budget": 262144 if directory == b0 else 4608,
+            "kvcompress_recompute_window": 1024,
+            "kvcompress_min_output_tokens": minimum,
+        }
+        path.write_text(json.dumps(config), encoding="utf-8")
+    assert compare(b0, b1)["deltas"]["output_tps_pct"] == pytest.approx(10)

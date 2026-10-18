@@ -8,9 +8,10 @@ if (( $# == 0 )); then
 fi
 
 kv_workspace=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-kv_prefix=${KVCOMPRESS_HOST_ENV:-$kv_workspace/.envs/kvcompress-0.8-host}
-kv_cann=$kv_prefix/Ascend/cann-9.1.0/set_env.sh
-kv_atb=$kv_prefix/Ascend/nnal/atb/set_env.sh
+kv_prefix=${KVCOMPRESS_HOST_ENV:-$kv_workspace/.envs/kvcompress-0.10-py311}
+kv_cann=${KVCOMPRESS_CANN_ENV:-$kv_prefix/Ascend/cann-9.1.0/set_env.sh}
+kv_atb=${KVCOMPRESS_ATB_ENV:-$kv_prefix/Ascend/nnal/atb/set_env.sh}
+kv_triton_source=${KVCOMPRESS_TRITON_SOURCE:-$kv_workspace/triton-ascend-hust/python}
 kv_vendor_env=${KVCOMPRESS_HOST_VENDOR_ENV:-$kv_workspace/vllm-ascend-hust/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/bin/set_env.bash}
 
 if [[ ! -x "$kv_prefix/bin/python" || ! -f "$kv_cann" || ! -f "$kv_atb" ]]; then
@@ -18,12 +19,15 @@ if [[ ! -x "$kv_prefix/bin/python" || ! -f "$kv_cann" || ! -f "$kv_atb" ]]; then
   exit 1
 fi
 
-# The interactive development shell still points to CANN 9.0.1 and the old
-# Python environment. Do not let either leak into a 9.1/2.13 test process.
+# Keep an interactive shell's Python and CANN paths out of this matched
+# environment. Configure the host paths for other layouts.
 unset PYTHONPATH LD_LIBRARY_PATH LD_PRELOAD CMAKE_PREFIX_PATH
 unset ASCEND_HOME_PATH ASCEND_TOOLKIT_HOME ASCEND_OPP_PATH ASCEND_AICPU_PATH
 unset ATB_HOME_PATH CONDA_PREFIX CONDA_DEFAULT_ENV
 export PATH="$kv_prefix/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin"
+if [[ -d "$kv_triton_source" ]]; then
+  export PYTHONPATH="$kv_triton_source"
+fi
 export PYTHONNOUSERSITE=1
 export TRITON_HOME="${TRITON_HOME:-$kv_workspace/.cache/kvcompress-triton-home}"
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$kv_workspace/.cache/kvcompress-triton-runtime}"

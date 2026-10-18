@@ -9,4 +9,5 @@ dist/
 .benchmarks/
 artifacts/.*.lock
 # /artifacts/
-/docs/dev/
+dev/
+AGENTS.dev.md

@@ -27,7 +27,7 @@ uv pip install -e '.[test]'
 - Provider configuration remains a flat JSON-scalar mapping because that is the
   vLLM-HUST schema v1 contract.
 
-See [Compression method architecture](docs/methods.md).
+See [Compression method architecture](docs/design/methods.md).
 
 ## Required Checks
 
@@ -39,14 +39,17 @@ python -m compileall -q src tests
 git diff --check
 ```
 
-Runtime changes require matched compression-off/on long-context benchmarks on
-an idle assigned NPU. Confirm all service processes exit and the NPU allocation
-is released. Do not modify sibling HUST repositories to make this plugin pass.
+Runtime changes require checks for the affected paths. For a performance
+claim, choose the relevant [benchmark protocol](docs/benchmark/README.md)
+before measuring, compare baseline and candidate as it specifies, and report
+regressions. Use an idle assigned NPU, then confirm service processes exit and
+the allocation is released. Do not modify sibling HUST repositories to make
+this plugin pass.
 
 ## Documentation
 
 Public, release-ready behavior belongs in the README or public `docs/` files.
 Intermediate test reports and machine-specific development logs belong in
-git-ignored `docs/dev/`; generated calibration artifacts belong in
-git-ignored `artifacts/`. Update each public English document and its `.zh.md`
-translation together.
+git-ignored `dev/`. Keep generated calibration artifacts in a local ignored
+location and check `git status` before committing. Update each public English
+document and its `.zh.md` translation together.

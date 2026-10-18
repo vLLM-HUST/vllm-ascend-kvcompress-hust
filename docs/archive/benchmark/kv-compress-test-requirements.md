@@ -1,0 +1,217 @@
+# KV Compression Test and Acceptance Requirements
+
+English | [简体中文](kv-compress-test-requirements.zh.md)
+
+> **Historical archive.** V4.6 is retired as the active project gate for 0.8;
+> follow the [Frontier benchmark protocol](../results/frontier-benchmarking-0.9.md). The
+> Qwen2.5 matrix below remains reproducible historical evidence, not the
+> current official leaderboard workload.
+
+This document specializes the controlled **vLLM-HUST Standard Delivery Test
+Plan V4.6** for this plugin. The source PDF is
+`vllm-hust-benchmark/docs/assets/vLLM-HUST标准交付测试方案_V4.6.pdf`
+(63 pages, 980,035 bytes, SHA-256
+`ab2ceacf25f9ba82da39dfd7bd457d6b620b6ad33d121aee46fa5c044f58c370`).
+If this document conflicts with the controlled PDF, the PDF and the independent
+evaluator's frozen run declaration take precedence.
+
+## Claim levels
+
+| Level | Purpose | May be called formal V4.6 acceptance? |
+| --- | --- | --- |
+| Unit/contract | PR checks for schema, package, host seams and numerical references | No |
+| `kv-pressure-online` | Fast random-token KV pressure smoke against the current host | No; its registry entry is provisional and based on a vLLM 0.18 baseline |
+| Repository commissioning | Deterministic A2/A3-shaped service checks using the generated fixture | No; the fixture is explicitly `commissioning_only` |
+| Formal delivery | Independent, signed, immutable B0/B1 execution with approved LONG-PUBLIC data | Yes |
+
+Never publish commissioning results as official throughput, quality, HBM, or
+V4.6 acceptance claims.
+
+## Frozen target and lifecycle
+
+- Model: `Qwen/Qwen2.5-14B-Instruct`, immutable model and tokenizer revisions.
+- Hardware: one Ascend 910B2 in one node; FP16 model and effective FP16 KV.
+- Topology: TP=PP=DP=EP=DCP=1, unified non-PD service, FCFS, multiprocessing,
+  no CPU offload or swap.
+- Common server settings: block size 128, GPU memory utilization 0.85,
+  prefix cache off, speculative decoding off, KV transfer off, async scheduling
+  off, chunked prefill on, and no silent input truncation.
+- Graph mode for A2/A3: `FULL_DECODE_ONLY`, capture sizes matching the profile;
+  `--enforce-eager` is not formal A2/A3 evidence.
+- The server must use `--generation-config vllm`; model-directory sampling
+  defaults must not leak into a run.
+- Request sampling: temperature 0, top-p 1, top-k -1, min-p 0,
+  presence/frequency penalties 0, repetition penalty 1 (its multiplicative
+  neutral value), n=1, no beam search, empty stop list, seed 0, streaming with
+  usage, and `add_special_tokens=true`.
+- Execute at least three independent cold-start lifecycles per B0 and B1:
+  start, warm, measure, stop. Retain failures, timeouts and retries. The
+  predeclared primary result is the median; up to two additional runs may be
+  reported but cannot replace failed runs.
+
+Formal V4.6 B0 is the fixed official vLLM 0.18 / matching official
+vLLM-Ascend baseline declared by the controlled plan. The current-host paired
+engineering run loads the same plugin in both arms: B0 prevents compression
+with a threshold above the service limit, while B1 uses the candidate budget.
+It is not a replacement for the formal B0. The procedure must not modify the
+`vllm-hust` or `vllm-ascend-hust` host repositories.
+
+Qwen3.5-35B-A3B is a supplementary engineering target. It uses TP=2 and a
+hybrid full-attention/Gated-DeltaNet cache layout, so its results must be kept
+separate and may not replace, relax, or be merged into the frozen
+Qwen2.5-14B-Instruct acceptance matrix.
+
+## Selected delivery scenarios
+
+### A2-LONG-FP16 — long-context quality and serving
+
+Use at least 64 authorized LONG-PUBLIC documents with immutable provenance,
+license, revision and checksum. Prompts must contain verifiable facts and an
+oracle, not random tokens, and must not be truncated.
+
+| Cell | Requests | Rendered input | Maximum output | Arrival rates | Max concurrency |
+| --- | ---: | ---: | ---: | --- | ---: |
+| LONG-8K | 16 | 8,192 | 512 | 0.05, 0.1, 0.2, 0.4 RPS | 4 |
+| LONG-16K | 16 | 16,384 | 1,024 | 0.05, 0.1, 0.2, 0.4 RPS | 4 |
+
+Server limits are `max_num_seqs=4`, `max_num_batched_tokens=16384`, GPU memory
+utilization 0.85, and `FULL_DECODE_ONLY` capture sizes `[1,2,4]`. Per-request
+timeout is 1,800 seconds and capacity-cell timeout is 7,200 seconds.
+
+Required results include request/input/output/total throughput, TTFT/TPOT/E2E
+mean/p95/p99, success rate, oracle accuracy, OOM, silent truncation, B1/B0
+ratio and delta, HBM peak, KV block reduction, NPU utilization and three-run
+variation. B1 quality may fall by at most one percentage point from B0.
+
+### A3-32K-FP16 — 32K stability
+
+- Exact total context: 30,720 rendered input tokens plus 2,048 forced output
+  tokens (`ignore_eos=true`) equals 32,768.
+- Closed loop, concurrency 1, seed 0, `max_num_seqs=1`,
+  `max_num_batched_tokens=16384`, capture size `[1]`.
+- Warm for 5 minutes, measure for 30 minutes, report six 5-minute windows;
+  stop at 64 requests and require at least 24 completions.
+- Per-request timeout 1,800 seconds; lifecycle timeout 3,600 seconds.
+- Zero request failures, OOM, deadlock, process exit or silent truncation.
+- Window throughput CV at most 5%; median TTFT/TPOT drift at most 10%; p99
+  drift at most 20%.
+
+### M3 compression-specific gate
+
+Quality must pass and either physical per-token KV use must fall by at least
+20%, or whole-system per-token cost must fall by at least 15%. Scheduler and
+worker commit counts must match. Static pool allocation alone is not proof of
+KV reduction; retain block-release transactions and 1-second HBM samples.
+
+## Applicability and conflicts
+
+KV transfer/disaggregated P/D, quantized KV, MLA/local attention,
+PP/DP/DCP/PCP above one, and unrecognized hybrid layouts are rejected at
+startup. MTP/speculative decoding is admitted experimentally, but compression
+can start only on a step with no scheduled speculative tokens. Prefix caching
+has an experimental private-destination
+transaction path: scheduler allocation failure skips compression, and commit
+never overwrites a shared prefix block. Async scheduling has an experimental
+output-acknowledged transaction path, but remains outside this frozen formal
+matrix until the NPU lifecycle gate is recorded. The sole hybrid exception is
+Qwen3.5 full attention plus Gated-DeltaNet with `mamba_cache_mode=none` or
+`align`; the latter translates allocation lengths only for the full-attention
+group while preserving semantic lengths for Gated-DeltaNet. TP is
+allowed only when its size divides the model's KV heads. These exceptions are
+engineering scope and do not alter the single-card formal topology. A1's
+non-chunked configuration does not apply; A4's prefix-enabled configuration
+remains outside the frozen matrix until its NPU lifecycle gate is recorded.
+Former Prefix Router, KV Tiering, KNorm, PyramidKV Ascend and
+SliceGPT code is absent from the current hosts and is not assumed.
+
+## Data preparation
+
+For a formal evaluator-approved JSONL, download and pin it without embedding
+credentials in commands or logs:
+
+```bash
+python scripts/kvcompress_prepare_dataset.py download \
+  --url https://approved.example/LONG-PUBLIC-v1.jsonl \
+  --sha256 <approved-sha256> \
+  --source-revision <immutable-revision> \
+  --license-id <SPDX-or-license-name> \
+  --output .benchmarks/data/long-public-v1.jsonl
+```
+
+The downloader requires HTTPS, verifies the exact SHA-256 before replacing the
+destination, validates the JSONL contract, and writes a provenance manifest.
+For local commissioning only:
+
+```bash
+python scripts/kvcompress_prepare_dataset.py generate-commissioning \
+  --tokenizer /data/shared_models/Qwen--Qwen2.5-14B-Instruct \
+  --profile all \
+  --output .benchmarks/data/kvcompress-commissioning.jsonl
+```
+
+## Execution and comparison
+
+Run `kv-pressure-online` once as a quick pressure smoke. Then execute all
+frozen A2 cells and A3 independently with compression forbidden (B0
+engineering control) and candidate compression enabled (B1), restarting the
+service every time. Both arms load the plugin; B0's threshold must be strictly
+above `max_model_len`. One A2 example:
+
+```bash
+python scripts/kvcompress_long_context_run.py \
+  --dataset .benchmarks/data/long-public-v1.jsonl \
+  --profile A2-LONG-FP16-16K \
+  --model /data/shared_models/Qwen--Qwen2.5-14B-Instruct \
+  --request-rate 0.1 --concurrency 4 --timeout 1800 \
+  --npu-id 0 --run-label B1 --server-log .benchmarks/b1-r1/server.log \
+  --result .benchmarks/b1-r1/a2-16k.json
+```
+
+When a frozen cell cannot cross the compression threshold (for example, the
+8K cell with the default 9,216-token threshold), its B1 command must explicitly
+add `--compression-evidence optional`. This permits zero transactions but still
+requires a worker acknowledgement for every scheduler commit that does occur.
+Cells that cross the threshold keep the default `auto` behavior (transactions
+are required for B1); B0 may use `--compression-evidence forbidden` to assert
+that compression never occurred.
+
+Compare exactly three results from each side:
+
+```bash
+python scripts/kvcompress_acceptance_compare.py \
+  --baseline .benchmarks/b0-r{1,2,3}/a2-16k.json \
+  --plugin .benchmarks/b1-r{1,2,3}/a2-16k.json \
+  --output .benchmarks/a2-16k-comparison.json
+```
+
+The frozen Qwen2.5 TP=1 matrix keeps the default one worker acknowledgement
+per commit. The supplementary Qwen3.5 TP=2 engineering matrix must explicitly
+add `--worker-acks-per-commit 2`; the comparator then requires exactly two rank
+acknowledgements per scheduler commit. This option must not relax the TP=1
+standard matrix.
+
+The comparator reads the frozen compression-evidence expectation from the B1
+raw results. `required` (and fail-closed `auto` for older evidence without the
+field) must satisfy the M3 20% physical-KV-reduction gate. When all three runs
+of an `optional` cell contain no compression transaction, that cell records the
+M3 reduction gate as not applicable while quality, throughput, request
+cleanliness, and commit/ack pairing checks still run. Any commit in an
+`optional` cell makes the M3 reduction gate required again.
+For evidence produced before that field existed, the comparison command must
+explicitly add `--compression-evidence optional`; the default does not guess
+legacy intent and remains fail-closed as `auto`.
+
+## Evidence package and decision
+
+Retain exact Git commits, package versions, image digest, model/tokenizer/data
+hashes, commands and environment, hardware topology, startup configuration,
+raw requests/results/logs, 1-second device samples, failures, manifests and
+artifact hashes. Timing uses a monotonic clock; percentiles use nearest rank;
+warm-up and cool-down are excluded. With fewer than 1,000 samples, zero errors
+are allowed (otherwise at most 0.1%). Structured schema checks must be 100%
+when applicable, and tool/structured success at least 95%.
+
+A release passes only when every predeclared gate is true on the exact release
+candidate. Missing, mismatched, edited-after-run, or unsigned formal evidence
+fails closed. Ordinary PR CI runs only static/unit/build/contract/schema/hash
+checks; performance acceptance belongs on an isolated evaluator.
