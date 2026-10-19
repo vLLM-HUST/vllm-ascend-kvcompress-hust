@@ -35,7 +35,18 @@ def install_grouped_topk_router_compat() -> bool:
     returned ``Unspecified`` for a biased, ungrouped sigmoid router with a
     non-unit scale. Keep that behavior without changing the host itself.
     """
-    from vllm.model_executor.layers.fused_moe.config import RoutingMethodType
+    from vllm.model_executor.layers.fused_moe.config import (
+        RoutingMethodType,
+        get_routing_method_type,
+    )
+
+    # The supported legacy core already handles scaling, and its Ascend
+    # companion predates the router package. Check the core ABI before
+    # importing that newer-only module. Import failures on a core that does
+    # need the shim must still propagate.
+    if "routed_scaling_factor" in inspect.signature(get_routing_method_type).parameters:
+        return False
+
     from vllm_ascend.ops.fused_moe.router import grouped_topk_router
 
     classify = grouped_topk_router.get_routing_method_type

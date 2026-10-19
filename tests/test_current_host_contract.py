@@ -72,13 +72,21 @@ def test_ascend_v1_worker_seams_match_current_host() -> None:
 
 
 def test_grouped_topk_router_scaling_compatibility() -> None:
-    from vllm.model_executor.layers.fused_moe.config import RoutingMethodType
-    from vllm_ascend.ops.fused_moe.router import grouped_topk_router
+    from vllm.model_executor.layers.fused_moe.config import (
+        RoutingMethodType,
+        get_routing_method_type,
+    )
 
     from vllm_ascend_kvcompress.host_compat import install_grouped_topk_router_compat
 
-    install_grouped_topk_router_compat()
-    classify = grouped_topk_router.get_routing_method_type
+    if "routed_scaling_factor" in _parameter_names(get_routing_method_type):
+        assert install_grouped_topk_router_compat() is False
+        classify = get_routing_method_type
+    else:
+        from vllm_ascend.ops.fused_moe.router import grouped_topk_router
+
+        install_grouped_topk_router_compat()
+        classify = grouped_topk_router.get_routing_method_type
     options = dict(
         scoring_func="sigmoid",
         top_k=8,
