@@ -5,7 +5,7 @@
 本目录保存按日期编写的优化记录。每份记录说明实现改动、固定的负载与宿主、
 候选配置、正确性检查、正负测量结果以及结论边界。
 [适用的测试规程](../benchmark/README.zh.md)规定测量方法；
-[结果与证据](../results/README.zh.md)保存聚合结果和报告哈希；
+[结果与证据](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.zh.md)保存聚合结果和报告哈希；
 通用设计说明在[设计文档](../design/methods.zh.md)中。
 
 | 日期 | 记录 |

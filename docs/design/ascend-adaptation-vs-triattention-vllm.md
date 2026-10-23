@@ -50,5 +50,5 @@ by version ranges and tests, not a frozen upstream KV lifecycle API.
 Kernel improvements do not imply a service speedup. The published 0.9 SWE pair
 improved per-user decode P90 but reduced output tokens/s/chip. For any
 optimization claim, select the [protocol](../benchmark/README.md) that covers
-its workload and reported metrics. See [result scope](../results/README.md)
+its workload and reported metrics. See [result scope](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.md)
 for the exact 0.9 values.

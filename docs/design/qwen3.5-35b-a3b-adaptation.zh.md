@@ -14,7 +14,7 @@
 - 权重索引总大小：71,903,655,008 bytes，共 14 个 safetensors 分片；
 - 原生上下文：262,144 token。
 
-[历史模型清单](../results/evidence/qwen3.5-35b-a3b-model-manifest.json)
+[历史模型清单](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/qwen3.5-35b-a3b-model-manifest.json)
 记录的是旧版 59d61f3c revision，不能充当当前 712cf743 revision 的哈希凭据。
 
 Hugging Face 端点不可用时，可使用 Qwen 官方镜像，但须核对 revision 与文件哈希。
@@ -53,7 +53,7 @@ manager 页提升至 1,152 或 2,048 token；0.9.0 发布宿主报告为 1,152�
 
 旧 `int[]` GDN ABI 兼容桥需要显式开启，并受 schema 约束。
 旧宿主 ABI 故障及 2026-09-27 性能配对见
-[0.9 历史过程](../archive/results/frontier-benchmarking-0.9.zh.md)。
+[0.9 历史过程](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.zh.md)。
 
 部分 RoPE 校准会在旋转前采集归一化 query head。64 个旋转维度使用 TriAttention
 面向未来位置的三角评分；192 个直通维度加入校准后的直接 Q·K 内容项。插件自有的
@@ -74,4 +74,4 @@ V3 会保护开头 128 个和最近 512 个 token，把中间上下文切成 8 �
 使用[校准指南](../development/calibration-artifacts.zh.md)，并从
 [测试规程索引](../benchmark/README.zh.md)选择适用规程。旧版 eager 启动命令、
 2026-09-20 质量矩阵和 2026-09-27 诊断保存在
-[历史适配记录](../archive/results/qwen3.5-20260920-adaptation-results.zh.md)。
+[历史适配记录](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/qwen3.5-20260920-adaptation-results.zh.md)。

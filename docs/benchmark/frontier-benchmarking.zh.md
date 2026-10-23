@@ -3,7 +3,7 @@
 [English](frontier-benchmarking.md) | 简体中文
 
 这是 Qwen3.5-35B-A3B BF16、TP=2、Ascend 910B2 cohort 的现行对照规程。
-发行版及源码候选的测量见[结果索引](../results/README.zh.md)，旧过程见
+发行版及源码候选的测量见[结果索引](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.zh.md)，旧过程见
 [归档](../archive/README.zh.md)。每项改动必须在精确的源码与环境上
 重新配对测量。
 

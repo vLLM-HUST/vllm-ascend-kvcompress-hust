@@ -195,16 +195,25 @@
   </main>
 
   <footer class="wrap">
-    <div>数据源：<code>docs/results/evidence/leaderboard-history.json</code></div>
+    <div>数据源：<a href="https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/leaderboard-history.json">benchmark 原始历史 JSON</a></div>
     <span id="updated">Last updated —</span>
   </footer>
 
-  <script src="evidence/leaderboard-history.js"></script>
-  <script src="evidence/frontier-results.js"></script>
   <script>
-    (() => {
+    (async () => {
       "use strict";
-      const data = window.KV_LEADERBOARD_HISTORY;
+      const originals = "https://raw.githubusercontent.com/vLLM-HUST/vllm-hust-benchmark/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/";
+      const evidenceBase = originals.replace("raw.githubusercontent.com", "github.com").replace("/vllm-hust-benchmark/", "/vllm-hust-benchmark/blob/");
+      const read = async name => {
+        const response = await fetch(originals + "evidence/" + name);
+        if (!response.ok) throw new Error(`Original readback failed: ${response.status}`);
+        return response.json();
+      };
+      const [data, frontier] = await Promise.all([read("leaderboard-history.json"), read("frontier-results.json")]);
+      const evidenceURL = value => {
+        if (value === "../tests/run_npu_kernel_benchmark.py") return "https://github.com/vLLM-HUST/vllm-ascend-kvcompress-hust/blob/6ce5e0def4e487dba9687115b9dff8222c488b21/tests/run_npu_kernel_benchmark.py";
+        return /^https:\/\//.test(value) ? value : new URL(value, evidenceBase).href;
+      };
       if (!data || !Array.isArray(data.records)) {
         document.getElementById("empty").hidden = false;
         document.getElementById("empty").textContent = "榜单数据未生成，请运行 scripts/kvcompress_leaderboard.py。";
@@ -213,8 +222,7 @@
       const records = [...data.records].sort((a, b) => b.date_utc.localeCompare(a.date_utc));
       const $ = id => document.getElementById(id);
       const escape = value => String(value ?? "").replace(/[&<>\"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[char]);
-      const frontier = window.KV_FRONTIER_RESULTS;
-      const safeEvidence = value => /^https:\/\//.test(value) || /^evidence\/[a-zA-Z0-9._/-]+\.json$/.test(value) ? value : null;
+      const safeEvidence = value => /^https:\/\//.test(value) || /^evidence\/[a-zA-Z0-9._/-]+\.json$/.test(value) ? evidenceURL(value) : null;
       const number = (value, digits = 2) => value == null ? "—" : Number(value).toFixed(digits);
       const delta = (value, betterWhenPositive = false) => {
         if (value == null) return '<span class="neutral">—</span>';
@@ -316,7 +324,7 @@
             <td>${quality}</td><td>${delta(record.quality_delta_pp, true).replace("%", " pp")}</td>
             <td>${delta(record.request_throughput_delta_pct, true)}</td><td>${delta(record.total_throughput_delta_pct, true)}</td><td>${delta(record.ttft_delta_pct)}</td>
             <td>${delta(record.tpot_delta_pct)}</td><td>${delta(record.e2e_delta_pct)}</td><td>${kv}</td>
-            <td><span class="pill ${badge}">${escape(record.status)}</span><small style="display:block;margin:7px 0 5px;color:var(--muted)">${escape(record.date_utc)}</small><a href="${escape(record.evidence)}">查看证据</a></td>
+            <td><span class="pill ${badge}">${escape(record.status)}</span><small style="display:block;margin:7px 0 5px;color:var(--muted)">${escape(record.date_utc)}</small><a href="${escape(evidenceURL(record.evidence))}">${record.evidence.startsWith("../tests/") ? "方法代码；原始计时未提供 / Method only" : "查看证据"}</a></td>
           </tr>`;
         }).join("");
         $("empty").hidden = visible.length !== 0;
@@ -327,7 +335,10 @@
       }
       ["search", "model-filter", "category-filter", "status-filter"].forEach(id => $(id).addEventListener("input", render));
       render();
-    })();
+    })().catch(error => {
+      document.getElementById("empty").hidden = false;
+      document.getElementById("empty").textContent = `原始数据读取失败 / Original data unavailable: ${error.message}`;
+    });
   </script>
 </body>
 </html>

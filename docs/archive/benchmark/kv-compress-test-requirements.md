@@ -3,7 +3,7 @@
 English | [简体中文](kv-compress-test-requirements.zh.md)
 
 > **Historical archive.** V4.6 is retired as the active project gate for 0.8;
-> follow the [Frontier benchmark protocol](../results/frontier-benchmarking-0.9.md). The
+> follow the [Frontier benchmark protocol](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.md). The
 > Qwen2.5 matrix below remains reproducible historical evidence, not the
 > current official leaderboard workload.
 

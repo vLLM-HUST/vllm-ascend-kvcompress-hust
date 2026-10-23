@@ -20,7 +20,7 @@ Version 0.9.0 remains experimental. It publishes method API v1 for external
 compression methods. Its validation supports bounded engineering performance
 statements, not production readiness or an official website score.
 The release gate is the current
-[Frontier protocol](../results/frontier-benchmarking-0.9.md): matched synchronized host runtime,
+[Frontier protocol](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.md): matched synchronized host runtime,
 complete 262,144-context APC/MTP2/async/FULL_AND_PIECEWISE/align service checks,
 auditable B0/B1 runs for both official 900-second SWE and AgentX workloads, and
 at least one positive, protocol-valid Frontier workload result. Disclose any

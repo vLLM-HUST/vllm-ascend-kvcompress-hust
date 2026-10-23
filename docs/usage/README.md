@@ -19,5 +19,5 @@ targets the validated 1,152-token attention-page layout. Read the page
 alignment note in the configuration guide before using another host layout.
 For measured performance claims, choose the applicable
 [benchmark protocol](../benchmark/README.md) and record evidence in
-[results](../results/README.md); a successful request only proves that
+[results](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.md); a successful request only proves that
 the service works.

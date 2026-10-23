@@ -42,7 +42,7 @@ python scripts/kvcompress_benchmark_score.py --help
 ```
 
 具体任务、完整命令、上游 revision、许可边界和实测结果见
-[公开长上下文 Benchmark](../results/public-long-context-benchmarks.zh.md)。8K KV 预算与
+[公开长上下文 Benchmark](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/public-long-context-benchmarks.zh.md)。8K KV 预算与
 `score_layer_stride=8` 是通过公开质量门槛的默认值；4K 是激进的负载特定配置，
 并未通过 Qasper 质量门槛。运行
 还必须声明压缩是必需、可选还是禁止，以免把设计中的短输出绕过误判为插件未启用。
@@ -54,4 +54,4 @@ python scripts/kvcompress_benchmark_score.py --help
 
 Prefix cache、speculative decoding、KV transfer、量化 KV、BidKV 和已移除的
 宿主优化均是不支持组合，不是调参变量。发布结论必须受已完成矩阵和
-[验收记录](../results/validation.zh.md)的限制约束。
+[验收记录](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/validation.zh.md)的限制约束。

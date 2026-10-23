@@ -14,7 +14,7 @@ vLLM-Ascend, Triton-Ascend, PyTorch, torch-npu, CANN, ATB, and the device driver
 as a mutually compatible stack before installing the plugin. The Extension
 Manager manifest records the supported host range. Match native extensions to
 the chosen Python ABI, and use the exact tested stack recorded with each
-[result](../results/README.md). An installed package version alone does not
+[result](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.md). An installed package version alone does not
 prove that its native module or kernels can run.
 
 Use an isolated environment and choose model, cache, toolchain, and evidence
