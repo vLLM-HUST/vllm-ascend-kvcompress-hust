@@ -1,5 +1,7 @@
 # 文档导航
 
+历史原件下载与校验见[迁移说明](usage/benchmark-originals.zh.md)。
+
 [English](README.md) | 简体中文
 
 本导航汇集用户说明、设计、测试方法、优化记录与按日期保存的结果。
@@ -30,5 +32,5 @@
 [A2/A3 规程](archive/benchmark/benchmarking.zh.md)、
 [公开长上下文实验](archive/results/public-long-context-benchmarks.zh.md)、
 [2026-09-20 验证](archive/results/validation.zh.md)和
-[0.2 结果](archive/results/results-0.2.zh.md)属于旧工作负载与宿主栈，
+[0.2 结果](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/b36edbc7698e3ca188904d0e20495ed2924a8525/archive/mod-targeted-20261023/compress/snapshot/docs/archive/results/results-0.2.zh.md)属于旧工作负载与宿主栈，
 不得与不同 cohort 的结果混合计算。

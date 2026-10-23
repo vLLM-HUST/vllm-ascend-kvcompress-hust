@@ -1,0 +1,13 @@
+{
+  "source_repository": "vLLM-HUST/vllm-ascend-kvcompress-hust",
+  "capsules": [
+    {
+      "manifest_url": "https://raw.githubusercontent.com/vLLM-HUST/vllm-hust-benchmark/b36edbc7698e3ca188904d0e20495ed2924a8525/archive/mod-targeted-20261023/compress/manifest.json",
+      "manifest_sha256": "19026b37c20bd77457301c3a9336564d0bc8619ba05c8a4239833ae92ec3aeef"
+    }
+  ],
+  "migrated_paths": [
+    "docs/archive/results/results-0.2.md",
+    "docs/archive/results/results-0.2.zh.md"
+  ]
+}

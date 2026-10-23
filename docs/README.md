@@ -1,5 +1,7 @@
 # Documentation
 
+Verified historical originals: [retrieval guide](usage/benchmark-originals.md).
+
 English | [简体中文](README.zh.md)
 
 Use this map to find user instructions, design, benchmark methods,
@@ -33,5 +35,5 @@ contains the full sequence of positive and negative local pairs, including the
 [A2/A3 procedure](archive/benchmark/benchmarking.md),
 [public long-context experiments](archive/results/public-long-context-benchmarks.md),
 [2026-09-20 validation](archive/results/validation.md), and
-[0.2 results](archive/results/results-0.2.md) describe older workloads and
+[0.2 results](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/b36edbc7698e3ca188904d0e20495ed2924a8525/archive/mod-targeted-20261023/compress/snapshot/docs/archive/results/results-0.2.md) describe older workloads and
 host stacks. Do not pool measurements from different cohorts.
