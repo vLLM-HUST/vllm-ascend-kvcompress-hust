@@ -8,7 +8,7 @@
 
 ## 问题与实现
 
-[0.9.0 SWE 配对](../results/evidence/kvcompress-qwen35-20261008-v090-swe-pair.json)
+[0.9.0 SWE 配对](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20261008-v090-swe-pair.json)
 的逐请求解码 P90 提升 1.05%，但每卡输出吞吐下降 2.71%。原 TP=2 评分路径
 对每个采样的注意力层分别执行 HCCL MAX 归约。Qwen3.5 采用 stride 2 时，
 一次压缩选择要为五个采样层执行五次 collective。
@@ -57,6 +57,6 @@ token，实际最长 prompt 为 52,505。B0 加载插件但将压缩设为不可
 可重复性或统计显著性估计。较高的请求输出门槛会改变触发压缩的请求集合，
 因此收益不能全部归因于 HCCL 改动。
 
-[聚合证据](../results/evidence/kvcompress-qwen35-20261017-v010-swe-pair.json)
+[聚合证据](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20261017-v010-swe-pair.json)
 包含源码和宿主身份、精确指标、run ID 及原始报告 SHA-256。
 [测试规程](../benchmark/frontier-benchmarking.zh.md)说明指标计算与资格检查。

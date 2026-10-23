@@ -16,7 +16,7 @@ Extension Manager ID 为 `org.vllm-hust.ascend-kvcompress`。
 
 0.9.0 仍为实验性版本，并发布供外部压缩方法使用的 method API v1。当前验证仅支持
 有边界的工程性能结论，不支持生产可用或
-官网正式成绩的声明。发布门槛以当前 [Frontier 规程](../results/frontier-benchmarking-0.9.zh.md)
+官网正式成绩的声明。发布门槛以当前 [Frontier 规程](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.zh.md)
 为准：同步宿主的匹配运行时、262,144 上下文下 APC/MTP2/async/
 FULL_AND_PIECEWISE/align 的完整服务检查、官方 SWE 和 AgentX 两项 900 秒
 工作负载均有可审计的 B0/B1 配对，并且至少一项 Frontier 负载协议有效且取得

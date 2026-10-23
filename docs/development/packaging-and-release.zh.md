@@ -3,7 +3,7 @@
 [English](packaging-and-release.md) | 简体中文
 
 本流程适用于各次候选发布。从 `pyproject.toml` 读取发行版本，上传前检查
-软件包索引，并复核候选版本的[结果证据](../results/README.zh.md)。
+软件包索引，并复核候选版本的[结果证据](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.zh.md)。
 [0.9 历史发布配方与证据](../archive/development/packaging-and-release-0.9.zh.md)
 仅供复核，后续版本不得沿用其中固定的文件名。
 

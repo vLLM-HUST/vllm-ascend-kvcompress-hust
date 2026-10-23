@@ -4,7 +4,7 @@ English | [简体中文](packaging-and-release.zh.md)
 
 Use this procedure for each release candidate. Read the distribution version
 from `pyproject.toml`, inspect the installed package index before uploading,
-and review the candidate's [result evidence](../results/README.md). The
+and review the candidate's [result evidence](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.md). The
 [0.9 release recipe and evidence](../archive/development/packaging-and-release-0.9.md)
 are historical; do not reuse its fixed artifact filenames.
 

@@ -9,7 +9,7 @@ not a claim about every model, host, or request mix.
 
 ## Problem and implementation
 
-The [0.9.0 SWE pair](../results/evidence/kvcompress-qwen35-20261008-v090-swe-pair.json)
+The [0.9.0 SWE pair](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20261008-v090-swe-pair.json)
 raised per-request decode P90 by 1.05% but reduced output tokens/s/chip by
 2.71%. In the TP=2 scoring path, each sampled attention layer previously
 performed its own HCCL MAX reduction. With stride 2 on Qwen3.5, five sampled
@@ -69,7 +69,7 @@ repeatability or significance estimate. The high requested-output guard
 changes which requests compress, so its benefit cannot be attributed solely
 to the HCCL change.
 
-The [aggregate evidence](../results/evidence/kvcompress-qwen35-20261017-v010-swe-pair.json)
+The [aggregate evidence](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20261017-v010-swe-pair.json)
 contains source and host identities, exact values, run IDs, and SHA-256 hashes
 of the original reports. The
 [benchmark contract](../benchmark/frontier-benchmarking.md) defines the

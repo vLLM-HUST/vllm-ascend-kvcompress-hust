@@ -107,7 +107,7 @@ fused paged-key scorer now adds this direct content dot product to the rotary
 trigonometric score in one NPU kernel; its Torch fallback remains available for
 non-mean aggregation. The fused partial-RoPE path passed numerical checks on
 an Ascend NPU. A subsequent official SWE pair narrowed but did not reverse
-the performance regression; see [Frontier benchmarking](../archive/results/frontier-benchmarking-0.9.md).
+the performance regression; see [Frontier benchmarking](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.md).
 
 With tensor parallelism, calibration rows are sharded by local KV head and an
 all-reduce maximum synchronizes per-layer scores before selection. TP size must

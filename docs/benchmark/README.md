@@ -16,5 +16,5 @@ results from different cohorts as if they were one pair.
 
 Superseded procedures belong in the [benchmark archive](../archive/benchmark/).
 Dated measurements and their exact protocol are linked from
-[results](../results/README.md) and [optimization records](../optimization/README.md).
+[results](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.md) and [optimization records](../optimization/README.md).
 Add a new protocol here when a new workload or acceptance requirement needs one.

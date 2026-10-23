@@ -5,14 +5,15 @@ from pathlib import Path
 
 import pytest
 
+from scripts.benchmark_inputs import original_path
 from scripts.kvcompress_leaderboard import render, render_frontier
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_leaderboard_history_and_browser_bundle_are_in_sync() -> None:
-    history = ROOT / "docs/results/evidence/leaderboard-history.json"
-    bundle = ROOT / "docs/results/evidence/leaderboard-history.js"
+    history = original_path(ROOT, "docs/results/evidence/leaderboard-history.json")
+    bundle = original_path(ROOT, "docs/results/evidence/leaderboard-history.js")
     payload = json.loads(history.read_text(encoding="utf-8"))
 
     assert payload["schema_version"] == 1
@@ -25,17 +26,19 @@ def test_leaderboard_html_loads_the_history_bundle() -> None:
         encoding="utf-8"
     )
 
-    assert 'src="evidence/leaderboard-history.js"' in page
+    assert "leaderboard-history.json" in page
+    assert "raw.githubusercontent.com/vLLM-HUST/vllm-hust-benchmark/" in page
     assert "KV Compression" in page
     assert 'record.status.includes("fail") ? "fail"' in page
-    assert 'src="evidence/frontier-results.js"' in page
+    assert "frontier-results.json" in page
+    assert 'src="evidence/' not in page
     assert 'id="frontier-panel"' in page
     assert "P90 解码速度" in page
 
 
 def test_frontier_bundle_is_separate_from_history_and_has_no_synthetic_points() -> None:
-    source = ROOT / "docs/results/evidence/frontier-results.json"
-    bundle = ROOT / "docs/results/evidence/frontier-results.js"
+    source = original_path(ROOT, "docs/results/evidence/frontier-results.json")
+    bundle = original_path(ROOT, "docs/results/evidence/frontier-results.js")
     payload = json.loads(source.read_text(encoding="utf-8"))
 
     assert payload["schema_version"] == "leaderboard-frontier/v1"
@@ -56,7 +59,7 @@ def test_frontier_bundle_is_separate_from_history_and_has_no_synthetic_points() 
 def test_frontier_bundle_rejects_unmeasured_and_incomplete_points(
     tmp_path: Path,
 ) -> None:
-    source = ROOT / "docs/results/evidence/frontier-results.json"
+    source = original_path(ROOT, "docs/results/evidence/frontier-results.json")
     payload = json.loads(source.read_text(encoding="utf-8"))
     point = {
         "id": "test-point",

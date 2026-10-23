@@ -11,7 +11,7 @@
 插件 wheel 故意不声明核心 `Requires-Dist`。安装插件前，须配套部署兼容的
 vLLM-HUST、vLLM-Ascend、Triton-Ascend、PyTorch、torch-npu、CANN、ATB
 和设备驱动；Extension Manager 清单记录受支持宿主范围。原生扩展必须与
-选定的 Python ABI 相符，并使用每项[结果](../results/README.zh.md)记录的
+选定的 Python ABI 相符，并使用每项[结果](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.zh.md)记录的
 精确受测宿主栈。发行包版本号本身不能证明原生模块或算子可执行。
 
 使用隔离环境，按机器条件选择模型、缓存、工具链和证据位置。若工作区系统层

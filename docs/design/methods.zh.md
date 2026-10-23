@@ -66,7 +66,7 @@ Qwen3.5-35B-A3B 的 40 个文本层由 10 组“3 个 Gated-DeltaNet 层 + 1 个
 `q_pass_mean`。插件自有的分页键融合评分算子现可在一次 NPU 核执行中，把这部分
 直接内容点积加到旋转维度的三角评分上；非均值聚合仍可回退 Torch 路径。部分
 RoPE 融合路径已通过真实昇腾 NPU 的数值检查。随后的 SWE 官方客户端配对
-缩小了性能退化幅度，但尚未扭转；详见 [Frontier 测试](../archive/results/frontier-benchmarking-0.9.zh.md)。
+缩小了性能退化幅度，但尚未扭转；详见 [Frontier 测试](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.zh.md)。
 
 张量并行时，校准行按本地 KV 头切分，并在选择前对逐层分数执行最大值 all-reduce，
 保证各 rank 选择相同位置。TP 大小必须整除 KV 头数。Qwen3.5 的

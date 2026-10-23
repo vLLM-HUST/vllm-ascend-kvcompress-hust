@@ -15,7 +15,7 @@ The Qwen2.5 V4.6 matrix is [historical](../archive/benchmark/kv-compress-test-re
 - Weight index total: 71,903,655,008 bytes in 14 safetensors shards.
 - Native context: 262,144 tokens.
 
-The [historical model manifest](../results/evidence/qwen3.5-35b-a3b-model-manifest.json)
+The [historical model manifest](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/qwen3.5-35b-a3b-model-manifest.json)
 records the earlier 59d61f3c revision; do not use it as the hash receipt for
 the current 712cf743 revision.
 
@@ -59,7 +59,7 @@ by the active attention page, but not by the cross-group alignment.
 
 The old `int[]` GDN ABI bridge is opt-in and schema-gated. Historical
 host ABI failures and the 2026-09-27 performance pairs are retained in the
-[0.9 campaign](../archive/results/frontier-benchmarking-0.9.md).
+[0.9 campaign](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.md).
 
 Partial-RoPE calibration captures normalized query heads before rotation. The
 64 rotated dimensions use TriAttention's trigonometric future-position score;
@@ -85,4 +85,4 @@ physical budget are workload-specific choices.
 Use the [calibration guide](../development/calibration-artifacts.md) and choose
 the relevant protocol from the [benchmark index](../benchmark/README.md). The
 older eager launch commands, 2026-09-20 quality matrix, and 2026-09-27
-diagnostics are preserved in the [historical adaptation record](../archive/results/qwen3.5-20260920-adaptation-results.md).
+diagnostics are preserved in the [historical adaptation record](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/qwen3.5-20260920-adaptation-results.md).

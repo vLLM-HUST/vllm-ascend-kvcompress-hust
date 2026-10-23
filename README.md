@@ -18,10 +18,10 @@ the measured 4,608-token budget and 2,048-token requested-output guard.
 > despite 262,144 configured context. This single local pair does not establish
 > repeatability, semantic quality, production readiness, or an official
 > leaderboard result. MTP2 remains experimental and rejected by default.
-> See the [result scope](docs/results/README.md) and
-> [aggregate evidence](docs/results/evidence/kvcompress-qwen35-20261017-v010-swe-pair.json)
+> See the [result scope](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.md) and
+> [aggregate evidence](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20261017-v010-swe-pair.json)
 > for the exact host and workload. Earlier 0.9 results remain in the result
-> index and [historical campaign](docs/archive/results/frontier-benchmarking-0.9.md).
+> index and [historical campaign](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.md).
 
 ## Ownership and maintenance
 
@@ -181,11 +181,11 @@ The 2026-10-17 SWE C4/900-second pair improved per-chip output
 throughput 1.33% and per-user decode P90 1.62%, with an 8.65% TTFT P95
 regression. The 0.9 SWE pair improved decode P90 1.05% while per-chip
 throughput fell 2.71%; AgentX is a separate cohort. See
-[result scope](docs/results/README.md), the
-[full 0.9 campaign](docs/archive/results/frontier-benchmarking-0.9.md),
+[result scope](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.md), the
+[full 0.9 campaign](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.md),
 and the [benchmark procedure index](docs/benchmark/README.md).
 The historical Qwen2.5 A2/A3 and public long-context results stay in
-[the archive](docs/archive/results/public-long-context-benchmarks.md).
+[the archive](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/public-long-context-benchmarks.md).
 
 ## Conflict matrix
 
@@ -217,11 +217,11 @@ page, `kv_budget` must also be divisible by the active page size; it need not
 be divisible by the scheduler's cross-group alignment.
 
 - [Documentation map (current vs. historical)](docs/README.md)
-- [Historical 2026-09-20 engineering validation](docs/archive/results/validation.md)
+- [Historical 2026-09-20 engineering validation](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/validation.md)
 - [Benchmark procedures](docs/benchmark/README.md)
 - [Historical V4.6-derived requirements](docs/archive/benchmark/kv-compress-test-requirements.md)
 - [Historical A2/A3 benchmark protocol](docs/archive/benchmark/benchmarking.md)
-- [Historical public long-context benchmarks](docs/archive/results/public-long-context-benchmarks.md)
+- [Historical public long-context benchmarks](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/public-long-context-benchmarks.md)
 - [HTML benchmark leaderboard (Frontier measured points and historical evidence)](docs/results/benchmark-leaderboard.html)
 - [Qwen3.5-35B-A3B adaptation](docs/design/qwen3.5-35b-a3b-adaptation.md)
 - [Packaging and release](docs/development/packaging-and-release.md)

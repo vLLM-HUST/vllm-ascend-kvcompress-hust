@@ -13,9 +13,9 @@ Qwen3.5 示例采用实测的 4608-token 预算和 2048-token 请求输出门槛
 > **1.62%**；TTFT P95 变差 **8.65%**。配置上下文为 262,144 token，
 > 实际最长 prompt 为 52,505 token。单组本地配对不能证明可重复性、
 > 语义质量、生产适用性或官网榜单结果。MTP2 仍为默认拒绝启动的实验功能。
-> 精确的宿主与负载见[结果范围](docs/results/README.zh.md)及
-> [聚合证据](docs/results/evidence/kvcompress-qwen35-20261017-v010-swe-pair.json)。
-> 0.9 结果保留在结果索引及[历史过程](docs/archive/results/frontier-benchmarking-0.9.zh.md)。
+> 精确的宿主与负载见[结果范围](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.zh.md)及
+> [聚合证据](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20261017-v010-swe-pair.json)。
+> 0.9 结果保留在结果索引及[历史过程](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.zh.md)。
 
 ## 归属与维护
 
@@ -151,10 +151,10 @@ scheduler 与 worker 在步骤边界提交压缩事务，保持语义 RoPE 位�
 2026-10-17 的 SWE C4／900 秒配对中，每卡输出吞吐提升 1.33%，逐用户解码
 P90 提升 1.62%，TTFT P95 变差 8.65%。0.9 的 SWE 配对中解码 P90
 提升 1.05%，但每卡吞吐下降 2.71%；AgentX 是另一 cohort。详见
-[结果范围](docs/results/README.zh.md)、
-[完整 0.9 过程](docs/archive/results/frontier-benchmarking-0.9.zh.md)和
+[结果范围](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.zh.md)、
+[完整 0.9 过程](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.zh.md)和
 [测试规程索引](docs/benchmark/README.zh.md)。历史 Qwen2.5
-A2/A3 与公开长上下文结果保留在[归档](docs/archive/results/public-long-context-benchmarks.zh.md)。
+A2/A3 与公开长上下文结果保留在[归档](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/public-long-context-benchmarks.zh.md)。
 
 ## 冲突矩阵
 
@@ -184,10 +184,10 @@ A2/A3 与公开长上下文结果保留在[归档](docs/archive/results/public-l
 能被 scheduler 的跨组对齐粒度整除。
 
 - [文档导航（当前与历史）](docs/README.zh.md)
-- [2026-09-20 历史工程验证记录](docs/archive/results/validation.zh.md)
+- [2026-09-20 历史工程验证记录](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/validation.zh.md)
 - [历史 V4.6 派生测试要求](docs/archive/benchmark/kv-compress-test-requirements.zh.md)
 - [历史 A2/A3 规程](docs/archive/benchmark/benchmarking.zh.md)
-- [历史公开长上下文 Benchmark](docs/archive/results/public-long-context-benchmarks.zh.md)
+- [历史公开长上下文 Benchmark](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/public-long-context-benchmarks.zh.md)
 - [HTML 测试榜单（Frontier 实测点与历史证据）](docs/results/benchmark-leaderboard.html)
 - [Qwen3.5-35B-A3B 适配](docs/design/qwen3.5-35b-a3b-adaptation.zh.md)
 - [测试规程](docs/benchmark/README.zh.md)

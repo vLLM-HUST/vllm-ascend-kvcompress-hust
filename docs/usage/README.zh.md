@@ -15,5 +15,5 @@
 [Qwen3.5-35B-A3B 示例](../../examples/qwen3.5-35b-a3b-triattention.json)
 针对已验证的 1,152-token 注意力页布局。使用其他宿主布局前，请阅读配置指南的
 页对齐说明。性能结论需要选择适用的
-[测试规程](../benchmark/README.zh.md)，并在[结果记录](../results/README.zh.md)
+[测试规程](../benchmark/README.zh.md)，并在[结果记录](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.zh.md)
 中保存证据；一次请求成功只能说明服务可用。

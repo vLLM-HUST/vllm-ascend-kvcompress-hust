@@ -41,4 +41,4 @@ KV、MLA/local/sliding attention 与 PP/DP/DCP/PCP 仍在启动检查中拒绝�
 算子加速不能推导服务加速。已发布 0.9 的 SWE 配对逐用户解码 P90 提升，
 但每卡输出 token/s 下降。优化结论须选择覆盖相应负载和指标的
 [测试规程](../benchmark/README.zh.md)。0.9 精确数值见
-[结果范围](../results/README.zh.md)。
+[结果范围](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.zh.md)。

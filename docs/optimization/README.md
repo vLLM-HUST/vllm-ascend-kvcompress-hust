@@ -6,7 +6,7 @@ Keep dated optimization records here. Each record identifies the implementation,
 frozen workload and host, candidate configurations, correctness checks,
 positive and negative measurements, and limits of the conclusion. The
 applicable [benchmark protocols](../benchmark/README.md) define how to
-measure; [results and evidence](../results/README.md) hold aggregate outcomes
+measure; [results and evidence](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.md) hold aggregate outcomes
 and report hashes. General design belongs in [design](../design/methods.md).
 
 | Date | Record |

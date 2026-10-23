@@ -3,7 +3,7 @@
 English | [简体中文](benchmarking.zh.md)
 
 > **Historical archive.** This V4.6-derived procedure is no longer the active
-> 0.8 release gate. See [Frontier benchmarking](../results/frontier-benchmarking-0.9.md).
+> 0.8 release gate. See [Frontier benchmarking](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.md).
 
 The normative project-specific requirements extracted from the HUST V4.6
 delivery plan are in [KV-compression test requirements](kv-compress-test-requirements.md).
@@ -51,7 +51,7 @@ python scripts/kvcompress_benchmark_score.py --help
 
 The selected tasks, complete commands, source revisions, license boundary, and
 measured results are in
-[Public long-context benchmarks](../results/public-long-context-benchmarks.md). An 8K KV
+[Public long-context benchmarks](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/public-long-context-benchmarks.md). An 8K KV
 budget with `score_layer_stride=8` is the quality-qualified public-benchmark
 default; the 4K setting is an aggressive workload-specific option and failed
 the Qasper quality gate. Runs
@@ -68,4 +68,4 @@ Host repositories must not be modified to execute the tests.
 Prefix caching, speculative decoding, KV transfer, quantized KV, BidKV, and
 removed host optimizations are unsupported combinations, not benchmark tuning
 variables. Publication claims must stay within the completed matrix and the
-limitations in [Validation](../results/validation.md).
+limitations in [Validation](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/validation.md).

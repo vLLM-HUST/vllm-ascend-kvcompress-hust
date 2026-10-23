@@ -1,5 +1,20 @@
 # Benchmark originals
 
+## Leaderboard and mixed historical results
+
+[History manifest](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/manifest.json)
+preserves the former result directories. HTML reads pinned benchmark JSON; local checks use:
+
+```bash
+python scripts/fetch_benchmark_originals.py /absolute/external/originals
+export VLLM_HUST_BENCHMARK_ORIGINALS=/absolute/external/originals
+python -m pytest tests/test_leaderboard.py tests/test_benchmark_inputs.py
+python scripts/kvcompress_leaderboard.py --check
+```
+
+Rebuilding requires new external `--output` and `--frontier-output` files. Missing or changed inputs
+fail closed. Kernel rows with only a method-code reference remain method-only, not recovered timings.
+
 This bounded collection is preserved by the benchmark repository. Original versions, failures,
 negative results and diagnostic scope remain unchanged; migration is not new runtime acceptance.
 Other historical collections are not declared migrated by this change.

@@ -12,5 +12,5 @@
 | [Frontier SWE 与 AgentX](frontier-benchmarking.zh.md) | Qwen3.5-35B-A3B BF16、TP=2、Ascend 910B2 服务对照 |
 
 退役流程放在[测试规程归档](../archive/benchmark/)。
-[结果](../results/README.zh.md)与[优化记录](../optimization/README.zh.md)
+[结果](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.zh.md)与[优化记录](../optimization/README.zh.md)
 标明各次测量使用的精确规程。出现新的负载或验收要求时，在此增加对应规程。
