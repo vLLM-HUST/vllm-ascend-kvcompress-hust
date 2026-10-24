@@ -10,13 +10,22 @@
 - Put user-facing instructions in `docs/usage/`, benchmark protocols and their
   index in `docs/benchmark/`, design in
   `docs/design/`, dated optimization records in `docs/optimization/`,
-  development guidance in `docs/development/`, current result
-  summaries and aggregate evidence in `docs/results/`, issue notes in
+  development guidance in `docs/development/`, result navigation in
+  `docs/results/`, issue notes in
   `docs/issue/`, and report templates in `docs/template/`. In `docs/archive/`,
-  use `benchmark/` for retired protocols, `results/` for dated measurements,
+  use `benchmark/` for retired protocols, `results/` for benchmark entry points,
   `design/` for superseded architecture, and `development/` for old procedures.
-  / 用户指南放在 `docs/usage/`；当前测试、设计、优化记录、开发、结果、议题、模板分别归入上述目录；归档内仍按旧规程、
-  旧结果、旧设计和旧开发流程分类。
+  / 用户指南放在 `docs/usage/`；规程、设计、开发、结果导航、议题与模板分别归入上述目录；
+  `docs/results/` 和归档结果目录仅保留 benchmark 入口，不存放实测数据副本。
+- Store measured results, logs, profiles, aggregate evidence and historical
+  measurement narratives only in `vLLM-HUST/vllm-hust-benchmark`. This MOD keeps
+  implementation, protocols, synthetic test fixtures and checksum-bound links.
+  For mixed documents, archive the complete original and verify remote bytes
+  before replacing observations with links; retain installation/design guidance.
+  Follow [original custody](docs/usage/benchmark-originals.md). / 实测结果、日志、
+  profile、聚合证据及历史测量正文统一存入 benchmark；本仓库只保留实现、规程、
+  合成测试夹具及绑定校验值的链接。混合文档先完整归档并回验，再迁移数值消费者，
+  保留安装与设计说明；遵循[原件保管](docs/usage/benchmark-originals.zh.md)。
 - Keep `docs/README.md` and `docs/README.zh.md` as the navigation entry points.
   When moving a document, repair links in both languages, root READMEs, scripts,
   and tests. Preserve the original version, host, and model identity in dated
@@ -35,6 +44,12 @@
   `dev/reports/monthly/`, and some run/test outputs in `dev/results/`. /
   `dev/` 存放个人临时文档与数据，不参与 Git 提交；周报和月报分别在上述目录，
   部分运行与测试结果放入 `dev/results/`。
+- Ignored local outputs are temporary working data, not published evidence.
+  Before citing a run, archive and verify its shareable originals in benchmark;
+  a `dev/` path is not a durable reader link. Never publish secrets or private
+  inputs. Do not remove installation assets without checking their consumers.
+  / 忽略的本地输出只是临时工作数据；引用前需归档可公开原件并回验，`dev/` 路径
+  不能作为长期证据入口。不得公开密钥或私有输入；安装资产须核清消费者后再清理。
 - Preserve pre-existing worktree changes. For performance claims, choose the
   applicable protocol from [benchmark protocols](docs/benchmark/README.md)
   before measuring. Record its baseline and candidate conditions, primary

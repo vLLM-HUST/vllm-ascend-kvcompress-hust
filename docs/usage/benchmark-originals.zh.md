@@ -28,3 +28,5 @@ python scripts/fetch_benchmark_originals.py /absolute/external/originals
 CI 持续回验并阻止已迁路径重新进入 Git。副本可从 benchmark 固定原件或历史 Git 恢复。
 
 [compress-release](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/5eeccc2d69b2c4a634e273a9f926584c8d252cf7/archive/mod-targeted-20261023/compress-release/manifest.json) — 中英文历史发布指南及 LICENSE 已归档；配对 JSON 直链绑定 SHA，原始失败不变。
+
+[Historical host records / 历史宿主安装记录](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/4792d99508627b969fbf61449adb2a53d229f071/archive/mod-targeted-20261023/compress-host/manifest.json) — byte-preserved bilingual originals and LICENSE; legacy local wheel consumers remain unresolved.

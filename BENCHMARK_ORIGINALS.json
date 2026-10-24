@@ -16,6 +16,10 @@
     {
       "manifest_url": "https://raw.githubusercontent.com/vLLM-HUST/vllm-hust-benchmark/5eeccc2d69b2c4a634e273a9f926584c8d252cf7/archive/mod-targeted-20261023/compress-release/manifest.json",
       "manifest_sha256": "ba01a4b0e3494feed6cac1197aab3edfc51b5a29a3881b0617de0a80dc00ca8c"
+    },
+    {
+      "manifest_url": "https://raw.githubusercontent.com/vLLM-HUST/vllm-hust-benchmark/4792d99508627b969fbf61449adb2a53d229f071/archive/mod-targeted-20261023/compress-host/manifest.json",
+      "manifest_sha256": "c041e11bc0507b520568312fe4dc4ebd73082e99fd268cb329f4b7f56a01ada9"
     }
   ],
   "migrated_paths": [
@@ -136,6 +140,14 @@
     "docs/archive/development/packaging-and-release-0.9.zh.md": {
       "url": "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/5eeccc2d69b2c4a634e273a9f926584c8d252cf7/archive/mod-targeted-20261023/compress-release/snapshot/docs/archive/development/packaging-and-release-0.9.zh.md",
       "sha256": "0ef65f01f70f3c6db7d0f8079676f2e02a1d48b65909d996739c82a7ba8a39fd"
+    },
+    "docs/archive/development/environment-installation-20260927.md": {
+      "url": "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/4792d99508627b969fbf61449adb2a53d229f071/archive/mod-targeted-20261023/compress-host/snapshot/docs/archive/development/environment-installation-20260927.md",
+      "sha256": "c33d6f670d43a848165416679d6741d16df67c4ace2a8b76ba8750ac4f98c821"
+    },
+    "docs/archive/development/environment-installation-20260927.zh.md": {
+      "url": "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/4792d99508627b969fbf61449adb2a53d229f071/archive/mod-targeted-20261023/compress-host/snapshot/docs/archive/development/environment-installation-20260927.zh.md",
+      "sha256": "f0ba0641eea75c7f4dee623b93a2fd3c97755ef5b4e169ed5966c33f9d1c42a1"
     }
   },
   "document_data_links": {

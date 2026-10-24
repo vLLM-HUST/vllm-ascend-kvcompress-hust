@@ -32,3 +32,5 @@ and never executes archived code. CI repeats the readback and rejects the migrat
 to Git. Fixed benchmark originals and unchanged source Git history preserve recoverability.
 
 [compress-release](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/5eeccc2d69b2c4a634e273a9f926584c8d252cf7/archive/mod-targeted-20261023/compress-release/manifest.json) — Historical bilingual release guides and LICENSE; paired JSON direct links are checksum-bound. Original failures remain unchanged.
+
+[Historical host records / 历史宿主安装记录](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/4792d99508627b969fbf61449adb2a53d229f071/archive/mod-targeted-20261023/compress-host/manifest.json) — byte-preserved bilingual originals and LICENSE; legacy local wheel consumers remain unresolved.
