@@ -61,9 +61,8 @@ files are rejected rather than ignored. A missing file is generated only when
 
 `min_output_tokens_for_compression` is a non-negative requested-output gate.
 When a request's maximum generation is below it, both scheduler and worker skip
-the transaction. `0` preserves the legacy always-eligible behavior; `64` is the
-quality-qualified public-benchmark default that removes overhead from the
-32-token retrieval workload.
+the transaction. `0` preserves the legacy always-eligible behavior; `64` is a
+configured requested-output threshold; qualification is workload-specific.
 
 The standard runtime has equal 128-token scheduler, attention-manager, and
 kernel-cache blocks. For the explicitly supported Qwen3.5 hybrid, Ascend may
@@ -74,9 +73,7 @@ kernel blocks. The method's maximum physical token count must be divisible by
 the active attention page, not by the cross-group alignment.
 
 `score_layer_stride=8` uniformly samples six of the 48 calibrated layers for
-selection while all 48 K/V layers are still materialized. On the frozen public
-Qasper and LongBench-v2 sets this setting preserved baseline quality and
-improved the matched end-to-end result compared with the former value `4`.
+selection while all 48 K/V layers are still materialized. Historical qualification is recorded in the frozen method document linked below.
 
 ## V3 position policy
 
@@ -105,9 +102,7 @@ attention layers 3, 7, …, 39 and leaves recurrent-state groups unchanged. Its
 therefore stores `q_pass_mean` for the remaining 192 dimensions. The plugin's
 fused paged-key scorer now adds this direct content dot product to the rotary
 trigonometric score in one NPU kernel; its Torch fallback remains available for
-non-mean aggregation. The fused partial-RoPE path passed numerical checks on
-an Ascend NPU. A subsequent official SWE pair narrowed but did not reverse
-the performance regression; see [Frontier benchmarking](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.md).
+non-mean aggregation. For historical partial-RoPE checks and paired measurements, see [Frontier benchmarking](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.md).
 
 With tensor parallelism, calibration rows are sharded by local KV head and an
 all-reduce maximum synchronizes per-layer scores before selection. TP size must
@@ -237,3 +232,8 @@ bad factories, and name mismatches fail closed.
 - Add registry, configuration, transaction, and numerical tests.
 - Run matched compression-off/on correctness, quality, throughput, latency,
   and HBM acceptance on the exact supported host revisions.
+
+## Historical measurement source
+
+[Original method description and historical conclusions](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/b3d2ed2692b5575b5ae77b93fc82e32c9119be8e/archive/mod-targeted-20261023/compress-mixed/snapshot/docs/design/methods.md).
+This page describes the implementation contract, not a current quality or performance guarantee.

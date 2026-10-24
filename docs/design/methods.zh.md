@@ -29,8 +29,8 @@ Extension Manager 保存一个 JSON 对象，必须包含 `schema_version`、`pr
 `auto_calibrate` 启用时生成缺失文件，详见校准产物文档。
 
 `min_output_tokens_for_compression` 是非负的请求输出门槛。当请求的最大生成长度低于
-该值时，scheduler 和 worker 都跳过事务。`0` 保持原有的始终可压缩行为；公开
-benchmark 推荐值为 `64`，可消除 32-token 检索负载上的无效压缩开销。
+该值时，scheduler 和 worker 都跳过事务。`0` 保持原有的始终可压缩行为；`64`
+是配置的请求输出门槛，是否满足质量要求仍取决于具体工况。
 
 标准运行时的 scheduler、全注意力 manager 与内核缓存块均为 128 token。对于
 明确支持的 Qwen3.5 混合模型，Ascend 可把全注意力 manager 页提升为
@@ -40,8 +40,7 @@ benchmark 推荐值为 `64`，可消除 32-token 检索负载上的无效压缩�
 对齐粒度整除。
 
 `score_layer_stride=8` 会从 48 个已校准层中均匀抽取 6 层用于选择，但仍会物化
-全部 48 层 K/V。在冻结的公开 Qasper 与 LongBench-v2 集合上，该配置保持了基线
-质量，并比原值 `4` 获得更好的同机端到端结果。
+全部 48 层 K/V。
 
 ## V3 位置策略
 
@@ -65,8 +64,7 @@ Qwen3.5-35B-A3B 的 40 个文本层由 10 组“3 个 Gated-DeltaNet 层 + 1 个
 其 256 维注意力头只有 64 维使用 RoPE，因此校准产物会为剩余 192 维保存
 `q_pass_mean`。插件自有的分页键融合评分算子现可在一次 NPU 核执行中，把这部分
 直接内容点积加到旋转维度的三角评分上；非均值聚合仍可回退 Torch 路径。部分
-RoPE 融合路径已通过真实昇腾 NPU 的数值检查。随后的 SWE 官方客户端配对
-缩小了性能退化幅度，但尚未扭转；详见 [Frontier 测试](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.zh.md)。
+RoPE 路径的历史测试见 [Frontier 测试](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.zh.md)。
 
 张量并行时，校准行按本地 KV 头切分，并在选择前对逐层分数执行最大值 all-reduce，
 保证各 rank 选择相同位置。TP 大小必须整除 KV 头数。Qwen3.5 的
@@ -171,3 +169,8 @@ my_method = "my_package.method:create_method"
 - 补齐注册、配置、事务和数值测试；
 - 在精确宿主 revision 上完成压缩关闭/开启的正确性、质量、吞吐、时延和 HBM
   对照验收。
+
+## 历史测量来源
+
+[冻结的方法说明及当时测试结论](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/b3d2ed2692b5575b5ae77b93fc82e32c9119be8e/archive/mod-targeted-20261023/compress-mixed/snapshot/docs/design/methods.zh.md)。
+当前文档描述实现契约，不把旧测试结果推广为当前质量或性能保证。
