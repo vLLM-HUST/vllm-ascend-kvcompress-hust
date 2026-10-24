@@ -8,6 +8,10 @@
     {
       "manifest_url": "https://raw.githubusercontent.com/vLLM-HUST/vllm-hust-benchmark/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/manifest.json",
       "manifest_sha256": "8b5a22e915990f6f8f8612b6826cae1029aea64162adde1b09b117518be6a4f8"
+    },
+    {
+      "manifest_url": "https://raw.githubusercontent.com/vLLM-HUST/vllm-hust-benchmark/b3d2ed2692b5575b5ae77b93fc82e32c9119be8e/archive/mod-targeted-20261023/compress-mixed/manifest.json",
+      "manifest_sha256": "139c4aba6dbaa0d22515d1da3995d141f74741e6724b9bcd65f2971ed989ba6d"
     }
   ],
   "migrated_paths": [
@@ -103,5 +107,23 @@
     "docs/results/evidence/leaderboard-history.js": "265c273caa4f9c8d361f3ddfdfbfe31a10099d8fd7cf8e86c007952121065ecd",
     "docs/results/evidence/leaderboard-history.json": "e47161f417f12061fb40005c5bb401d0262bfb0cdfc189d48306950cd7ef4f18",
     "docs/results/evidence/qwen3.5-35b-a3b-model-manifest.json": "878a08594a81d3bbfbd1afa563beecb11c27deb4db40648ae3acea8dbfad12fd"
+  },
+  "document_projections": {
+    "docs/design/methods.md": {
+      "url": "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/b3d2ed2692b5575b5ae77b93fc82e32c9119be8e/archive/mod-targeted-20261023/compress-mixed/snapshot/docs/design/methods.md",
+      "sha256": "7e7e73a18379cffe4a57538eba559fef8377a2c34d16f24033ed563cb20125cc"
+    },
+    "docs/design/methods.zh.md": {
+      "url": "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/b3d2ed2692b5575b5ae77b93fc82e32c9119be8e/archive/mod-targeted-20261023/compress-mixed/snapshot/docs/design/methods.zh.md",
+      "sha256": "12580976ca46d66be85ff65ca47b303005ba3c823f3e6245c4a576137ad019bf"
+    },
+    "docs/optimization/triattention-tp-score-batching-20261017.md": {
+      "url": "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/b3d2ed2692b5575b5ae77b93fc82e32c9119be8e/archive/mod-targeted-20261023/compress-mixed/snapshot/docs/optimization/triattention-tp-score-batching-20261017.md",
+      "sha256": "d19743c746296cfdabf96e8b391bbc690242604b3b0a06379fc17929b6347ca9"
+    },
+    "docs/optimization/triattention-tp-score-batching-20261017.zh.md": {
+      "url": "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/b3d2ed2692b5575b5ae77b93fc82e32c9119be8e/archive/mod-targeted-20261023/compress-mixed/snapshot/docs/optimization/triattention-tp-score-batching-20261017.zh.md",
+      "sha256": "0f0f578d56f63b96dd90918873710b07d89e010dd61ecf175c52ac2df125579d"
+    }
   }
 }
