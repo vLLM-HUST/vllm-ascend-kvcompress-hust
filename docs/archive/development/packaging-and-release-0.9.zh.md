@@ -1,44 +1,21 @@
 # 0.9 历史打包与发布指南
 
-[English](../../development/packaging-and-release.md) | 简体中文
+[English](packaging-and-release-0.9.md) | 简体中文
 
-> 0.9.0 历史发布配方。当前流程见[打包发布指南](../../development/packaging-and-release.zh.md)。
+完整历史测量、发布门槛及失败记录见 [benchmark 原文](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/5eeccc2d69b2c4a634e273a9f926584c8d252cf7/archive/mod-targeted-20261023/compress-release/snapshot/docs/archive/development/packaging-and-release-0.9.zh.md)。
+此页保留历史安装配方；当前发布流程见[现行指南](../../development/packaging-and-release.zh.md)。
+旧结果仅为单次工程观测，不代表当前正式成绩；0.8 wheel 的 eager 短测不代表图编译通过，
+原编译失败保持不变。原 JSON 中的 B0/B1 是当时配对标签，不替代固定 0.18/0.18 B0 定义。
 
-本仓库遵循 BidKV 打包流程。PyPI distribution 为
-`vllm-ascend-kvcompress-hust`，Python 包为 `vllm_ascend_kvcompress`，稳定的
-Extension Manager ID 为 `org.vllm-hust.ascend-kvcompress`。
+## 原始证据直链
 
-## 发布门槛
+以下为当时保存的配对 JSON，不冒充逐请求日志。JSON 中仅记录哈希的外部运行日志及
+0.8 wheel 短测原始日志，在此已下载集合中没有对应原件；保留该可用性限制。
 
-发布前必须保持项目版本、`__version__` 和 manifest 版本一致；完成 CPU、包、NPU、
-生命周期及声明的服务测试；冻结宿主、模型、校准、数据来源；审核完整 diff。PyPI
-文件不可覆盖，任何代码变更都必须提升版本。
-
-0.9.0 仍为实验性版本，并发布供外部压缩方法使用的 method API v1。当前验证仅支持
-有边界的工程性能结论，不支持生产可用或
-官网正式成绩的声明。发布门槛以当前 [Frontier 规程](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.zh.md)
-为准：同步宿主的匹配运行时、262,144 上下文下 APC/MTP2/async/
-FULL_AND_PIECEWISE/align 的完整服务检查、官方 SWE 和 AgentX 两项 900 秒
-工作负载均有可审计的 B0/B1 配对，并且至少一项 Frontier 负载协议有效且取得
-正收益；另一项若退化须如实披露。历史 V4.6 记录不能代替这些结果。
-发布负责人确认精确候选制品前，不得上传 PyPI。
-合并后 AgentX 900 秒配对的总输出吞吐提升 11.18%、解码 P90 提升 5.27%；
-SWE 配对协议有效，但相应指标下降 2.95% 和 1.34%。两项均未实际达到 256K
-prompt，也均非官网正式提交。
-2026-10-08 的精确 0.9.0 候选在固定发布栈上重新完成两项官方 900 秒配对。
-SWE 解码 P90 提升 1.05%，但吞吐和 TTFT 退化；AgentX 解码 P90 提升 1.14%，
-TTFT 与 ITL 改善，总吞吐在 0.0001% 内持平。两项均协议有效，无失败请求或
-无效原因。这些本地短测满足有边界的发布门槛，但仍只是单次工程观测，不是一小时
-正式测试或官网成绩。
-
-精确的 0.8.0 wheel 在锁定的 CANN 9.1/PyTorch 2.13 环境中通过 Ascend 内核与
-插件自带 GDN 回退算子数值短测。使用该 wheel 的 Qwen2.5-14B-Instruct
-FP16/TP=1 服务在 NPU 0、`--enforce-eager` 下返回 `/health` 200；一次
-10,843-token 的事实检索输入正确回答“42”，调度器与 worker 均确认物理 KV
-压缩到 8,192 token。相同宿主的默认图编译启动**未通过**：AOT 路径在初始化
-缓存时出现 `AssertionError: expected OutputCode, got GraphModuleImpl`。
-因此这次追加的 wheel 服务短测只验证 eager 路径，不代表 Qwen2.5 图编译
-模式验收，也不改变上述 Frontier 结果的性质。
+- [docs/results/evidence/kvcompress-qwen35-20260927-agentx-postmerge-positive-pair.json](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20260927-agentx-postmerge-positive-pair.json)
+- [docs/results/evidence/kvcompress-qwen35-20260927-swe-postmerge-negative-pair.json](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20260927-swe-postmerge-negative-pair.json)
+- [docs/results/evidence/kvcompress-qwen35-20261008-v090-agentx-pair.json](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20261008-v090-agentx-pair.json)
+- [docs/results/evidence/kvcompress-qwen35-20261008-v090-swe-pair.json](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20261008-v090-swe-pair.json)
 
 ## 构建与检查
 
@@ -69,8 +46,8 @@ wheel 必须包含代码、`LICENSE`、`NOTICE` 和
 `manifests/vllm-hust-extension-v0.3.json`；entry-point metadata 必须同时包含
 `vllm.general_plugins`、`vllm_hust.extension_bundles` 和
 `vllm-ascend-kvcompress-calibrate` 命令入口。两个发行包均不得包含
-`artifacts/*.pt`、原始数据、服务日志或历史 `docs/dev/results`。sdist 包含静态
-HTML 榜单及其生成的浏览器数据 bundle；`docs/evidence` 只可包含聚合证据摘要。
+`artifacts/*.pt`、原始数据、服务日志或历史 `docs/dev/results`。原 0.9 配方曾随 sdist 携带榜单数据；这不是当前打包要求。历史数据现由 benchmark 保管，
+不得重新嵌入发布包；当前流程以[现行指南](../../development/packaging-and-release.zh.md)为准。
 
 ## 隔离生命周期
 
