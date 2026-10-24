@@ -12,6 +12,10 @@
     {
       "manifest_url": "https://raw.githubusercontent.com/vLLM-HUST/vllm-hust-benchmark/b3d2ed2692b5575b5ae77b93fc82e32c9119be8e/archive/mod-targeted-20261023/compress-mixed/manifest.json",
       "manifest_sha256": "139c4aba6dbaa0d22515d1da3995d141f74741e6724b9bcd65f2971ed989ba6d"
+    },
+    {
+      "manifest_url": "https://raw.githubusercontent.com/vLLM-HUST/vllm-hust-benchmark/5eeccc2d69b2c4a634e273a9f926584c8d252cf7/archive/mod-targeted-20261023/compress-release/manifest.json",
+      "manifest_sha256": "ba01a4b0e3494feed6cac1197aab3edfc51b5a29a3881b0617de0a80dc00ca8c"
     }
   ],
   "migrated_paths": [
@@ -124,6 +128,60 @@
     "docs/optimization/triattention-tp-score-batching-20261017.zh.md": {
       "url": "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/b3d2ed2692b5575b5ae77b93fc82e32c9119be8e/archive/mod-targeted-20261023/compress-mixed/snapshot/docs/optimization/triattention-tp-score-batching-20261017.zh.md",
       "sha256": "0f0f578d56f63b96dd90918873710b07d89e010dd61ecf175c52ac2df125579d"
+    },
+    "docs/archive/development/packaging-and-release-0.9.md": {
+      "url": "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/5eeccc2d69b2c4a634e273a9f926584c8d252cf7/archive/mod-targeted-20261023/compress-release/snapshot/docs/archive/development/packaging-and-release-0.9.md",
+      "sha256": "b0e3ce1ee617929d4a0f9be36a2d702d83017d47aab3743fd94bde3496814a9f"
+    },
+    "docs/archive/development/packaging-and-release-0.9.zh.md": {
+      "url": "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/5eeccc2d69b2c4a634e273a9f926584c8d252cf7/archive/mod-targeted-20261023/compress-release/snapshot/docs/archive/development/packaging-and-release-0.9.zh.md",
+      "sha256": "0ef65f01f70f3c6db7d0f8079676f2e02a1d48b65909d996739c82a7ba8a39fd"
     }
+  },
+  "document_data_links": {
+    "docs/archive/development/packaging-and-release-0.9.md": [
+      {
+        "path": "docs/results/evidence/kvcompress-qwen35-20260927-agentx-postmerge-positive-pair.json",
+        "url": "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20260927-agentx-postmerge-positive-pair.json",
+        "sha256": "89e8bdd3c2ed4f9b46f0616b7516ff12609cf3d36417a9b8e9f987b256a378fc"
+      },
+      {
+        "path": "docs/results/evidence/kvcompress-qwen35-20260927-swe-postmerge-negative-pair.json",
+        "url": "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20260927-swe-postmerge-negative-pair.json",
+        "sha256": "844df042b6d691cae33e863103fc3b3ecc780607129b56920757aaa584cdacde"
+      },
+      {
+        "path": "docs/results/evidence/kvcompress-qwen35-20261008-v090-agentx-pair.json",
+        "url": "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20261008-v090-agentx-pair.json",
+        "sha256": "2f76137e8d96c22f417a752a4d8c02c43acf5f073e17d16adc3ab40476cbc839"
+      },
+      {
+        "path": "docs/results/evidence/kvcompress-qwen35-20261008-v090-swe-pair.json",
+        "url": "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20261008-v090-swe-pair.json",
+        "sha256": "e75075e13095f45707c1fcfc9c8afde6ed8abca18283ec29ef0fcdb02fa55ddd"
+      }
+    ],
+    "docs/archive/development/packaging-and-release-0.9.zh.md": [
+      {
+        "path": "docs/results/evidence/kvcompress-qwen35-20260927-agentx-postmerge-positive-pair.json",
+        "url": "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20260927-agentx-postmerge-positive-pair.json",
+        "sha256": "89e8bdd3c2ed4f9b46f0616b7516ff12609cf3d36417a9b8e9f987b256a378fc"
+      },
+      {
+        "path": "docs/results/evidence/kvcompress-qwen35-20260927-swe-postmerge-negative-pair.json",
+        "url": "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20260927-swe-postmerge-negative-pair.json",
+        "sha256": "844df042b6d691cae33e863103fc3b3ecc780607129b56920757aaa584cdacde"
+      },
+      {
+        "path": "docs/results/evidence/kvcompress-qwen35-20261008-v090-agentx-pair.json",
+        "url": "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20261008-v090-agentx-pair.json",
+        "sha256": "2f76137e8d96c22f417a752a4d8c02c43acf5f073e17d16adc3ab40476cbc839"
+      },
+      {
+        "path": "docs/results/evidence/kvcompress-qwen35-20261008-v090-swe-pair.json",
+        "url": "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20261008-v090-swe-pair.json",
+        "sha256": "e75075e13095f45707c1fcfc9c8afde6ed8abca18283ec29ef0fcdb02fa55ddd"
+      }
+    ]
   }
 }

@@ -1,53 +1,24 @@
 # Historical 0.9 Packaging and Release Guide
 
-English | [简体中文](../../development/packaging-and-release.zh.md)
+English | [简体中文](packaging-and-release-0.9.zh.md)
 
-> Historical 0.9.0 release recipe. Use the [current release guide](../../development/packaging-and-release.md).
+The complete historical measurements, release gates and failures are preserved in the
+[benchmark original](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/5eeccc2d69b2c4a634e273a9f926584c8d252cf7/archive/mod-targeted-20261023/compress-release/snapshot/docs/archive/development/packaging-and-release-0.9.md). This page retains historical installation recipes;
+use the [current guide](../../development/packaging-and-release.md) for publishing.
+Single engineering observations are not current formal results. The 0.8 wheel eager smoke
+does not qualify compiled serving; the original compiled-start failure remains unchanged.
+Original JSON B0/B1 labels identify their historical pairs, not the fixed 0.18/0.18 B0.
 
-This repository follows the BidKV packaging guide. The PyPI distribution is
-`vllm-ascend-kvcompress-hust`, the import package is
-`vllm_ascend_kvcompress`, and the stable Extension Manager ID is
-`org.vllm-hust.ascend-kvcompress`.
+## Original evidence links
 
-## Release gates
+These are the saved paired JSON records, not per-request logs. External run logs represented
+only by hashes in those JSON files, and the 0.8 wheel smoke logs, have no corresponding
+original in this downloaded collection; that availability limitation remains explicit.
 
-Before publishing, keep the project version, `__version__`, and manifest
-version identical; run CPU, package, NPU, lifecycle, and declared service
-tests; freeze host/model/calibration/data provenance; and review the complete
-diff. PyPI files are immutable, so any code change requires a new version.
-
-Version 0.9.0 remains experimental. It publishes method API v1 for external
-compression methods. Its validation supports bounded engineering performance
-statements, not production readiness or an official website score.
-The release gate is the current
-[Frontier protocol](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.md): matched synchronized host runtime,
-complete 262,144-context APC/MTP2/async/FULL_AND_PIECEWISE/align service checks,
-auditable B0/B1 runs for both official 900-second SWE and AgentX workloads, and
-at least one positive, protocol-valid Frontier workload result. Disclose any
-regression in the other workload. Historical V4.6 records do not substitute
-for those results. Do not upload to PyPI until the release owner confirms the
-exact candidate. The post-merge AgentX 900-second
-pair improved output throughput by 11.18% and decode P90 by 5.27%; the SWE
-pair was protocol-valid but regressed by 2.95% and 1.34% respectively. Neither
-pair reached a 256K actual prompt, and neither is an official website result.
-The 2026-10-08 exact 0.9.0 candidate repeated both official 900-second pairs on
-the pinned release stack. SWE decode P90 improved 1.05% while throughput and
-TTFT regressed; AgentX decode P90 improved 1.14%, TTFT and ITL improved, and
-throughput was flat within 0.0001%. Both pairs were protocol-valid with no
-failed requests or invalidity reasons. These local smokes satisfy the bounded
-release gate, but remain single engineering observations rather than formal
-one-hour or official website results.
-
-The exact 0.8.0 wheel passed Ascend kernel and plugin-owned GDN fallback
-numerical smokes in the locked CANN 9.1/PyTorch 2.13 environment. A Qwen2.5-
-14B-Instruct FP16/TP=1 service using that wheel, NPU 0, and `--enforce-eager`
-returned `/health` 200 and answered `42` on a 10,843-token retrieval prompt.
-The scheduler and worker acknowledged compression to 8,192 physical KV tokens.
-The same host's default compiled start did **not** pass: its AOT path raised
-`AssertionError: expected OutputCode, got GraphModuleImpl` during cache
-initialization. This additional wheel smoke therefore qualifies the eager
-path only; it does not turn the earlier Frontier results into a compiled-mode
-Qwen2.5 qualification.
+- [docs/results/evidence/kvcompress-qwen35-20260927-agentx-postmerge-positive-pair.json](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20260927-agentx-postmerge-positive-pair.json)
+- [docs/results/evidence/kvcompress-qwen35-20260927-swe-postmerge-negative-pair.json](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20260927-swe-postmerge-negative-pair.json)
+- [docs/results/evidence/kvcompress-qwen35-20261008-v090-agentx-pair.json](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20261008-v090-agentx-pair.json)
+- [docs/results/evidence/kvcompress-qwen35-20261008-v090-swe-pair.json](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20261008-v090-swe-pair.json)
 
 ## Build and inspect
 
@@ -80,9 +51,9 @@ The wheel must contain code, `LICENSE`, `NOTICE`, and
 `vllm.general_plugins`, `vllm_hust.extension_bundles`, and the
 `vllm-ascend-kvcompress-calibrate` console script. Neither archive
 may contain `artifacts/*.pt`, raw data, service logs, or historical
-`docs/dev/results`. The sdist includes the static HTML leaderboard and its
-generated browser data bundle; `docs/evidence` may contain only aggregate
-evidence summaries.
+`docs/dev/results`. The old 0.9 recipe bundled leaderboard data in the sdist; this is not a current
+packaging requirement. Historical data now lives in benchmark and must not return to
+distributions. Follow the [current guide](../../development/packaging-and-release.md).
 
 ## Isolated lifecycle
 

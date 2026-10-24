@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_document_projections_link_frozen_benchmark_originals():
     config = json.loads((ROOT / "BENCHMARK_ORIGINALS.json").read_text())
     projections = config["document_projections"]
-    assert len(projections) == 4
+    assert len(projections) == 6
     for relative, binding in projections.items():
         source = (ROOT / relative).read_bytes()
         assert binding["url"].startswith(
@@ -31,3 +31,25 @@ def test_document_bindings_match_downloaded_original_bytes():
             hashlib.sha256((originals / relative).read_bytes()).hexdigest()
             == (binding["sha256"])
         )
+
+
+def test_release_data_links_bind_downloaded_originals():
+    originals = Path(os.environ["VLLM_HUST_BENCHMARK_ORIGINALS"])
+    config = json.loads((ROOT / "BENCHMARK_ORIGINALS.json").read_text())
+    documents = config["document_data_links"]
+    assert len(documents) == 2
+    for relative, rows in documents.items():
+        source = (ROOT / relative).read_text()
+        assert len(rows) == 4
+        assert len({row["path"] for row in rows}) == len(rows)
+        for row in rows:
+            assert row["path"].startswith("docs/results/evidence/")
+            assert row["url"].startswith(
+                "https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/"
+            )
+            assert row["url"].endswith("/snapshot/" + row["path"])
+            assert row["url"] in source
+            assert (
+                hashlib.sha256((originals / row["path"]).read_bytes()).hexdigest()
+                == row["sha256"]
+            )
