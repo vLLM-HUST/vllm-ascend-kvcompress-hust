@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_document_projections_link_frozen_benchmark_originals():
     config = json.loads((ROOT / "BENCHMARK_ORIGINALS.json").read_text())
     projections = config["document_projections"]
-    assert len(projections) == 6
+    assert len(projections) == 8
     for relative, binding in projections.items():
         source = (ROOT / relative).read_bytes()
         assert binding["url"].startswith(
@@ -53,3 +53,13 @@ def test_release_data_links_bind_downloaded_originals():
                 hashlib.sha256((originals / row["path"]).read_bytes()).hexdigest()
                 == row["sha256"]
             )
+
+
+def test_agent_guidance_keeps_measurements_in_benchmark():
+    guidance = (ROOT / "AGENTS.md").read_text()
+    assert "only in `vLLM-HUST/vllm-hust-benchmark`" in guidance
+    assert "docs/usage/benchmark-originals.md" in guidance
+    assert "docs/usage/benchmark-originals.zh.md" in guidance
+    assert "archive the complete original and verify remote bytes" in guidance
+    assert "summaries and aggregate evidence in `docs/results/`" not in guidance
+    assert "`results/` for dated measurements" not in guidance
