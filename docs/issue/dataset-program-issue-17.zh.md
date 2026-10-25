@@ -30,8 +30,8 @@
 
 | Benchmark | 样本输入规模 | 输出规模 | 代表性 total | `total ≥ 9,216` | 判断可信度 |
 | --- | ---: | ---: | ---: | --- | --- |
-| **MMLU-Pro** | 当前 5-shot 最大 **2,910** | 当前上限 **2,048**；Qwen3.5 参考实测均值 **1,179** | 当前最多 **4,958** | **0%（当前配置）** | **高** |
-| **HLE-Verified** | question 最大 16.9k chars，约数千 token | 类 HLE 的 Qwen3.5 参考实测均值 **6,625** | 可能接近或超过 9k | **未知，但预计不可忽略** | 中 |
+| **MMLU-Pro** | 当前 5-shot 最大 **2,910** | 当前上限 **2,048**；Qwen3.5 参考统计均值 **1,179** | 当前最多 **4,958** | **0%（当前配置）** | **高** |
+| **HLE-Verified** | question 最大 16.9k chars，约数千 token | 类 HLE 的 Qwen3.5 参考统计均值 **6,625** | 可能接近或超过 9k | **未知，但预计不可忽略** | 中 |
 | **SWE-bench-Pro** | 静态 issue prompt 通常数百～数千 token | agent 多轮；参考值约 **6.1k–8.9k output/task** | fresh input+output 约 **9.4k–14.4k/task** | **任务累计很可能大量超过；单请求未知** | 中高 |
 | **FrontierScience** | problem 408–6,590 chars | 强烈取决于 reasoning model：参考值约 **3.3k–29k** | 可低于也可远高于 9,216 | **高度模型相关，不能从数据集本身确定** | 高 |
 | **Terminal-Bench 2.1** | 初始 instruction 通常 <~1–1.5k token | agent 多轮；参考值约 **12k–18k output/task** | fresh input+output 约 **12.5k–47k/task** | **任务累计预计多数超过；单请求未知** | 中高 |
