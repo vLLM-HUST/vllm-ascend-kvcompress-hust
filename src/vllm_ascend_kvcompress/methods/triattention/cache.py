@@ -5,11 +5,17 @@ from __future__ import annotations
 
 import torch
 
+from .kernels import copy_private_kv_slots, map_token_slots
+
 
 def token_slots(
     block_ids: torch.Tensor, token_indices: torch.Tensor, block_size: int
 ) -> torch.Tensor:
     """Map logical token indices to flattened physical cache slots."""
+    if token_indices.device.type == "npu":
+        output = torch.empty_like(token_indices, dtype=torch.long)
+        if map_token_slots(block_ids, token_indices, block_size, output):
+            return output
     block_offsets = torch.div(token_indices, block_size, rounding_mode="floor")
     within_block = torch.remainder(token_indices, block_size)
     return block_ids.index_select(0, block_offsets) * block_size + within_block
@@ -110,3 +116,24 @@ def materialize_token_slots(
     _gather_slots(v_cache, source_slots, out=v_workspace)
     _write_slots(k_cache, destination_slots, k_workspace)
     _write_slots(v_cache, destination_slots, v_workspace)
+
+
+def materialize_private_token_slots(
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    source_slots: torch.Tensor,
+    destination_slots: torch.Tensor,
+    k_workspace: torch.Tensor,
+    v_workspace: torch.Tensor,
+) -> None:
+    """Use direct NPU K/V movement for scheduler-validated private destinations."""
+    if copy_private_kv_slots(k_cache, v_cache, source_slots, destination_slots):
+        return
+    materialize_token_slots(
+        k_cache,
+        v_cache,
+        source_slots,
+        destination_slots,
+        k_workspace,
+        v_workspace,
+    )

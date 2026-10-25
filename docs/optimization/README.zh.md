@@ -10,4 +10,5 @@
 
 | 日期 | 记录 |
 | --- | --- |
+| 2026-10-23 | [TriAttention 私有 KV 直拷与非整齐 V3 分段选择](triattention-private-copy-and-v3-selection-20261023.zh.md) |
 | 2026-10-17 | [TriAttention TP 评分合并与 SWE 配置筛选](triattention-tp-score-batching-20261017.zh.md) |

@@ -70,14 +70,15 @@ That isolated speedup did not imply an end-to-end SWE speedup. With TP=2, each
 rank scores its local KV head. The implementation batches all sampled
 layer scores into one all-reduce maximum, producing the same token selection
 on both ranks while reducing synchronization overhead. The dated
-[optimization record](../optimization/triattention-tp-score-batching-20261017.md)
-contains the implementation and service measurements.
+[TP score record](../optimization/triattention-tp-score-batching-20261017.md)
+and [private-copy/V3 record](../optimization/triattention-private-copy-and-v3-selection-20261023.md)
+contain the implementation and service measurements.
 
-V3 selection protects the first 128 and most recent 512 tokens, splits the
+V3 selection protects the first 128 and most recent 1,024 tokens, splits the
 middle into eight segments, and assigns an exact proportional eviction quota
 to every segment. The checked-in Qwen3.5 example samples five of the ten
 full-attention layers (`score_layer_stride=2`) while materializing all ten
-target layers. Its 2,048-token requested-output guard and 4,608-token
+target layers. Its 2,048-token requested-output guard and 16,128-token
 physical budget are workload-specific choices.
 
 ## Calibration and validation

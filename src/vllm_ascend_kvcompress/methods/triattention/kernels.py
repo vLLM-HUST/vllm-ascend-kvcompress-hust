@@ -32,6 +32,159 @@ def _triton_available() -> bool:
     return hasattr(triton, "cdiv") and hasattr(triton, "next_power_of_2")
 
 
+@triton.jit
+def _map_token_slots_kernel(
+    block_ids_ptr,
+    token_indices_ptr,
+    output_ptr,
+    num_tokens,
+    BLOCK_SIZE: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    offsets = tl.program_id(0) * BLOCK_N + tl.arange(0, BLOCK_N)
+    mask = offsets < num_tokens
+    indices = tl.load(token_indices_ptr + offsets, mask=mask, other=0)
+    block_offsets = indices // BLOCK_SIZE
+    block_ids = tl.load(block_ids_ptr + block_offsets, mask=mask, other=0)
+    tl.store(
+        output_ptr + offsets,
+        block_ids * BLOCK_SIZE + indices % BLOCK_SIZE,
+        mask=mask,
+    )
+
+
+def map_token_slots(
+    block_ids: torch.Tensor,
+    token_indices: torch.Tensor,
+    block_size: int,
+    output: torch.Tensor,
+) -> bool:
+    """Map logical positions to physical slots in one Ascend launch."""
+    if token_indices.device.type != "npu":
+        return False
+    if not _triton_available():
+        raise RuntimeError("triton-ascend is unavailable or failed to import")
+    if (
+        block_ids.device != token_indices.device
+        or output.device != token_indices.device
+    ):
+        raise ValueError("slot mapping tensors must be on the same device")
+    if output.shape != token_indices.shape or output.dtype != torch.long:
+        raise ValueError("slot output must match token indices and use int64")
+    _map_token_slots_kernel[(triton.cdiv(token_indices.numel(), 256),)](
+        block_ids,
+        token_indices,
+        output,
+        token_indices.numel(),
+        BLOCK_SIZE=block_size,
+        BLOCK_N=256,
+    )
+    return True
+
+
+@triton.jit
+def _copy_private_kv_slots_kernel(
+    k_ptr,
+    v_ptr,
+    source_slots_ptr,
+    destination_slots_ptr,
+    num_tokens,
+    K_PAGE_STRIDE: tl.constexpr,
+    V_PAGE_STRIDE: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    HEAD_DIM: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    tokens = tl.program_id(0) * BLOCK_N + tl.arange(0, BLOCK_N)
+    dims = tl.arange(0, HEAD_DIM)
+    token_mask = tokens < num_tokens
+    source = tl.load(source_slots_ptr + tokens, mask=token_mask, other=0)
+    destination = tl.load(destination_slots_ptr + tokens, mask=token_mask, other=0)
+    if K_PAGE_STRIDE == BLOCK_SIZE * HEAD_DIM:
+        k_source = source[:, None] * HEAD_DIM + dims[None, :]
+        k_destination = destination[:, None] * HEAD_DIM + dims[None, :]
+    else:
+        source_block = source // BLOCK_SIZE
+        source_token = source % BLOCK_SIZE
+        destination_block = destination // BLOCK_SIZE
+        destination_token = destination % BLOCK_SIZE
+        k_source = (
+            source_block[:, None] * K_PAGE_STRIDE
+            + source_token[:, None] * HEAD_DIM
+            + dims[None, :]
+        )
+        k_destination = (
+            destination_block[:, None] * K_PAGE_STRIDE
+            + destination_token[:, None] * HEAD_DIM
+            + dims[None, :]
+        )
+    if V_PAGE_STRIDE == BLOCK_SIZE * HEAD_DIM:
+        v_source = source[:, None] * HEAD_DIM + dims[None, :]
+        v_destination = destination[:, None] * HEAD_DIM + dims[None, :]
+    else:
+        source_block = source // BLOCK_SIZE
+        source_token = source % BLOCK_SIZE
+        destination_block = destination // BLOCK_SIZE
+        destination_token = destination % BLOCK_SIZE
+        v_source = (
+            source_block[:, None] * V_PAGE_STRIDE
+            + source_token[:, None] * HEAD_DIM
+            + dims[None, :]
+        )
+        v_destination = (
+            destination_block[:, None] * V_PAGE_STRIDE
+            + destination_token[:, None] * HEAD_DIM
+            + dims[None, :]
+        )
+    key = tl.load(k_ptr + k_source, mask=token_mask[:, None], other=0)
+    value = tl.load(v_ptr + v_source, mask=token_mask[:, None], other=0)
+    tl.store(k_ptr + k_destination, key, mask=token_mask[:, None])
+    tl.store(v_ptr + v_destination, value, mask=token_mask[:, None])
+
+
+def copy_private_kv_slots(
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    source_slots: torch.Tensor,
+    destination_slots: torch.Tensor,
+) -> bool:
+    """Copy K/V in one launch when source and destination blocks are disjoint."""
+    if k_cache.device.type != "npu":
+        return False
+    if not _triton_available():
+        raise RuntimeError("triton-ascend is unavailable or failed to import")
+    if k_cache.shape != v_cache.shape or k_cache.ndim != 4:
+        raise ValueError("K/V caches must have matching four-dimensional shapes")
+    if k_cache.device != v_cache.device or source_slots.device != k_cache.device:
+        raise ValueError("K/V copy tensors must be on the same device")
+    if destination_slots.device != k_cache.device:
+        raise ValueError("K/V copy tensors must be on the same device")
+    if source_slots.shape != destination_slots.shape:
+        raise ValueError("source and destination slots must have matching shapes")
+    head_dim = k_cache.shape[3]
+    if not (
+        k_cache.shape[2] == 1
+        and head_dim == triton.next_power_of_2(head_dim)
+        and k_cache.stride()[1:] == (head_dim, head_dim, 1)
+        and v_cache.stride()[1:] == (head_dim, head_dim, 1)
+        and k_cache.dtype == v_cache.dtype
+    ):
+        return False
+    _copy_private_kv_slots_kernel[(triton.cdiv(source_slots.numel(), 4),)](
+        k_cache,
+        v_cache,
+        source_slots,
+        destination_slots,
+        source_slots.numel(),
+        K_PAGE_STRIDE=k_cache.stride(0),
+        V_PAGE_STRIDE=v_cache.stride(0),
+        BLOCK_SIZE=k_cache.shape[1],
+        HEAD_DIM=head_dim,
+        BLOCK_N=4,
+    )
+    return True
+
+
 def shift_positions(
     positions: torch.Tensor,
     request_indices: torch.Tensor,

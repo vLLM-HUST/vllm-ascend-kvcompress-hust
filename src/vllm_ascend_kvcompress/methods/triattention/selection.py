@@ -16,7 +16,9 @@ class _V3BatchedPlan(NamedTuple):
     quotas: torch.Tensor
     ranks: torch.Tensor
     segment_offsets: torch.Tensor
-    target_offsets: torch.Tensor
+    gather_indices: torch.Tensor | None
+    valid_scores: torch.Tensor | None
+    valid_positions: torch.Tensor
     prefix_indices: torch.Tensor
     recent_indices: torch.Tensor
 
@@ -33,31 +35,51 @@ def _v3_batched_plan(
     """Cache small, shape-dependent index tensors across compression rounds."""
     middle_count = token_count - prefix - recent
     evict_total = token_count - budget
-    if middle_count == 0 or middle_count % segments:
+    if middle_count == 0:
         return None
-    width = middle_count // segments
+    starts = [middle_count * segment // segments for segment in range(segments)]
+    stops = [middle_count * (segment + 1) // segments for segment in range(segments)]
+    widths = [stop - start for start, stop in zip(starts, stops, strict=True)]
+    if min(widths) == 0:
+        return None
+    width = max(widths)
     quotas = [
-        width
-        - evict_total * ((segment + 1) * width) // middle_count
-        + evict_total * (segment * width) // middle_count
-        for segment in range(segments)
+        segment_width
+        - evict_total * stop // middle_count
+        + evict_total * start // middle_count
+        for start, stop, segment_width in zip(starts, stops, widths, strict=True)
     ]
     if min(quotas) <= 0:
         return None
     max_quota = max(quotas)
+    uneven = min(widths) != width
+    gather_indices = None
+    valid_scores = None
+    if uneven:
+        columns = torch.arange(width, device=device)[None, :]
+        row_starts = torch.tensor(starts, device=device)[:, None]
+        row_stops = torch.tensor(stops, device=device)[:, None]
+        valid_scores = columns < torch.tensor(widths, device=device)[:, None]
+        gather_indices = (
+            torch.minimum(row_starts + columns, row_stops - 1) + prefix
+        ).flatten()
     return _V3BatchedPlan(
         width=width,
         max_quota=max_quota,
         sorted_topk=min(quotas) != max_quota,
         quotas=torch.tensor(quotas, device=device)[:, None],
         ranks=torch.arange(max_quota, device=device)[None, :],
-        segment_offsets=(torch.arange(segments, device=device) * width + prefix)[
-            :, None
-        ],
-        target_offsets=torch.tensor(
-            [prefix + sum(quotas[:segment]) for segment in range(segments)],
+        segment_offsets=(torch.tensor(starts, device=device) + prefix)[:, None],
+        gather_indices=gather_indices,
+        valid_scores=valid_scores,
+        valid_positions=torch.tensor(
+            [
+                segment * max_quota + rank
+                for segment, quota in enumerate(quotas)
+                for rank in range(quota)
+            ],
             device=device,
-        )[:, None],
+        ),
         prefix_indices=torch.arange(prefix, device=device),
         recent_indices=torch.arange(token_count - recent, token_count, device=device),
     )
@@ -71,38 +93,46 @@ def _select_v3_batched(
     recent: int,
     segments: int,
 ) -> torch.Tensor | None:
-    """Select equal-width segments with one batched top-k on Ascend.
+    """Select middle-context segments with one batched top-k on Ascend.
 
-    The variable-width and zero-quota cases retain the original path below.
-    This fast path keeps the same integer quota boundaries and sorted output.
+    Zero-width and zero-quota cases retain the original path below. Uneven
+    segments pad only their score rows, preserving proportional quota bounds.
     """
     plan = _v3_batched_plan(
         scores.device, scores.numel(), budget, prefix, recent, segments
     )
     if plan is None:
         return None
-    rows = scores[prefix : scores.numel() - recent if recent else None].reshape(
-        segments, plan.width
-    )
+    if plan.gather_indices is None:
+        rows = scores[prefix : scores.numel() - recent if recent else None].reshape(
+            segments, plan.width
+        )
+    else:
+        assert plan.valid_scores is not None
+        rows = scores.index_select(0, plan.gather_indices).reshape(segments, plan.width)
+        # Genuine -inf scores must rank ahead of padding, even when a row's
+        # quota includes every genuine position.
+        lowest = torch.finfo(rows.dtype).min
+        rows = torch.where(
+            plan.valid_scores,
+            torch.nan_to_num(rows, nan=lowest, neginf=lowest),
+            float("-inf"),
+        )
     # Unequal quotas discard the extra returned rank for some rows, so these
     # rows require descending score order. Equal quotas may use the faster
     # unordered top-k because every returned index is retained.
     ranked = torch.topk(rows, k=plan.max_quota, dim=1, sorted=plan.sorted_topk).indices
-    chosen = torch.where(plan.ranks < plan.quotas, ranked, plan.width)
+    chosen = (
+        torch.where(plan.ranks < plan.quotas, ranked, plan.width)
+        if plan.sorted_topk
+        else ranked
+    )
     chosen = torch.sort(chosen, dim=1).values
     chosen += plan.segment_offsets
-    targets = torch.where(plan.ranks < plan.quotas, plan.ranks + plan.target_offsets, 0)
-    result = torch.empty(budget, device=scores.device, dtype=torch.long)
-    result.scatter_(0, targets.flatten(), chosen.flatten())
-    # Extra top-k entries all target slot zero; restore its true value after
-    # scatter (also covers the valid no-prefix case).
-    if prefix:
-        result[:prefix] = plan.prefix_indices
-    else:
-        result[0] = chosen[0, 0]
-    if recent:
-        result[-recent:] = plan.recent_indices
-    return result.contiguous()
+    middle = chosen.flatten()
+    if plan.sorted_topk:
+        middle = middle.index_select(0, plan.valid_positions)
+    return torch.cat((plan.prefix_indices, middle, plan.recent_indices))
 
 
 def select_keep_indices(
@@ -134,13 +164,12 @@ def select_keep_indices(
 
     prefix = min(protected_prefix, token_count)
     recent = min(protected_recent, token_count - prefix)
-    protected = torch.zeros(token_count, dtype=torch.bool, device=scores.device)
-    if prefix:
-        protected[:prefix] = True
-    if recent:
-        protected[token_count - recent :] = True
-
     if policy == "global":
+        protected = torch.zeros(token_count, dtype=torch.bool, device=scores.device)
+        if prefix:
+            protected[:prefix] = True
+        if recent:
+            protected[token_count - recent :] = True
         ranked = scores.clone()
         ranked[protected] = float("inf")
         selected = torch.topk(ranked, k=budget, largest=True, sorted=False).indices
@@ -158,6 +187,12 @@ def select_keep_indices(
         )
         if batched is not None:
             return batched
+
+    protected = torch.zeros(token_count, dtype=torch.bool, device=scores.device)
+    if prefix:
+        protected[:prefix] = True
+    if recent:
+        protected[token_count - recent :] = True
 
     # V3 assigns each middle segment a proportional eviction quota. Using
     # integer prefix sums makes the total exact and avoids a host-side cleanup

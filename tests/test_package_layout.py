@@ -8,7 +8,7 @@ from vllm_ascend_kvcompress.methods import METHOD_API_VERSION
 
 
 def test_runtime_version_matches_distribution_version() -> None:
-    assert vllm_ascend_kvcompress.__version__ == "0.10.0"
+    assert vllm_ascend_kvcompress.__version__ == "0.11.0"
 
 
 def test_external_method_api_is_explicitly_versioned() -> None:

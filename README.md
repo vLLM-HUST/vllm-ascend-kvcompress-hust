@@ -8,20 +8,21 @@ the paper's V3 position policy and experimental Qwen3.5 support. Version 0.8
 adapted to the synchronized hosts without changing their source repositories.
 Version 0.9 introduced method API v1 for separately packaged compression
 methods, including per-layer physical-state and query-observation contracts.
-Version 0.10 batches TP score synchronization and its Qwen3.5 example uses
-the measured 4,608-token budget and 2,048-token requested-output guard.
+Version 0.10 batches TP score synchronization. Version 0.11 adds direct
+private-destination K/V movement and batched V3 selection for uneven segments.
+Its Qwen3.5 example uses a 16,128-token budget and 2,048-token
+requested-output guard.
 
-> Engineering validation for 0.10.0: one matched Qwen3.5 BF16/TP=2 SWE
-> C4/900-second pair improved output throughput per chip **1.33%** and
-> per-request decode P90 **1.62%** versus the compression-off baseline.
-> TTFT P95 worsened **8.65%**; the longest observed prompt was 52,505 tokens
-> despite 262,144 configured context. This single local pair does not establish
-> repeatability, semantic quality, production readiness, or an official
-> leaderboard result. MTP2 remains experimental and rejected by default.
-> See the [result scope](docs/results/README.md) and
-> [aggregate evidence](docs/results/evidence/kvcompress-qwen35-20261017-v010-swe-pair.json)
-> for the exact host and workload. Earlier 0.9 results remain in the result
-> index and [historical campaign](docs/archive/results/frontier-benchmarking-0.9.md).
+> Engineering validation for 0.11.0 source: one matched Qwen3.5 BF16/TP=2
+> SWE C4/900-second pair with a 16,128-token budget changed per-chip output
+> throughput **+0.17%** and per-request decode P90 **+0.13%** versus B0.
+> TTFT P95 worsened **14.27%**; the longest observed prompt was 52,505 tokens
+> despite 262,144 configured context. These tiny gains are below cross-run
+> variation and do not establish repeatability, SWE answer quality, production
+> readiness, or an official leaderboard result. MTP2 remains experimental and
+> rejected by default. See the [result scope](docs/results/README.md),
+> [campaign evidence](docs/results/evidence/kvcompress-qwen35-20261023-v011-swe-campaign.json),
+> and [optimization record](docs/optimization/triattention-private-copy-and-v3-selection-20261023.md).
 
 ## Ownership and maintenance
 
@@ -191,7 +192,7 @@ The historical Qwen2.5 A2/A3 and public long-context results stay in
 
 | Feature | Implementation status | Behavior |
 | --- | --- | --- |
-| Prefix cache | Local C4 pairs protocol-valid | Private destination blocks preserve shared source hashes; the selected 0.10 SWE pair improved both target metrics |
+| Prefix cache | Local C4 pairs protocol-valid | Private destination blocks preserve shared source hashes; the 0.11 wide-budget pair had tiny single-pair gains with TTFT regression |
 | Speculative decoding | Experimental | Opt-in MTP2 served both SWE 900-second arms with real acceptance; default startup guard remains |
 | KV transfer / disaggregated P/D | Conflict | Rejected |
 | Quantized KV | Conflict | Rejected; dense BF16/FP16 only |
@@ -209,9 +210,10 @@ The historical Qwen2.5 A2/A3 and public long-context results stay in
 The general example uses an 8192-token budget, 1024-token recompute window,
 V3 prefix/recent protection of 128/512 tokens, eight position segments,
 8192-token scoring chunks, and every eighth scoring layer. It bypasses
-compression below 64 requested output tokens. The 0.10 Qwen3.5 example samples
-the ten full-attention layers with stride 2, a 4608-token budget, and a
-2048-token requested-output guard. KV-related token counts must be positive multiples
+compression below 64 requested output tokens. The Qwen3.5 example samples
+the ten full-attention layers with stride 2, a 16,128-token budget,
+1,024-token recent protection, and a 2,048-token requested-output guard.
+KV-related token counts must be positive multiples
 of block size 128. For a Qwen3.5 runtime with a promoted 1,152- or 2,048-token attention
 page, `kv_budget` must also be divisible by the active page size; it need not
 be divisible by the scheduler's cross-group alignment.

@@ -18,16 +18,17 @@ Qwen3.5-35B-A3B 使用[混合模型示例](../../examples/qwen3.5-35b-a3b-triatt
 `protected_recent_window` 之和不得超过 `kv_budget`。
 
 预算还必须被宿主实际报告的**全注意力页大小**整除。Qwen3.5 示例采用
-`kv_budget=4608`，对应 1,152-token 页（`4608 = 4 × 1152`）。
+`kv_budget=16128`，对应 1,152-token 页（`16128 = 14 × 1152`）。
 如果宿主报告 2,048-token 页，`8192` 可满足对齐（`8192 = 4 × 2048`），
-但此配置尚未通过[已记录的配对性能验证](../optimization/triattention-tp-score-batching-20261017.zh.md)。
+但此配置尚未通过[已记录的配对性能验证](../optimization/triattention-private-copy-and-v3-selection-20261023.zh.md)。
 请在服务启动时核对布局报告；页大小不同则先调整预算。
 注意力内核仍使用 `--block-size 128`，它与逻辑注意力页大小不同。
 
 `score_layer_stride` 控制参与评分的注意力层采样间隔。
 仓库中的 Qwen3.5 示例采用 stride 2 和
-`min_output_tokens_for_compression=2048`；测量结果及早期候选设置见
-[优化记录](../optimization/triattention-tp-score-batching-20261017.zh.md)。
+`min_output_tokens_for_compression=2048`，最近保护窗口为 1,024 token；
+测量结果及早期候选设置见
+[优化记录](../optimization/triattention-private-copy-and-v3-selection-20261023.zh.md)。
 这些是负载选择，并非通用质量保证。除非明确评估其他方法，
 应保持 `position_policy=v3`。
 

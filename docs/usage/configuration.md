@@ -20,10 +20,10 @@ must be positive multiples of 128. `protected_prefix_window` plus
 `protected_recent_window` must fit within `kv_budget`.
 
 The budget must also be divisible by the **actual full-attention page size**
-reported by the host. The checked-in Qwen3.5 example uses `kv_budget=4608` for a
-1,152-token page (`4608 = 4 × 1152`). For a host reporting 2,048-token
+reported by the host. The checked-in Qwen3.5 example uses `kv_budget=16128` for a
+1,152-token page (`16128 = 14 × 1152`). For a host reporting 2,048-token
 pages, `8192` is aligned (`8192 = 4 × 2048`), but this alternative has not
-passed the [recorded paired performance test](../optimization/triattention-tp-score-batching-20261017.md).
+passed the [recorded paired performance test](../optimization/triattention-private-copy-and-v3-selection-20261023.md).
 Check the startup layout report
 and change the budget before serving if the host reports a different size.
 Keep `--block-size 128` for the attention kernel; it is distinct from the
@@ -31,8 +31,9 @@ logical attention page size.
 
 `score_layer_stride` controls how many supported attention layers are scored.
 The checked-in Qwen3.5 example uses stride 2 and
-`min_output_tokens_for_compression=2048`; their measurement and earlier
-candidate settings are in the [optimization record](../optimization/triattention-tp-score-batching-20261017.md).
+`min_output_tokens_for_compression=2048`, with 1,024-token recent protection.
+Their measurement and earlier candidate settings are in the
+[optimization record](../optimization/triattention-private-copy-and-v3-selection-20261023.md).
 These settings are workload choices, not universal quality guarantees. Keep
 `position_policy=v3` unless evaluating another method
 deliberately.

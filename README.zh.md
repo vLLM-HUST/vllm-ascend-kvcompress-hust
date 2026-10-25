@@ -5,17 +5,18 @@
 面向与上游对齐的 vLLM-HUST、vLLM-Ascend-HUST 的独立 TriAttention KV-cache
 压缩插件。0.7 版加入论文 V3 位置策略与实验性 Qwen3.5 支持；0.8 版适配同步后
 的宿主，且不修改宿主源码仓库。0.9 版加入供独立压缩方法使用的 method API v1，
-包括逐层物理状态与 Query 观测契约。0.10 版合并 TP 评分同步；
-Qwen3.5 示例采用实测的 4608-token 预算和 2048-token 请求输出门槛。
+包括逐层物理状态与 Query 观测契约。0.10 版合并 TP 评分同步；0.11 版加入
+私有目标 K/V 直拷及非整齐 V3 分段批量选择。Qwen3.5 示例采用
+16,128-token 预算和 2,048-token 请求输出门槛。
 
-> 0.10.0 工程验证：一组匹配的 Qwen3.5 BF16/TP=2 SWE C4／900 秒配对，
-> 相对关闭压缩的基线，每卡输出吞吐提升 **1.33%**，逐请求解码 P90 提升
-> **1.62%**；TTFT P95 变差 **8.65%**。配置上下文为 262,144 token，
-> 实际最长 prompt 为 52,505 token。单组本地配对不能证明可重复性、
-> 语义质量、生产适用性或官网榜单结果。MTP2 仍为默认拒绝启动的实验功能。
-> 精确的宿主与负载见[结果范围](docs/results/README.zh.md)及
-> [聚合证据](docs/results/evidence/kvcompress-qwen35-20261017-v010-swe-pair.json)。
-> 0.9 结果保留在结果索引及[历史过程](docs/archive/results/frontier-benchmarking-0.9.zh.md)。
+> 0.11.0 源码工程验证：一组匹配的 Qwen3.5 BF16/TP=2 SWE C4／900 秒
+> 配对，在 16,128-token 预算下，每卡输出吞吐较 B0 高 **0.17%**，逐请求
+> 解码 P90 高 **0.13%**，TTFT P95 变差 **14.27%**。配置上下文为
+> 262,144 token，实际最长 prompt 为 52,505 token。两项微小正差值低于
+> 跨次运行波动，不能证明可重复性、SWE 答案质量、生产适用性或官网榜单成绩。
+> MTP2 仍为默认拒绝启动的实验功能。精确的宿主、负载和负结果见
+> [结果范围](docs/results/README.zh.md)、[多轮证据](docs/results/evidence/kvcompress-qwen35-20261023-v011-swe-campaign.json)
+> 和[优化记录](docs/optimization/triattention-private-copy-and-v3-selection-20261023.zh.md)。
 
 ## 归属与维护
 
@@ -160,7 +161,7 @@ A2/A3 与公开长上下文结果保留在[归档](docs/archive/results/public-l
 
 | 功能 | 实现状态 | 行为 |
 | --- | --- | --- |
-| Prefix cache | 本地 C4 配对协议有效 | 私有目标块保留共享源块哈希；0.10 SWE 所选候选的双指标均提升 |
+| Prefix cache | 本地 C4 配对协议有效 | 私有目标块保留共享源块哈希；0.11 宽预算单组微小双指标正差值伴随 TTFT 退化 |
 | Speculative decoding | 实验性 | 显式 MTP2 完成 SWE 两侧 900 秒窗口且有真实接受率；默认启动保护仍生效 |
 | KV transfer / 分离式 P/D | 冲突 | 启动拒绝 |
 | 量化 KV | 冲突 | 启动拒绝，仅支持稠密 BF16/FP16 |
@@ -177,8 +178,9 @@ A2/A3 与公开长上下文结果保留在[归档](docs/archive/results/public-l
 
 通用示例采用 8192-token 预算、1024-token 重算窗口、V3 的 128/512-token
 前缀/最近保护、8 个位置分段、8192-token 评分分块、每八层评分一次，并在请求
-输出少于 64 token 时绕过压缩。0.10 Qwen3.5 示例以 stride 2 采样十个
-全注意力层，采用 4608-token 预算和 2048-token 请求输出门槛。KV
+输出少于 64 token 时绕过压缩。Qwen3.5 示例以 stride 2 采样十个
+全注意力层，采用 16,128-token 预算、1,024-token 最近保护和 2,048-token
+请求输出门槛。KV
 相关 token 数必须为 block size 128 的正整数倍。若 Qwen3.5 的全注意力页被提升为
 1,152 或 2,048 token，`kv_budget` 还必须能被当前注意力页大小整除；不要求
 能被 scheduler 的跨组对齐粒度整除。

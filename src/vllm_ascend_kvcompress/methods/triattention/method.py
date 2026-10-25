@@ -18,7 +18,7 @@ from ..base import (
     MethodRuntimeSpec,
     ModelShape,
 )
-from .cache import gather_paged_range, materialize_token_slots, token_slots
+from .cache import gather_paged_range, materialize_private_token_slots, token_slots
 from .config import TriAttentionConfig
 from .kernels import (
     aggregate_normalized_scores,
@@ -263,6 +263,8 @@ class TriAttentionMethod(KVCompressionMethod):
             or self.dense_indices is None
         ):
             raise RuntimeError("TriAttention method is not bound to KV cache")
+        if set(request.source_block_ids[0]) & set(request.destination_block_ids[0]):
+            raise RuntimeError("TriAttention requires private destination blocks")
         keep_indices = self._select_keep_indices(
             request.source_block_ids_device,
             request.physical_num_tokens,
@@ -278,7 +280,7 @@ class TriAttentionMethod(KVCompressionMethod):
             cache_block_size,
         )
         for layer in self.materialization_caches:
-            materialize_token_slots(
+            materialize_private_token_slots(
                 layer.k_cache,
                 layer.v_cache,
                 source_slots,

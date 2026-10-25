@@ -62,12 +62,13 @@ manager 页提升至 1,152 或 2,048 token；0.9.0 发布宿主报告为 1,152�
 TP=2 时，各 rank 评分自己的本地 KV 头。实现将采样层的评分合并，
 只执行一次最大值 all-reduce，使两个 rank 的 token 选择保持一致并减少同步开销。
 具体改动与服务测量见按日期编写的
-[优化记录](../optimization/triattention-tp-score-batching-20261017.zh.md)。
+[TP 评分记录](../optimization/triattention-tp-score-batching-20261017.zh.md)和
+[私有直拷/V3 记录](../optimization/triattention-private-copy-and-v3-selection-20261023.zh.md)。
 
-V3 会保护开头 128 个和最近 512 个 token，把中间上下文切成 8 段，并为每段分配
+V3 会保护开头 128 个和最近 1,024 个 token，把中间上下文切成 8 段，并为每段分配
 精确的比例驱逐配额。仓库中的 Qwen3.5 示例以 stride 2 采样十个全注意力层中的
 五层评分，同时仍对十个目标层实施物理压缩。2048-token 请求输出门槛与
-4608-token 物理预算是特定负载的选择。
+16,128-token 物理预算是特定负载的选择。
 
 ## 校准与验证
 

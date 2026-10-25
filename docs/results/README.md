@@ -47,3 +47,25 @@ success. This is one local pair, not a repeatability result or official
 leaderboard submission. The HTML leaderboard remains a
 separate set of measured historical cohorts; it does not pool this pair with
 the different 2026-09-27 model revision.
+
+## 0.11.0 source-tree local validation
+
+On 2026-10-23, the Qwen3.5 BF16/TP=2 SWE C4/900-second campaign screened four
+compression candidates across two source cohorts. Every arm passed its own
+60-second check and formal window with zero failed requests. The first three
+candidates reduced per-chip output throughput against their matching B0.
+With the uneven-V3 source and a 16,128-token KV budget, the last pair changed
+per-chip output throughput **73.576 → 73.697 token/s (+0.17%)** and
+per-request P90 decode speed **47.628 → 47.692 token/s (+0.13%)**. TTFT P95
+worsened **1663 → 1901 ms (+14.27%)**. Both arms completed 216 in-window
+requests; the longest observed prompt was 52,505 tokens. The candidate made
+13 formal-window compression commits, each acknowledged by both TP ranks, and
+passed four limited 32K deterministic retrieval checks with compression.
+
+The two target gains are smaller than cross-run variation and come from one
+pair. They do not establish repeatability or SWE semantic answer quality.
+See the [campaign evidence](evidence/kvcompress-qwen35-20261023-v011-swe-campaign.json)
+and [optimization record](../optimization/triattention-private-copy-and-v3-selection-20261023.md)
+for both source identities, negative candidates, exact metrics, raw-report
+hashes, and the separate NPU operator measurements. This local campaign is
+not an official leaderboard submission.

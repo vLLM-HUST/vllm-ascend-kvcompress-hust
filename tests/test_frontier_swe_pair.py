@@ -133,7 +133,10 @@ def test_compare_accepts_original_flat_handoff_metadata(tmp_path: Path) -> None:
             "mod_revision": "rev",
             "mod_wheel_sha256": "wheel",
             "calibration_sha256": "cal",
-            "launch_command_redacted": "vllm serve model",
+            "launch_command_redacted": (
+                f"export VLLM_HUST_EXT_CONFIG=/configs/{directory.name}\n"
+                "vllm serve model"
+            ),
         }
         path.write_text(json.dumps(config), encoding="utf-8")
     assert compare(b0, b1)["deltas"]["output_tps_pct"] == pytest.approx(10)

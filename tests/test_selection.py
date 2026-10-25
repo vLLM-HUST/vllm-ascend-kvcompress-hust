@@ -99,6 +99,9 @@ def test_v3_uses_exact_proportional_quota_with_uneven_segments() -> None:
         (32, 17, 0, 0, 4),
         (32, 18, 2, 2, 4),
         (32, 31, 0, 0, 4),
+        (9605, 4608, 128, 1024, 8),
+        (17090, 4608, 128, 1024, 8),
+        (46473, 4608, 128, 1024, 8),
     ],
 )
 def test_batched_v3_matches_per_segment_selection(
@@ -125,13 +128,15 @@ def test_batched_v3_matches_per_segment_selection(
     torch.testing.assert_close(actual, expected)
 
 
-def test_batched_v3_defers_uneven_segments_to_existing_path() -> None:
-    assert (
-        _select_v3_batched(
-            torch.arange(19).float(), budget=13, prefix=2, recent=2, segments=8
-        )
-        is None
-    )
+def test_batched_v3_handles_uneven_segments_and_negative_infinity() -> None:
+    scores = torch.full((33,), float("-inf"))
+    actual = _select_v3_batched(scores, budget=31, prefix=2, recent=2, segments=4)
+    assert actual is not None
+    assert actual.numel() == 31
+    assert actual.unique().numel() == 31
+    assert torch.equal(actual, actual.sort().values)
+    torch.testing.assert_close(actual[:2], torch.tensor([0, 1]))
+    torch.testing.assert_close(actual[-2:], torch.tensor([31, 32]))
 
 
 def test_batched_v3_sorts_topk_only_when_quotas_differ() -> None:

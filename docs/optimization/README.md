@@ -11,4 +11,5 @@ and report hashes. General design belongs in [design](../design/methods.md).
 
 | Date | Record |
 | --- | --- |
+| 2026-10-23 | [TriAttention private KV copy and uneven V3 selection](triattention-private-copy-and-v3-selection-20261023.md) |
 | 2026-10-17 | [TriAttention TP score batching and SWE configuration search](triattention-tp-score-batching-20261017.md) |

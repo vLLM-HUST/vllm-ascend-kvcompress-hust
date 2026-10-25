@@ -167,16 +167,9 @@ def compare(baseline: Path, candidate: Path) -> dict[str, Any]:
     if launch0 is not None or launch1 is not None:
         if not isinstance(launch0, str) or not isinstance(launch1, str):
             raise ValueError("both SWE arms must declare a server launch command")
-        normalized0 = re.sub(
-            r"VLLM_ASCEND_KVCOMPRESS_CONFIG=\S+",
-            "VLLM_ASCEND_KVCOMPRESS_CONFIG=<arm-config>",
-            launch0,
-        )
-        normalized1 = re.sub(
-            r"VLLM_ASCEND_KVCOMPRESS_CONFIG=\S+",
-            "VLLM_ASCEND_KVCOMPRESS_CONFIG=<arm-config>",
-            launch1,
-        )
+        config_assignment = r"(VLLM_ASCEND_KVCOMPRESS_CONFIG|VLLM_HUST_EXT_CONFIG)=\S+"
+        normalized0 = re.sub(config_assignment, r"\1=<arm-config>", launch0)
+        normalized1 = re.sub(config_assignment, r"\1=<arm-config>", launch1)
         if normalized0 != normalized1:
             raise ValueError("SWE server arms differ beyond compression config")
     if c0["run_id"] == c1["run_id"]:

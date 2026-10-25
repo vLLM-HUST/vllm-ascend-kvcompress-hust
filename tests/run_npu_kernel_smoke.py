@@ -8,6 +8,7 @@ import torch_npu  # noqa: F401
 
 from vllm_ascend_kvcompress.methods.triattention.cache import (
     gather_paged_range,
+    materialize_private_token_slots,
     materialize_token_slots,
     token_slots,
 )
@@ -79,6 +80,48 @@ def main() -> None:
     torch.npu.synchronize()
     torch.testing.assert_close(k_cache[2].cpu(), expected_k.cpu())
     torch.testing.assert_close(v_cache[2].cpu(), expected_v.cpu())
+
+    # Real Ascend cache pages can be non-contiguous K/V views into one padded
+    # backing allocation. The direct path must preserve both layout and guards.
+    page_elements = block_size * 2 * 8
+    page_stride = 2 * page_elements + 32
+    backing = torch.full((4 * page_stride,), -1, dtype=torch.bfloat16, device=device)
+    page_shape = (4, block_size, 2, 8)
+    page_strides = (page_stride, 16, 8, 1)
+    padded_k = torch.as_strided(backing, page_shape, page_strides)
+    padded_v = torch.as_strided(
+        backing, page_shape, page_strides, storage_offset=page_elements
+    )
+    padded_k.copy_(cpu_cache.to(device=device, dtype=torch.bfloat16))
+    padded_v.copy_((cpu_cache + 10000).to(device=device, dtype=torch.bfloat16))
+    private_source = torch.tensor([2, 0, 3], device=device, dtype=torch.long)
+    private_destination = torch.tensor([1], device=device, dtype=torch.long)
+    private_keep = torch.arange(64, 192, device=device, dtype=torch.long)
+    private_expected_k = gather_paged_range(
+        padded_k, private_source, start=64, count=128, block_size=block_size
+    ).clone()
+    private_expected_v = gather_paged_range(
+        padded_v, private_source, start=64, count=128, block_size=block_size
+    ).clone()
+    materialize_private_token_slots(
+        padded_k,
+        padded_v,
+        token_slots(private_source, private_keep, block_size),
+        token_slots(
+            private_destination,
+            torch.arange(128, device=device, dtype=torch.long),
+            block_size,
+        ),
+        torch.empty_like(private_expected_k),
+        torch.empty_like(private_expected_v),
+    )
+    torch.npu.synchronize()
+    torch.testing.assert_close(padded_k[1].cpu(), private_expected_k.cpu())
+    torch.testing.assert_close(padded_v[1].cpu(), private_expected_v.cpu())
+    torch.testing.assert_close(
+        backing.view(4, page_stride)[:, -32:].cpu(),
+        torch.full((4, 32), -1, dtype=torch.bfloat16),
+    )
 
     score_cache = (
         torch.linspace(-1.0, 1.0, 3 * block_size * 2 * 8, dtype=torch.float32)
