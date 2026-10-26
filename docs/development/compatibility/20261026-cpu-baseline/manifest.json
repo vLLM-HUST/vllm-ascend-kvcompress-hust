@@ -1,0 +1,207 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "status": "cpu-prepared-npu-validation-pending",
+  "model": "Qwen3.5-35B-A3B",
+  "target_topology": {
+    "accelerator": "Ascend 910B2",
+    "devices": 2,
+    "tensor_parallel_size": 2,
+    "dtype": "bfloat16"
+  },
+  "device_execution_performed": false,
+  "sources": {
+    "extension-manager": {
+      "commit": "36cd420b28c0569d94d5205b9e9e4cc1c8bc0e31"
+    },
+    "triton-ascend-hust": {
+      "commit": "b90ab001238f8dde175aebfea23de36bd2cf06a6"
+    },
+    "vllm-ascend-hust": {
+      "commit": "7c8ec865a12f7b6a14d53b61e7f61b5e811dd483"
+    },
+    "vllm-ascend-kvcompress-hust": {
+      "commit": "3ddff1c2afee1eccc3d1b65def61167752298f5f"
+    },
+    "vllm-hust": {
+      "commit": "ebfcfba6507501c3a359a75eb4911ecc442bc2ff"
+    }
+  },
+  "runtime": {
+    "python": "3.12.13",
+    "architecture": "aarch64",
+    "cann": "9.1.0",
+    "atb": "9.1.0",
+    "packages": {
+      "vllm": "0.29.1.post1.dev456+gebfcfba65.empty",
+      "vllm-ascend": "0.25.1rc2.dev774+hust.20260903.4.g7c8ec865a.d20261026",
+      "vllm-ascend-kvcompress-hust": "0.10.0",
+      "vllm-hust-ext": "0.3.0",
+      "triton": "3.6.0",
+      "triton-ascend": "3.6.0+gitb90ab001",
+      "torch": "2.13.0+cpu",
+      "torch-npu": "2.13.0rc1",
+      "transformers": "5.17.0",
+      "huggingface-hub": "1.33.0",
+      "numpy": "2.2.6"
+    }
+  },
+  "builds": {
+    "vllm-hust": {
+      "exit_code": 0,
+      "started_utc": "2026-10-26T09:02:14Z",
+      "finished_utc": "2026-10-26T09:02:24Z",
+      "original_log_sha256": "c95642258d4d5765c85134445c33926c050043a72be1a3c5119dbb690a331679"
+    },
+    "vllm-ascend-hust": {
+      "exit_code": 0,
+      "started_utc": "2026-10-26T09:02:53Z",
+      "finished_utc": "2026-10-26T10:03:44Z",
+      "original_log_sha256": "788dddf2bb31a8fe452e3a86111814bcf2c734aff6c4746b5e50bf4f768c4c36"
+    },
+    "triton": {
+      "exit_code": 0,
+      "started_utc": "2026-10-26T08:57:59Z",
+      "finished_utc": "2026-10-26T10:07:44Z",
+      "original_log_sha256": "641a204dd4d021615007686740357918e494c694ce6a47351214e00bd41f91b0"
+    },
+    "extension-manager": {
+      "exit_code": 0,
+      "started_utc": "2026-10-26T09:02:54Z",
+      "finished_utc": "2026-10-26T09:02:55Z",
+      "original_log_sha256": "44422fe356fc0b7d770a4460e1c3dd397d5c77878ae65b39d7adfbec3c87c26f"
+    },
+    "vllm-ascend-kvcompress-hust": {
+      "exit_code": 0,
+      "started_utc": "2026-10-26T09:02:55Z",
+      "finished_utc": "2026-10-26T09:02:56Z",
+      "original_log_sha256": "7c7c5ea7b5e9a4537fdb73c7151a8d30ea8c6e657bd4bfbf35b9a1bf962660d6"
+    }
+  },
+  "adaptation": {
+    "scope": "Isolated Ascend source copy only",
+    "patch": "patches/ascend-transformers-5.17.patch",
+    "reason": "Original core requires transformers>=5.16.1,<5.19.0 but Ascend pins 5.14.1; use candidate 5.17.0 in both Ascend declarations.",
+    "triton_note": "Upstream build hook applies 17-file patch automatically; no manual Triton algorithm change.",
+    "triton_generated_patch_sha256": "f180b3eb90149fafb6b688e879301ef0c8a3aa7bba53cb8ef7fbcaec2bc7bb10"
+  },
+  "tests": {
+    "passed": 223,
+    "failed": 2,
+    "deselected": 1,
+    "failed_tests": [
+      "test_grouped_topk_router_scaling_compatibility",
+      "test_runner_generates_calibration_before_loading_model"
+    ],
+    "deselected_test": "test_ascend_v1_worker_seams_match_current_host",
+    "failure_stage": "Triton get_current_target/get_arch -> CANN SoC discovery without allocated NPU. Hardware retry remains required.",
+    "raw_log": "evidence/plugin-cpu-final-tests.log",
+    "junit": "evidence/plugin-cpu-final-tests.xml"
+  },
+  "preliminary_attempt": {
+    "passed": 216,
+    "failed": 6,
+    "explanation": "Five failures lacked separately archived benchmark originals; one occurred before Ascend installation. Final attempt above supersedes this preparatory attempt.",
+    "original_log_sha256": "3eb5af2259f9796fb2686c3367733b1e0b20188dd547acbd936686c22fba9e5f",
+    "original_junit_sha256": "2172e67339693be44ef6eab13e65f1e395da76a289c1448c8a16dc619dd1756a"
+  },
+  "limits": [
+    "Not a reconstruction of a historical benchmark environment",
+    "No native Ascend initialization or NPU kernel execution qualification",
+    "No actual model request, B0/B1 or TTFT measurement",
+    "Linkage checks cover only the three libraries enumerated in native-package-check.json",
+    "Model checks confirm config/tokenizer and weight shard presence, not weight byte integrity"
+  ],
+  "evidence_provenance": {
+    "retained_full_archive_sha256": "1149a5e12409aee4cc76385c43d0cc81061f09de4abdd3b53a73ea86b169ce84",
+    "selection": "Published evidence files are byte-for-byte copies of the final CPU phase; bulky build logs, duplicate outputs and machine activation scripts remain in the retained local archive.",
+    "full_archive_in_this_commit": false
+  },
+  "files": [
+    {
+      "path": "evidence/core-model-inputs-check.json",
+      "sha256": "38f8d45adb5eb7f2bddea9cf1c9b490d22b02517dce3c26f933572d5fb45f3a9",
+      "bytes": 1636
+    },
+    {
+      "path": "evidence/dependency-check.log",
+      "sha256": "c281c625ad3d96160671fb965fe527b5655c20158243bf52963d7c5fc45ba857",
+      "bytes": 141
+    },
+    {
+      "path": "evidence/installed-package-freeze.log",
+      "sha256": "7e32fccf47084b19cd8147be1cdcfd42e3f6023a7620e0ccb98359cada13900d",
+      "bytes": 4987
+    },
+    {
+      "path": "evidence/manager-configure.log",
+      "sha256": "7b1da655a702cc53eb55f3ab1c17507933603b1e48bc099ba880d3ab5d99a08a",
+      "bytes": 43
+    },
+    {
+      "path": "evidence/manager-disable.log",
+      "sha256": "ab08e07c1d6233afc033608694f06e0b7cab2f23e8ffb602f26d453fbd049617",
+      "bytes": 41
+    },
+    {
+      "path": "evidence/manager-disabled-status.log",
+      "sha256": "ae456b654f5e67bde40a6642ba28ef7b3f3b7a68d79f22c59d997555de6c2ca5",
+      "bytes": 1745
+    },
+    {
+      "path": "evidence/manager-enable.log",
+      "sha256": "54258c7e64663ad29e10626363c5013fa71db8a4cee0ff0f1aa930a38ac3486e",
+      "bytes": 40
+    },
+    {
+      "path": "evidence/manager-enabled-status.log",
+      "sha256": "93457249a4a9330975ac139d01a5aa6e38873a42df50ef4f718ecaf83366bc17",
+      "bytes": 1760
+    },
+    {
+      "path": "evidence/manager-validate.log",
+      "sha256": "2ec86a44d43d785354ebdc7c0c66b4478457eae285d060d498e2eb429bb19011",
+      "bytes": 2065
+    },
+    {
+      "path": "evidence/native-package-check.json",
+      "sha256": "4ff299062686350f22642956b3386a8bb0652ed02d08206b412edfea5194f347",
+      "bytes": 2003
+    },
+    {
+      "path": "evidence/offline-model-check.json",
+      "sha256": "b07d2b8f357d6aa1d899eabc81cbb1ef7f08c32af46636c852cdc4bc1e1aa0a0",
+      "bytes": 2627
+    },
+    {
+      "path": "evidence/plugin-cpu-final-tests.log",
+      "sha256": "cd4a18dcf1d76a4b31861eec0d376e3e3d8d53bc5a50882f1422b62987354f52",
+      "bytes": 11526
+    },
+    {
+      "path": "evidence/plugin-cpu-final-tests.xml",
+      "sha256": "4a04fde6758a4487c224340c6585d68e72198c7aa84e36f63cd799cb312777ac",
+      "bytes": 36537
+    },
+    {
+      "path": "evidence/source-contract-check.json",
+      "sha256": "05ab09cb1fa799b7eacc41781e9a48546c61c50ae1ec2ccc893950ee7427a24d",
+      "bytes": 1265
+    },
+    {
+      "path": "evidence/transformers-api-check.json",
+      "sha256": "f95f92a64b16010327abc778ebd179af620fb17e67edb4fb77773e3fb67f0685",
+      "bytes": 40254
+    },
+    {
+      "path": "evidence/wheels-installed.json",
+      "sha256": "295a330d1c8d0d825776022f28497c70a1d9516602c46e6aaf361cccc6d6ba20",
+      "bytes": 7268
+    },
+    {
+      "path": "patches/ascend-transformers-5.17.patch",
+      "sha256": "7427c1b02d4d04cf6f5f88cf3191aa7c69675ae69a561ebc31d282cd602bd101",
+      "bytes": 656
+    }
+  ]
+}

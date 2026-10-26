@@ -1,0 +1,165 @@
+...................................F.................................... [ 32%]
+................................F....................................... [ 64%]
+........................................................................ [ 96%]
+.........                                                                [100%]
+=================================== FAILURES ===================================
+________________ test_grouped_topk_router_scaling_compatibility ________________
+
+    def test_grouped_topk_router_scaling_compatibility() -> None:
+        from vllm.model_executor.layers.fused_moe.config import (
+            RoutingMethodType,
+            get_routing_method_type,
+        )
+    
+        from vllm_ascend_kvcompress.host_compat import install_grouped_topk_router_compat
+    
+        if "routed_scaling_factor" in _parameter_names(get_routing_method_type):
+            assert install_grouped_topk_router_compat() is False
+            classify = get_routing_method_type
+        else:
+>           from vllm_ascend.ops.fused_moe.router import grouped_topk_router
+
+tests/test_current_host_contract.py:86: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm_ascend/ops/__init__.py:21: in <module>
+    import vllm_ascend.ops.fused_moe.fused_moe  # noqa
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm_ascend/ops/fused_moe/fused_moe.py:35: in <module>
+    from vllm_ascend.ops.fused_moe.moe_comm_method import get_moe_comm_method, setup_moe_comm_method
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm_ascend/ops/fused_moe/moe_comm_method.py:35: in <module>
+    from vllm_ascend.ops.fused_moe.moe_mlp import apply_moe_mlp
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm_ascend/ops/fused_moe/moe_mlp.py:22: in <module>
+    from vllm_ascend.device.device_op import DeviceOperator
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm_ascend/device/device_op.py:24: in <module>
+    from vllm.third_party.flash_linear_attention.ops.l2norm import l2norm_fwd
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm/third_party/flash_linear_attention/ops/__init__.py:9: in <module>
+    from .chunk import chunk_gated_delta_rule
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm/third_party/flash_linear_attention/ops/chunk.py:13: in <module>
+    from .chunk_delta_h import chunk_gated_delta_rule_fwd_h
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm/third_party/flash_linear_attention/ops/chunk_delta_h.py:15: in <module>
+    from .index import prepare_chunk_indices, prepare_chunk_offsets
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm/third_party/flash_linear_attention/ops/index.py:16: in <module>
+    from .utils import tensor_cache
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm/third_party/flash_linear_attention/ops/utils.py:143: in <module>
+    device = "cuda" if current_platform.is_cuda_alike() else get_available_device()
+                                                             ^^^^^^^^^^^^^^^^^^^^^^
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm/third_party/flash_linear_attention/ops/utils.py:123: in get_available_device
+    return triton.runtime.driver.active.get_current_target().backend
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/triton/backends/ascend/driver.py:276: in get_current_target
+    arch = self.utils.get_arch()
+           ^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <triton.backends.ascend.driver.NPUUtils object at 0xfffb9da923c0>
+
+    def get_arch(self):
+        # temporarily return empty arch descriptor
+>       return self._load_mod().get_arch()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       SystemError: <built-in function get_arch> returned NULL without setting an exception
+
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/triton/backends/ascend/driver.py:194: SystemError
+____________ test_runner_generates_calibration_before_loading_model ____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0xfffb3c2fb2c0>
+
+    def test_runner_generates_calibration_before_loading_model(monkeypatch) -> None:
+        events = []
+    
+        class Runner:
+            def load_model(self):
+                events.append("load")
+    
+            def initialize_kv_cache(self, config):
+                return config
+    
+            def _update_states(self, output):
+                return output
+    
+            def _build_attention_metadata(self, *args, **kwargs):
+                return args, kwargs
+    
+            def sample_tokens(self, grammar):
+                return grammar
+    
+        import vllm_ascend_kvcompress.calibration as calibration
+    
+        monkeypatch.setattr(
+            calibration,
+            "ensure_calibration_for_runner",
+            lambda runner, selection: events.append("calibrate") or True,
+        )
+        _install_runner_hooks(Runner, object())
+    
+>       Runner().load_model()
+
+tests/test_plugin.py:713: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm_ascend_kvcompress/plugin.py:197: in load_model
+    install_grouped_topk_router_compat()
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm_ascend_kvcompress/host_compat.py:50: in install_grouped_topk_router_compat
+    from vllm_ascend.ops.fused_moe.router import grouped_topk_router
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm_ascend/ops/fused_moe/router/__init__.py:1: in <module>
+    from vllm_ascend.ops.fused_moe.router.fused_topk_router import (
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm_ascend/ops/fused_moe/router/fused_topk_router.py:24: in <module>
+    from vllm_ascend.device.device_op import DeviceOperator
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm_ascend/device/device_op.py:24: in <module>
+    from vllm.third_party.flash_linear_attention.ops.l2norm import l2norm_fwd
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm/third_party/flash_linear_attention/ops/__init__.py:9: in <module>
+    from .chunk import chunk_gated_delta_rule
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm/third_party/flash_linear_attention/ops/chunk.py:13: in <module>
+    from .chunk_delta_h import chunk_gated_delta_rule_fwd_h
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm/third_party/flash_linear_attention/ops/chunk_delta_h.py:15: in <module>
+    from .index import prepare_chunk_indices, prepare_chunk_offsets
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm/third_party/flash_linear_attention/ops/index.py:16: in <module>
+    from .utils import tensor_cache
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm/third_party/flash_linear_attention/ops/utils.py:143: in <module>
+    device = "cuda" if current_platform.is_cuda_alike() else get_available_device()
+                                                             ^^^^^^^^^^^^^^^^^^^^^^
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm/third_party/flash_linear_attention/ops/utils.py:123: in get_available_device
+    return triton.runtime.driver.active.get_current_target().backend
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/triton/backends/ascend/driver.py:276: in get_current_target
+    arch = self.utils.get_arch()
+           ^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <triton.backends.ascend.driver.NPUUtils object at 0xfffb9da923c0>
+
+    def get_arch(self):
+        # temporarily return empty arch descriptor
+>       return self._load_mod().get_arch()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       SystemError: <built-in function get_arch> returned NULL without setting an exception
+
+/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/triton/backends/ascend/driver.py:194: SystemError
+=============================== warnings summary ===============================
+../../../../envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/triton/language/extra/cann/extension/math_ops.py:13
+  /root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/triton/language/extra/cann/extension/math_ops.py:13: FutureWarning: triton.language.extra.cann.extension.atan2 is deprecated and will be removed in the next release; use triton.language.extra.cann.libdevice.atan2 instead.
+    @_deprecated(replacement="triton.language.extra.cann.libdevice.atan2")
+
+../../../../envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/triton/language/extra/cann/extension/math_ops.py:35
+  /root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/triton/language/extra/cann/extension/math_ops.py:35: FutureWarning: triton.language.extra.cann.extension.isfinited is deprecated and will be removed in the next release; use triton.language.extra.cann.libdevice.isfinited instead.
+    @_deprecated(replacement="triton.language.extra.cann.libdevice.isfinited")
+
+../../../../envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/triton/language/extra/cann/extension/math_ops.py:49
+  /root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/triton/language/extra/cann/extension/math_ops.py:49: FutureWarning: triton.language.extra.cann.extension.finitef is deprecated and will be removed in the next release; use triton.language.extra.cann.libdevice.finitef instead.
+    @_deprecated(replacement="triton.language.extra.cann.libdevice.finitef")
+
+../../../../envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/torch/jit/_script.py:365: 14 warnings
+  /root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+../../../../envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/torch_npu/npu/__init__.py:438
+../../../../envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/torch_npu/npu/__init__.py:438
+  /root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/torch_npu/npu/__init__.py:438: UserWarning: Can't get ascend_hal device count
+    warnings.warn("Can't get ascend_hal device count")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: /root/wrh/baselines/qwen35-20261026/build-20261026/plugin-cpu-final-tests.xml -
+=========================== short test summary info ============================
+FAILED tests/test_current_host_contract.py::test_grouped_topk_router_scaling_compatibility
+FAILED tests/test_plugin.py::test_runner_generates_calibration_before_loading_model
+2 failed, 223 passed, 1 deselected, 19 warnings in 56.46s
+cann_get_soc_name failed.cann_get_soc_name failed.

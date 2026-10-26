@@ -1,0 +1,533 @@
+{
+  "versions": {
+    "transformers": "5.17.0",
+    "huggingface-hub": "1.33.0",
+    "torch": "2.13.0+cpu",
+    "torch-npu": "2.13.0rc1"
+  },
+  "imports": [
+    {
+      "file": "vllm_ascend/ops/qwen2_decoder.py",
+      "line": 6,
+      "module": "transformers",
+      "names": [
+        "Qwen2Config"
+      ],
+      "signatures": {
+        "Qwen2Config": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None, *, vocab_size: int = 151936, hidden_size: int = 4096, intermediate_size: int = 22016, num_hidden_layers: int = 32, num_attention_heads: int = 32, num_key_value_heads: int | None = 32, hidden_act: str = 'silu', max_position_embeddings: int = 32768, initializer_range: float = 0.02, rms_norm_eps: float = 1e-06, use_cache: bool = True, tie_word_embeddings: bool = False, rope_parameters: transformers.modeling_rope_utils.RopeParameters | dict | None = None, use_sliding_window: bool = False, sliding_window: int | None = 4096, max_window_layers: int = 28, layer_types: list[str] | None = None, attention_dropout: float | int = 0.0, pad_token_id: int | None = None, bos_token_id: int | None = None, eos_token_id: int | list[int] | None = None) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/ops/qwen2_decoder.py",
+      "line": 7,
+      "module": "transformers.cache_utils",
+      "names": [
+        "Cache",
+        "DynamicCache"
+      ],
+      "signatures": {
+        "Cache": "(layers: list[transformers.cache_utils.CacheLayerMixin | transformers.cache_utils.LinearAttentionCacheLayerMixin] | None = None, layer_class_to_replicate: type[transformers.cache_utils.CacheLayerMixin | transformers.cache_utils.LinearAttentionCacheLayerMixin] | None = None, offloading: bool = False, offload_only_non_sliding: bool = True)",
+        "DynamicCache": "(ddp_cache_data: collections.abc.Iterable[tuple[torch.Tensor | None, ...]] | None = None, config: transformers.configuration_utils.PreTrainedConfig | None = None, offloading: bool = False, offload_only_non_sliding: bool = False)"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/ops/qwen2_decoder.py",
+      "line": 8,
+      "module": "transformers.masking_utils",
+      "names": [
+        "create_causal_mask",
+        "create_sliding_window_causal_mask"
+      ],
+      "signatures": {
+        "create_causal_mask": "(config: transformers.configuration_utils.PreTrainedConfig, inputs_embeds: torch.Tensor, attention_mask: torch.Tensor | None, past_key_values: transformers.cache_utils.Cache | None, position_ids: torch.Tensor | None = None, or_mask_function: collections.abc.Callable | None = None, and_mask_function: collections.abc.Callable | None = None, block_sequence_ids: torch.Tensor | None = None, layer_idx: int | None = None, allow_is_causal_skip: bool = True) -> torch.Tensor | torch.nn.attention.flex_attention.BlockMask | None",
+        "create_sliding_window_causal_mask": "(config: transformers.configuration_utils.PreTrainedConfig, inputs_embeds: torch.Tensor, attention_mask: torch.Tensor | None, past_key_values: transformers.cache_utils.Cache | None, position_ids: torch.Tensor | None = None, or_mask_function: collections.abc.Callable | None = None, and_mask_function: collections.abc.Callable | None = None, block_sequence_ids: torch.Tensor | None = None, layer_idx: int | None = None, allow_is_causal_skip: bool = True) -> torch.Tensor | torch.nn.attention.flex_attention.BlockMask | None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/ops/qwen2_decoder.py",
+      "line": 9,
+      "module": "transformers.modeling_flash_attention_utils",
+      "names": [
+        "FlashAttentionKwargs"
+      ],
+      "signatures": {
+        "FlashAttentionKwargs": "_TypedDictMeta"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/ops/qwen2_decoder.py",
+      "line": 10,
+      "module": "transformers.modeling_outputs",
+      "names": [
+        "BaseModelOutputWithPast"
+      ],
+      "signatures": {
+        "BaseModelOutputWithPast": "(last_hidden_state: torch.FloatTensor | None = None, past_key_values: transformers.cache_utils.Cache | None = None, hidden_states: tuple[torch.FloatTensor, ...] | None = None, attentions: tuple[torch.FloatTensor, ...] | None = None) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/ops/qwen2_decoder.py",
+      "line": 11,
+      "module": "transformers.modeling_utils",
+      "names": [
+        "ALL_ATTENTION_FUNCTIONS"
+      ],
+      "signatures": {
+        "ALL_ATTENTION_FUNCTIONS": "AttentionInterface"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/ops/qwen2_decoder.py",
+      "line": 12,
+      "module": "transformers.models.qwen2.modeling_qwen2",
+      "names": [
+        "Qwen2Attention",
+        "Qwen2DecoderLayer",
+        "Qwen2Model",
+        "eager_attention_forward"
+      ],
+      "signatures": {
+        "Qwen2Attention": "(config: transformers.models.qwen2.configuration_qwen2.Qwen2Config, layer_idx: int)",
+        "Qwen2DecoderLayer": "(config: transformers.models.qwen2.configuration_qwen2.Qwen2Config, layer_idx: int)",
+        "Qwen2Model": "(config: transformers.models.qwen2.configuration_qwen2.Qwen2Config)",
+        "eager_attention_forward": "(module: torch.nn.modules.module.Module, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, attention_mask: torch.Tensor | None, scaling: float, dropout: float = 0.0, **kwargs: Unpack[transformers.utils.generic.TransformersKwargs])"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/ops/qwen2_decoder.py",
+      "line": 18,
+      "module": "transformers.processing_utils",
+      "names": [
+        "Unpack"
+      ],
+      "signatures": {
+        "Unpack": "(*args, **kwds)"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/ops/qwen2_decoder.py",
+      "line": 19,
+      "module": "transformers.utils",
+      "names": [
+        "TransformersKwargs"
+      ],
+      "signatures": {
+        "TransformersKwargs": "_TypedDictMeta"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/xlite/xlite.py",
+      "line": 28,
+      "module": "transformers",
+      "names": [
+        "PretrainedConfig"
+      ],
+      "signatures": {
+        "PretrainedConfig": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/lora/utils.py",
+      "line": 4,
+      "module": "transformers",
+      "names": [
+        "PretrainedConfig"
+      ],
+      "signatures": {
+        "PretrainedConfig": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/gemma4_mm.py",
+      "line": 19,
+      "module": "transformers",
+      "names": [
+        "AutoModel"
+      ],
+      "signatures": {
+        "AutoModel": "(*args, **kwargs) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/worker/v2/pp_utils.py",
+      "line": 19,
+      "module": "transformers",
+      "names": [
+        "PretrainedConfig"
+      ],
+      "signatures": {
+        "PretrainedConfig": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/quantization/configs/modelslim_config.py",
+      "line": 33,
+      "module": "transformers",
+      "names": [
+        "PretrainedConfig"
+      ],
+      "signatures": {
+        "PretrainedConfig": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/patch/platform/patch_deepseek_v4_vision.py",
+      "line": 8,
+      "module": "transformers",
+      "names": [
+        "PretrainedConfig"
+      ],
+      "signatures": {
+        "PretrainedConfig": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/patch/platform/patch_speculative_config.py",
+      "line": 8,
+      "module": "transformers",
+      "names": [
+        "DeepseekV2Config",
+        "PretrainedConfig"
+      ],
+      "signatures": {
+        "DeepseekV2Config": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None, *, vocab_size: int = 102400, hidden_size: int = 4096, intermediate_size: int = 11008, num_hidden_layers: int = 32, num_attention_heads: int = 32, num_key_value_heads: int | None = None, hidden_act: str = 'silu', max_position_embeddings: int = 2048, initializer_range: float = 0.02, rms_norm_eps: float = 1e-06, use_cache: bool = True, pad_token_id: int | None = None, bos_token_id: int | None = 1, eos_token_id: int | list[int] | None = 2, pretraining_tp: int | None = 1, tie_word_embeddings: bool = False, rope_parameters: transformers.modeling_rope_utils.RopeParameters | dict | None = None, attention_bias: bool = False, attention_dropout: float | None = 0.0, mlp_bias: bool = False, head_dim: int | None = None, first_k_dense_replace: int = 0, kv_lora_rank: int = 512, q_lora_rank: int | None = 1536, n_group: int | None = None, n_routed_experts: int = 64, n_shared_experts: int = 2, qk_nope_head_dim: int = 128, qk_rope_head_dim: int = 64, routed_scaling_factor: float = 1.0, topk_group: int | None = None, topk_method: str | None = 'greedy', norm_topk_prob: bool | None = False, v_head_dim: int = 128, num_experts_per_tok: int | None = None, moe_intermediate_size: int = 1407) -> None",
+        "PretrainedConfig": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/patch/worker/patch_deepseek_v2.py",
+      "line": 5,
+      "module": "transformers",
+      "names": [
+        "DeepseekV2Config",
+        "DeepseekV3Config"
+      ],
+      "signatures": {
+        "DeepseekV2Config": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None, *, vocab_size: int = 102400, hidden_size: int = 4096, intermediate_size: int = 11008, num_hidden_layers: int = 32, num_attention_heads: int = 32, num_key_value_heads: int | None = None, hidden_act: str = 'silu', max_position_embeddings: int = 2048, initializer_range: float = 0.02, rms_norm_eps: float = 1e-06, use_cache: bool = True, pad_token_id: int | None = None, bos_token_id: int | None = 1, eos_token_id: int | list[int] | None = 2, pretraining_tp: int | None = 1, tie_word_embeddings: bool = False, rope_parameters: transformers.modeling_rope_utils.RopeParameters | dict | None = None, attention_bias: bool = False, attention_dropout: float | None = 0.0, mlp_bias: bool = False, head_dim: int | None = None, first_k_dense_replace: int = 0, kv_lora_rank: int = 512, q_lora_rank: int | None = 1536, n_group: int | None = None, n_routed_experts: int = 64, n_shared_experts: int = 2, qk_nope_head_dim: int = 128, qk_rope_head_dim: int = 64, routed_scaling_factor: float = 1.0, topk_group: int | None = None, topk_method: str | None = 'greedy', norm_topk_prob: bool | None = False, v_head_dim: int = 128, num_experts_per_tok: int | None = None, moe_intermediate_size: int = 1407) -> None",
+        "DeepseekV3Config": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None, *, vocab_size: int = 129280, hidden_size: int = 7168, intermediate_size: int = 18432, moe_intermediate_size: int = 2048, num_hidden_layers: int = 61, num_attention_heads: int = 128, num_key_value_heads: int | None = 128, n_shared_experts: int = 1, n_routed_experts: int = 256, routed_scaling_factor: float = 2.5, kv_lora_rank: int = 512, q_lora_rank: int | None = 1536, qk_rope_head_dim: int = 64, v_head_dim: int | None = 128, qk_nope_head_dim: int = 128, n_group: int | None = 8, topk_group: int | None = 4, num_experts_per_tok: int | None = 8, first_k_dense_replace: int | None = 3, norm_topk_prob: bool | None = True, hidden_act: str = 'silu', max_position_embeddings: int = 4096, initializer_range: float = 0.02, rms_norm_eps: float = 1e-06, use_cache: bool = True, pad_token_id: int | None = None, bos_token_id: int | None = 0, eos_token_id: int | list[int] | None = 1, pretraining_tp: int | None = 1, tie_word_embeddings: bool = False, rope_parameters: transformers.modeling_rope_utils.RopeParameters | dict | None = None, rope_interleave: bool | None = True, attention_bias: bool = False, attention_dropout: float | int | None = 0.0, num_mtp_layers: int = 1) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/minimax_m3/minimax_m3.py",
+      "line": 33,
+      "module": "transformers",
+      "names": [
+        "PretrainedConfig"
+      ],
+      "signatures": {
+        "PretrainedConfig": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/minimax_m3/minimax_m3_vl.py",
+      "line": 24,
+      "module": "transformers",
+      "names": [
+        "PretrainedConfig"
+      ],
+      "signatures": {
+        "PretrainedConfig": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/deepseek_v4/mtp.py",
+      "line": 9,
+      "module": "transformers",
+      "names": [
+        "PretrainedConfig"
+      ],
+      "signatures": {
+        "PretrainedConfig": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/deepseek_v4/dspark.py",
+      "line": 18,
+      "module": "transformers",
+      "names": [
+        "PretrainedConfig"
+      ],
+      "signatures": {
+        "PretrainedConfig": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/deepseek_v4/mm_preprocess.py",
+      "line": 32,
+      "module": "transformers",
+      "names": [
+        "BatchFeature"
+      ],
+      "signatures": {
+        "BatchFeature": "(data: dict[str, typing.Any] | None = None, tensor_type: None | str | transformers.utils.generic.TensorType = None, skip_tensor_conversion: list[str] | set[str] | None = None)"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/deepseek_v4/indexer.py",
+      "line": 34,
+      "module": "transformers",
+      "names": [
+        "DeepseekV2Config",
+        "DeepseekV3Config"
+      ],
+      "signatures": {
+        "DeepseekV2Config": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None, *, vocab_size: int = 102400, hidden_size: int = 4096, intermediate_size: int = 11008, num_hidden_layers: int = 32, num_attention_heads: int = 32, num_key_value_heads: int | None = None, hidden_act: str = 'silu', max_position_embeddings: int = 2048, initializer_range: float = 0.02, rms_norm_eps: float = 1e-06, use_cache: bool = True, pad_token_id: int | None = None, bos_token_id: int | None = 1, eos_token_id: int | list[int] | None = 2, pretraining_tp: int | None = 1, tie_word_embeddings: bool = False, rope_parameters: transformers.modeling_rope_utils.RopeParameters | dict | None = None, attention_bias: bool = False, attention_dropout: float | None = 0.0, mlp_bias: bool = False, head_dim: int | None = None, first_k_dense_replace: int = 0, kv_lora_rank: int = 512, q_lora_rank: int | None = 1536, n_group: int | None = None, n_routed_experts: int = 64, n_shared_experts: int = 2, qk_nope_head_dim: int = 128, qk_rope_head_dim: int = 64, routed_scaling_factor: float = 1.0, topk_group: int | None = None, topk_method: str | None = 'greedy', norm_topk_prob: bool | None = False, v_head_dim: int = 128, num_experts_per_tok: int | None = None, moe_intermediate_size: int = 1407) -> None",
+        "DeepseekV3Config": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None, *, vocab_size: int = 129280, hidden_size: int = 7168, intermediate_size: int = 18432, moe_intermediate_size: int = 2048, num_hidden_layers: int = 61, num_attention_heads: int = 128, num_key_value_heads: int | None = 128, n_shared_experts: int = 1, n_routed_experts: int = 256, routed_scaling_factor: float = 2.5, kv_lora_rank: int = 512, q_lora_rank: int | None = 1536, qk_rope_head_dim: int = 64, v_head_dim: int | None = 128, qk_nope_head_dim: int = 128, n_group: int | None = 8, topk_group: int | None = 4, num_experts_per_tok: int | None = 8, first_k_dense_replace: int | None = 3, norm_topk_prob: bool | None = True, hidden_act: str = 'silu', max_position_embeddings: int = 4096, initializer_range: float = 0.02, rms_norm_eps: float = 1e-06, use_cache: bool = True, pad_token_id: int | None = None, bos_token_id: int | None = 0, eos_token_id: int | list[int] | None = 1, pretraining_tp: int | None = 1, tie_word_embeddings: bool = False, rope_parameters: transformers.modeling_rope_utils.RopeParameters | dict | None = None, rope_interleave: bool | None = True, attention_bias: bool = False, attention_dropout: float | int | None = 0.0, num_mtp_layers: int = 1) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/deepseek_v4/model.py",
+      "line": 35,
+      "module": "transformers",
+      "names": [
+        "DeepseekV2Config",
+        "DeepseekV3Config"
+      ],
+      "signatures": {
+        "DeepseekV2Config": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None, *, vocab_size: int = 102400, hidden_size: int = 4096, intermediate_size: int = 11008, num_hidden_layers: int = 32, num_attention_heads: int = 32, num_key_value_heads: int | None = None, hidden_act: str = 'silu', max_position_embeddings: int = 2048, initializer_range: float = 0.02, rms_norm_eps: float = 1e-06, use_cache: bool = True, pad_token_id: int | None = None, bos_token_id: int | None = 1, eos_token_id: int | list[int] | None = 2, pretraining_tp: int | None = 1, tie_word_embeddings: bool = False, rope_parameters: transformers.modeling_rope_utils.RopeParameters | dict | None = None, attention_bias: bool = False, attention_dropout: float | None = 0.0, mlp_bias: bool = False, head_dim: int | None = None, first_k_dense_replace: int = 0, kv_lora_rank: int = 512, q_lora_rank: int | None = 1536, n_group: int | None = None, n_routed_experts: int = 64, n_shared_experts: int = 2, qk_nope_head_dim: int = 128, qk_rope_head_dim: int = 64, routed_scaling_factor: float = 1.0, topk_group: int | None = None, topk_method: str | None = 'greedy', norm_topk_prob: bool | None = False, v_head_dim: int = 128, num_experts_per_tok: int | None = None, moe_intermediate_size: int = 1407) -> None",
+        "DeepseekV3Config": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None, *, vocab_size: int = 129280, hidden_size: int = 7168, intermediate_size: int = 18432, moe_intermediate_size: int = 2048, num_hidden_layers: int = 61, num_attention_heads: int = 128, num_key_value_heads: int | None = 128, n_shared_experts: int = 1, n_routed_experts: int = 256, routed_scaling_factor: float = 2.5, kv_lora_rank: int = 512, q_lora_rank: int | None = 1536, qk_rope_head_dim: int = 64, v_head_dim: int | None = 128, qk_nope_head_dim: int = 128, n_group: int | None = 8, topk_group: int | None = 4, num_experts_per_tok: int | None = 8, first_k_dense_replace: int | None = 3, norm_topk_prob: bool | None = True, hidden_act: str = 'silu', max_position_embeddings: int = 4096, initializer_range: float = 0.02, rms_norm_eps: float = 1e-06, use_cache: bool = True, pad_token_id: int | None = None, bos_token_id: int | None = 0, eos_token_id: int | list[int] | None = 1, pretraining_tp: int | None = 1, tie_word_embeddings: bool = False, rope_parameters: transformers.modeling_rope_utils.RopeParameters | dict | None = None, rope_interleave: bool | None = True, attention_bias: bool = False, attention_dropout: float | int | None = 0.0, num_mtp_layers: int = 1) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/deepseek_v4/compressor.py",
+      "line": 31,
+      "module": "transformers",
+      "names": [
+        "DeepseekV2Config",
+        "DeepseekV3Config"
+      ],
+      "signatures": {
+        "DeepseekV2Config": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None, *, vocab_size: int = 102400, hidden_size: int = 4096, intermediate_size: int = 11008, num_hidden_layers: int = 32, num_attention_heads: int = 32, num_key_value_heads: int | None = None, hidden_act: str = 'silu', max_position_embeddings: int = 2048, initializer_range: float = 0.02, rms_norm_eps: float = 1e-06, use_cache: bool = True, pad_token_id: int | None = None, bos_token_id: int | None = 1, eos_token_id: int | list[int] | None = 2, pretraining_tp: int | None = 1, tie_word_embeddings: bool = False, rope_parameters: transformers.modeling_rope_utils.RopeParameters | dict | None = None, attention_bias: bool = False, attention_dropout: float | None = 0.0, mlp_bias: bool = False, head_dim: int | None = None, first_k_dense_replace: int = 0, kv_lora_rank: int = 512, q_lora_rank: int | None = 1536, n_group: int | None = None, n_routed_experts: int = 64, n_shared_experts: int = 2, qk_nope_head_dim: int = 128, qk_rope_head_dim: int = 64, routed_scaling_factor: float = 1.0, topk_group: int | None = None, topk_method: str | None = 'greedy', norm_topk_prob: bool | None = False, v_head_dim: int = 128, num_experts_per_tok: int | None = None, moe_intermediate_size: int = 1407) -> None",
+        "DeepseekV3Config": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None, *, vocab_size: int = 129280, hidden_size: int = 7168, intermediate_size: int = 18432, moe_intermediate_size: int = 2048, num_hidden_layers: int = 61, num_attention_heads: int = 128, num_key_value_heads: int | None = 128, n_shared_experts: int = 1, n_routed_experts: int = 256, routed_scaling_factor: float = 2.5, kv_lora_rank: int = 512, q_lora_rank: int | None = 1536, qk_rope_head_dim: int = 64, v_head_dim: int | None = 128, qk_nope_head_dim: int = 128, n_group: int | None = 8, topk_group: int | None = 4, num_experts_per_tok: int | None = 8, first_k_dense_replace: int | None = 3, norm_topk_prob: bool | None = True, hidden_act: str = 'silu', max_position_embeddings: int = 4096, initializer_range: float = 0.02, rms_norm_eps: float = 1e-06, use_cache: bool = True, pad_token_id: int | None = None, bos_token_id: int | None = 0, eos_token_id: int | list[int] | None = 1, pretraining_tp: int | None = 1, tie_word_embeddings: bool = False, rope_parameters: transformers.modeling_rope_utils.RopeParameters | dict | None = None, rope_interleave: bool | None = True, attention_bias: bool = False, attention_dropout: float | int | None = 0.0, num_mtp_layers: int = 1) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/deepseek_v41/dspark.py",
+      "line": 12,
+      "module": "transformers",
+      "names": [
+        "PretrainedConfig"
+      ],
+      "signatures": {
+        "PretrainedConfig": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/deepseek_v41/model.py",
+      "line": 18,
+      "module": "transformers",
+      "names": [
+        "PretrainedConfig"
+      ],
+      "signatures": {
+        "PretrainedConfig": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/glm5next/config.py",
+      "line": 4,
+      "module": "transformers.configuration_utils",
+      "names": [
+        "PretrainedConfig"
+      ],
+      "signatures": {
+        "PretrainedConfig": "(transformers_version: str | None = None, architectures: list[str] | None = None, output_hidden_states: bool | None = False, return_dict: bool | None = True, dtype: Union[str, ForwardRef('torch.dtype'), NoneType] = None, chunk_size_feed_forward: int = 0, is_encoder_decoder: bool = False, id2label: dict[int, str] | dict[str, str] | None = None, label2id: dict[str, int] | dict[str, str] | None = None, problem_type: Optional[Literal['regression', 'single_label_classification', 'multi_label_classification']] = None) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/glm5next/processor.py",
+      "line": 12,
+      "module": "transformers.image_processing_utils",
+      "names": [
+        "BatchFeature"
+      ],
+      "signatures": {
+        "BatchFeature": "(data: dict[str, typing.Any] | None = None, tensor_type: None | str | transformers.utils.generic.TensorType = None, skip_tensor_conversion: list[str] | set[str] | None = None)"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/glm5next/processor.py",
+      "line": 13,
+      "module": "transformers.image_processing_utils_fast",
+      "names": [
+        "BaseImageProcessorFast",
+        "group_images_by_shape",
+        "reorder_images"
+      ],
+      "signatures": {
+        "BaseImageProcessorFast": "(**kwargs: Unpack[transformers.processing_utils.ImagesKwargs])",
+        "group_images_by_shape": "(images: Union[list['torch.Tensor'], ForwardRef('torch.Tensor')], *paired_inputs, disable_grouping: bool | None, is_nested: bool = False) -> tuple[dict, ...]",
+        "reorder_images": "(processed_images: dict[tuple[int, int], 'torch.Tensor'], grouped_images_index: dict[int | tuple[int, int], tuple[tuple[int, int], int]], is_nested: bool = False) -> Union[list['torch.Tensor'], ForwardRef('torch.Tensor')]"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/glm5next/processor.py",
+      "line": 18,
+      "module": "transformers.image_utils",
+      "names": [
+        "OPENAI_CLIP_MEAN",
+        "OPENAI_CLIP_STD",
+        "ChannelDimension",
+        "ImageInput",
+        "PILImageResampling",
+        "SizeDict",
+        "get_image_size"
+      ],
+      "signatures": {
+        "OPENAI_CLIP_MEAN": "list",
+        "OPENAI_CLIP_STD": "list",
+        "ChannelDimension": "(*values)",
+        "ImageInput": "(*args, **kwargs)",
+        "PILImageResampling": "(*values)",
+        "SizeDict": "(height: int | None = None, width: int | None = None, longest_edge: int | None = None, shortest_edge: int | None = None, max_height: int | None = None, max_width: int | None = None, min_pixels: int | None = None, max_pixels: int | None = None) -> None",
+        "get_image_size": "(image: Union[numpy.ndarray, ForwardRef('PIL.Image.Image')], channel_dim: transformers.image_utils.ChannelDimension | None = None) -> tuple[int, int]"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/glm5next/processor.py",
+      "line": 27,
+      "module": "transformers.models.auto.image_processing_auto",
+      "names": [
+        "get_image_processor_config"
+      ],
+      "signatures": {
+        "get_image_processor_config": "(pretrained_model_name_or_path: str | os.PathLike, cache_dir: str | os.PathLike | None = None, force_download: bool = False, proxies: dict[str, str] | None = None, token: bool | str | None = None, revision: str | None = None, local_files_only: bool = False, **kwargs)"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/glm5next/processor.py",
+      "line": 28,
+      "module": "transformers.processing_utils",
+      "names": [
+        "ImagesKwargs",
+        "MultiModalData",
+        "ProcessingKwargs",
+        "ProcessorMixin",
+        "Unpack",
+        "VideosKwargs"
+      ],
+      "signatures": {
+        "ImagesKwargs": "_TypedDictMeta",
+        "MultiModalData": "(num_image_tokens: list[int] | None = None, num_video_tokens: list[int] | None = None, num_audio_tokens: list[int] | None = None, num_image_patches: list[int] | None = None) -> None",
+        "ProcessingKwargs": "_TypedDictMeta",
+        "ProcessorMixin": "(*args, **kwargs)",
+        "Unpack": "(*args, **kwds)",
+        "VideosKwargs": "_TypedDictMeta"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/glm5next/processor.py",
+      "line": 36,
+      "module": "transformers.tokenization_utils_base",
+      "names": [
+        "PreTokenizedInput",
+        "TextInput"
+      ],
+      "signatures": {
+        "PreTokenizedInput": "(*args, **kwargs)",
+        "TextInput": "type"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/glm5next/processor.py",
+      "line": 37,
+      "module": "transformers.utils",
+      "names": [
+        "TensorType",
+        "logging"
+      ],
+      "signatures": {
+        "TensorType": "(*values)",
+        "logging": "module"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/glm5next/processor.py",
+      "line": 38,
+      "module": "transformers.video_processing_utils",
+      "names": [
+        "BaseVideoProcessor"
+      ],
+      "signatures": {
+        "BaseVideoProcessor": "(**kwargs: Unpack[transformers.processing_utils.VideosKwargs]) -> None"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/glm5next/processor.py",
+      "line": 39,
+      "module": "transformers.video_utils",
+      "names": [
+        "VideoInput",
+        "VideoMetadata",
+        "group_videos_by_shape",
+        "reorder_videos"
+      ],
+      "signatures": {
+        "VideoInput": "(*args, **kwargs)",
+        "VideoMetadata": "(total_num_frames: int, fps: float | None = None, width: int | None = None, height: int | None = None, duration: float | None = None, video_backend: str | None = None, frames_indices: list[int] | None = None) -> None",
+        "group_videos_by_shape": "(videos: list['torch.Tensor']) -> tuple[dict[tuple[int, int], 'torch.Tensor'], dict[int, tuple[tuple[int, int], int]]]",
+        "reorder_videos": "(processed_videos: dict[tuple[int, int], 'torch.Tensor'], grouped_videos_index: dict[int, tuple[tuple[int, int], int]]) -> list['torch.Tensor']"
+      },
+      "passed": true
+    },
+    {
+      "file": "vllm_ascend/models/glm5next/processor.py",
+      "line": 769,
+      "module": "transformers",
+      "names": [
+        "AutoTokenizer"
+      ],
+      "signatures": {
+        "AutoTokenizer": "()"
+      },
+      "passed": true
+    }
+  ],
+  "qwen35_config": {
+    "qwen3_5": {
+      "class": "Qwen3_5Config",
+      "model_type": "qwen3_5"
+    },
+    "qwen3_5_moe": {
+      "class": "Qwen3_5MoeConfig",
+      "model_type": "qwen3_5_moe"
+    }
+  },
+  "scope": "CPU-only import/API presence and configuration construction; not NPU runtime validation"
+}

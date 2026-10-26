@@ -1,0 +1,107 @@
+{
+  "config_class": "Qwen3_5MoeConfig",
+  "model_type": "qwen3_5_moe",
+  "hf_tokenizer_class": "Qwen2Tokenizer",
+  "core_tokenizer_class": "CachedQwen2Tokenizer",
+  "samples": [
+    {
+      "text": "请简要说明 KV cache 的用途。",
+      "token_ids": [
+        96220,
+        114600,
+        98419,
+        81726,
+        6297,
+        220,
+        95726,
+        104045,
+        1710
+      ],
+      "matched": true
+    },
+    {
+      "text": "def add(a, b):\n    return a + b\n",
+      "token_ids": [
+        727,
+        884,
+        2784,
+        11,
+        292,
+        1590,
+        198,
+        262,
+        460,
+        264,
+        478,
+        292,
+        198
+      ],
+      "matched": true
+    },
+    {
+      "text": "Hello, Qwen! 12345\n<think>推理</think>",
+      "token_ids": [
+        9419,
+        11,
+        1167,
+        16451,
+        0,
+        220,
+        16,
+        17,
+        18,
+        19,
+        20,
+        198,
+        248068,
+        111892,
+        248069
+      ],
+      "matched": true
+    }
+  ],
+  "chat_template_output": {
+    "input_ids": [
+      248045,
+      846,
+      198,
+      109266,
+      3709,
+      139054,
+      110827,
+      97431,
+      96115,
+      1710,
+      248046,
+      198,
+      248045,
+      74455,
+      198,
+      248068,
+      198
+    ],
+    "attention_mask": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ]
+  },
+  "chat_template_output_class": "BatchEncoding",
+  "chat_template_matches": true,
+  "device_execution": false,
+  "network_used": false
+}

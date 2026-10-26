@@ -17,6 +17,7 @@
 | 实现设计 | [方法 API 与 TriAttention](design/methods.zh.md)、[Ascend 适配](design/ascend-adaptation-vs-triattention-vllm.zh.md)、[Qwen3.5 混合模型](design/qwen3.5-35b-a3b-adaptation.zh.md) |
 | 优化记录 | [按日期整理的实现与调参记录](optimization/README.zh.md) |
 | 开发 | [环境](development/environment-installation.zh.md)、[校准](development/calibration-artifacts.zh.md)、[归属与许可](development/ownership-and-licensing.zh.md)、[提交规范](development/git-commit.zh.md)、[打包发布](development/packaging-and-release.zh.md) |
+| 候选兼容性 | [2026-10-26 CPU 准备阶段；NPU 验证待完成](development/compatibility/20261026-cpu-baseline/README.zh.md) |
 | 结果 | [结果范围与证据](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.zh.md)、[HTML 榜单](results/benchmark-leaderboard.html) |
 | 项目议题 | [五数据集适用性，issue #17](issue/dataset-program-issue-17.zh.md) |
 | 报告 | [周报](template/weekly-report-template.zh.md)和[月报](template/monthly-report-template.zh.md)模板 |

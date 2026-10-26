@@ -1,0 +1,46 @@
+{
+  "python": "3.12.13 (main, Aug  7 2026, 02:24:44) [Clang 22.1.3 ]",
+  "executable": "/root/wrh/envs/vllm-hust-dev-baseline/.venv/bin/python",
+  "versions": {
+    "vllm": "0.29.1.post1.dev456+gebfcfba65.empty",
+    "vllm-ascend": "0.25.1rc2.dev774+hust.20260903.4.g7c8ec865a.d20261026",
+    "vllm-ascend-kvcompress-hust": "0.10.0",
+    "vllm-hust-ext": "0.3.0",
+    "triton": "3.6.0",
+    "triton-ascend": "3.6.0+gitb90ab001",
+    "torch": "2.13.0+cpu",
+    "torch-npu": "2.13.0rc1",
+    "transformers": "5.17.0",
+    "huggingface-hub": "1.33.0",
+    "numpy": "2.2.6"
+  },
+  "triton_import_path": "/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/triton/__init__.py",
+  "triton_module_version": "3.6.0",
+  "ascend_binding_present": true,
+  "native_linkage": [
+    {
+      "file": "/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm_ascend/libvllm_ascend_kernels.so",
+      "sha256": "1df001824837a15e763eb4ec925ce6c68a64010c6c0e6d0534d80506e9030ecb",
+      "returncode": 0,
+      "missing": []
+    },
+    {
+      "file": "/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/triton/_C/libtriton.so",
+      "sha256": "1af78b4a781caa839c8a8524a4e30572bd20c3f8c1ef28044dd14ccf5dadd816",
+      "returncode": 0,
+      "missing": []
+    },
+    {
+      "file": "/root/wrh/envs/vllm-hust-dev-baseline/.venv/lib/python3.12/site-packages/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib/libcust_opapi.so",
+      "sha256": "9d28019b51823483e8aa282f4ede8972d57ec358f64df26abd684a4a076e6f7f",
+      "returncode": 0,
+      "missing": []
+    }
+  ],
+  "bishengir": {
+    "path": "/usr/local/Ascend/cann-9.1.0/bin/bishengir-compile",
+    "returncode": 0,
+    "output": "bishengir-compile 1.2.0 (/usr1/BiSheng/npuir-a3/bishengir 8796a8ac1508 2026-07-31) \nllvm 19.1.7 2430ab069eb1\nRelease build\n\n"
+  },
+  "scope": "Triton Ascend binding import and native linkage only; Ascend _C initialization and device execution deferred"
+}

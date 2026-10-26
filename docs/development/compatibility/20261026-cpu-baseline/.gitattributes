@@ -1,0 +1,5 @@
+# Preserve original evidence bytes and unified-diff context whitespace.
+evidence/* -text
+evidence/plugin-cpu-final-tests.log -whitespace
+evidence/plugin-cpu-final-tests.xml -whitespace
+patches/*.patch -text -whitespace

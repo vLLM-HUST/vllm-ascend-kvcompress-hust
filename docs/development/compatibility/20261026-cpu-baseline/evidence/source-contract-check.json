@@ -1,0 +1,19 @@
+{
+  "checks": {
+    "core_defines__approximate_gcd": true,
+    "core_defines_may_override_num_blocks": true,
+    "block_table_compute_slot_mapping": true,
+    "block_table_add_row": true,
+    "multi_group_add_row": true,
+    "worker_required_methods_exist": true,
+    "triton_does_not_emit_enable_optimized_metaop": true
+  },
+  "source_sha256": {
+    "/root/wrh/baselines/qwen35-20261026/src/vllm-hust/vllm/v1/core/kv_cache_utils.py": "319b7fdd827879e11818da01879a176ff75208ff3e988e1b5d40988922028acc",
+    "/root/wrh/baselines/qwen35-20261026/src/vllm-ascend-hust/vllm_ascend/worker/block_table.py": "215305c699a9df9c118f47c6f7b71d8457ef54e98b5b8571536fd373de7b21ed",
+    "/root/wrh/baselines/qwen35-20261026/src/vllm-ascend-hust/vllm_ascend/worker/model_runner_v1.py": "f8d782b0bc621c8aa362591a77827634b3f1a651dc33083110ab7783f951e828",
+    "/root/wrh/baselines/qwen35-20261026/src/triton-ascend-hust/third_party/ascend/backend/compiler.py": "ead63dc11852cf7c16a29f0773dad29eaa5f68cfc86defcce5ebad5e1b1a7962"
+  },
+  "scope": "AST/text inspection only. Does not execute Ascend worker, register native operators, compile a device kernel or run an NPU.",
+  "npu_deferred_test": "tests/test_current_host_contract.py::test_ascend_v1_worker_seams_match_current_host"
+}
