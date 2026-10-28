@@ -10,9 +10,10 @@ measurement window, primary metrics, and limitations with the result. Compare
 baseline and candidate under the chosen protocol's rules; do not combine
 results from different cohorts as if they were one pair.
 
-| Protocol | Scope |
-| --- | --- |
-| [Frontier SWE and AgentX](frontier-benchmarking.md) | Qwen3.5-35B-A3B BF16, TP=2, Ascend 910B2 service comparisons |
+| Protocol                                                 | Scope                                                                      |
+| -------------------------------------------------------- | -------------------------------------------------------------------------- |
+| [PyramidKV metadata and net cost](pyramidkv-net-cost.md) | Experimental 32K BF16/TP2 compression OFF/ON and host metadata diagnostics |
+| [Frontier SWE and AgentX](frontier-benchmarking.md)      | Qwen3.5-35B-A3B BF16, TP=2, Ascend 910B2 service comparisons               |
 
 Superseded procedures belong in the [benchmark archive](../archive/benchmark/).
 Dated measurements and their exact protocol are linked from

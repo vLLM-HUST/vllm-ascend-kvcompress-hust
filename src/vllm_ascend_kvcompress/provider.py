@@ -121,6 +121,9 @@ class AscendKVCompressionProvider:
         self._per_layer_metadata_seen = False
         self._per_layer_step_requires_metadata = False
         self._per_layer_slot_buffers: dict[str, torch.Tensor] = {}
+        self._metadata_tensor_cache: dict[
+            str, tuple[tuple[int, ...], torch.Tensor]
+        ] = {}
         self._physical_lengths_applied = False
         self._query_step_output: Any | None = None
         self._query_seen_layers: set[int] = set()
@@ -744,6 +747,29 @@ class AscendKVCompressionProvider:
             seq_lens_cpu_upper_bound=self._semantic_seq_lens_cpu[:num_reqs],
         )
 
+    def _metadata_correction_tensor(
+        self, key: str, values: tuple[int, ...], reference: torch.Tensor
+    ) -> torch.Tensor:
+        """Reuse immutable row corrections until the batch's values change.
+
+        Constructing a device tensor from Python values on every decode step
+        repeats host-to-device transfers for each layer. Entries are bounded by
+        layer/field, not request IDs. Replace rather than mutate an old tensor:
+        an earlier asynchronous operation may still be consuming it.
+        """
+        cached = self._metadata_tensor_cache.get(key)
+        if cached is not None:
+            previous, tensor = cached
+            if (
+                previous == values
+                and tensor.dtype == reference.dtype
+                and tensor.device == reference.device
+            ):
+                return tensor
+        tensor = torch.tensor(values, dtype=reference.dtype, device=reference.device)
+        self._metadata_tensor_cache[key] = values, tensor
+        return tensor
+
     def per_layer_attention_metadata(
         self, result: Any, num_tokens: int, num_reqs: int
     ) -> Any:
@@ -841,8 +867,8 @@ class AscendKVCompressionProvider:
                 ]
                 seq_lens = base.seq_lens.clone()
                 if any(delta):
-                    seq_lens[:num_reqs] += torch.tensor(
-                        delta, dtype=seq_lens.dtype, device=seq_lens.device
+                    seq_lens[:num_reqs] += self._metadata_correction_tensor(
+                        layer.name + ":delta", tuple(delta), seq_lens
                     )
                 seq_lens_list = list(base.seq_lens_list)
                 for index, correction in enumerate(delta):
@@ -868,8 +894,8 @@ class AscendKVCompressionProvider:
                 else:
                     positions = runner.positions[:num_tokens]
                     req_indices = runner.req_indices.gpu[:num_tokens]
-                    offset_tensor = torch.tensor(
-                        offsets, dtype=positions.dtype, device=positions.device
+                    offset_tensor = self._metadata_correction_tensor(
+                        layer.name + ":offsets", offsets, positions
                     )
                     native(
                         table,
@@ -903,8 +929,8 @@ class AscendKVCompressionProvider:
         self._per_layer_metadata_seen = True
         return metadata, common
 
-    @staticmethod
     def _speculative_common_metadata(
+        self,
         common: Any,
         delta: list[int],
         offsets: tuple[int, ...],
@@ -920,33 +946,37 @@ class AscendKVCompressionProvider:
         if any(not hasattr(common, name) for name in required):
             raise RuntimeError("MTP2 common attention metadata ABI changed")
 
-        def adjusted(value: Any, corrections: list[int] | tuple[int, ...]) -> Any:
+        def adjusted(
+            field: str, value: Any, corrections: list[int] | tuple[int, ...]
+        ) -> Any:
             if value is None:
                 return None
             if not isinstance(value, torch.Tensor) or value.numel() < num_reqs:
                 raise RuntimeError("MTP2 sequence-length metadata ABI changed")
             result = value.clone()
             if any(corrections):
-                result[:num_reqs] += torch.tensor(
-                    corrections,
-                    dtype=result.dtype,
-                    device=result.device,
+                result[:num_reqs] += self._metadata_correction_tensor(
+                    "mtp-common:" + field, tuple(corrections), result
                 )
             return result
 
         changes = {
-            "seq_lens": adjusted(common.seq_lens, delta),
-            "_seq_lens_cpu": adjusted(common._seq_lens_cpu, delta),
+            "seq_lens": adjusted("seq_lens", common.seq_lens, delta),
+            "_seq_lens_cpu": adjusted("_seq_lens_cpu", common._seq_lens_cpu, delta),
             "seq_lens_cpu_upper_bound": adjusted(
+                "seq_lens_cpu_upper_bound",
                 common.seq_lens_cpu_upper_bound,
                 delta,
             ),
             "slot_mapping": slots,
         }
         if hasattr(common, "seq_lens_cpu"):
-            changes["seq_lens_cpu"] = adjusted(common.seq_lens_cpu, delta)
+            changes["seq_lens_cpu"] = adjusted(
+                "seq_lens_cpu", common.seq_lens_cpu, delta
+            )
         if hasattr(common, "num_computed_tokens_cpu"):
             changes["num_computed_tokens_cpu"] = adjusted(
+                "num_computed_tokens_cpu",
                 common.num_computed_tokens_cpu,
                 tuple(-offset for offset in offsets),
             )

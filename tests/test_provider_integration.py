@@ -136,6 +136,7 @@ def _provider() -> AscendKVCompressionProvider:
     provider._per_layer_metadata_seen = False
     provider._per_layer_step_requires_metadata = False
     provider._per_layer_slot_buffers = {}
+    provider._metadata_tensor_cache = {}
     provider._physical_lengths_applied = False
     provider.vllm_config = SimpleNamespace(
         cache_config=SimpleNamespace(enable_prefix_caching=False),
@@ -651,7 +652,44 @@ def test_uniform_per_layer_result_keeps_shared_metadata_path() -> None:
     )
 
 
-def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> None:
+def test_metadata_corrections_reuse_storage_and_replace_changed_rows() -> None:
+    provider = _provider()
+    reference = torch.empty(4, dtype=torch.int64)
+    original = provider._metadata_correction_tensor(
+        "layer:offsets", (172, 0), reference
+    )
+    repeated = provider._metadata_correction_tensor(
+        "layer:offsets", (172, 0), reference
+    )
+    assert repeated is original
+    # Reordering, reset, batch growth/shrink must not reuse stale row values.
+    for values in ((0, 172), (0, 0), (172,), (172, 0, 200)):
+        current = provider._metadata_correction_tensor(
+            "layer:offsets", values, reference
+        )
+        assert current.tolist() == list(values)
+        assert current is not original
+        assert original.tolist() == [172, 0]  # Earlier in-flight storage is immutable.
+    changed_dtype = provider._metadata_correction_tensor(
+        "layer:offsets", (172, 0, 200), reference.to(torch.int32)
+    )
+    assert changed_dtype.dtype == torch.int32
+    assert len(provider._metadata_tensor_cache) == 1
+
+
+def test_metadata_correction_fields_do_not_alias() -> None:
+    provider = _provider()
+    reference = torch.empty(1, dtype=torch.int64)
+    a = provider._metadata_correction_tensor("a:delta", (10,), reference)
+    b = provider._metadata_correction_tensor("b:delta", (20,), reference)
+    assert a.tolist() == [10]
+    assert b.tolist() == [20]
+    assert a.data_ptr() != b.data_ptr()
+
+
+def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths(
+    monkeypatch,
+) -> None:
     @dataclass
     class AscendMetadata:
         seq_lens: torch.Tensor
@@ -716,6 +754,7 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> Non
     assert first.seq_lens_list == [129, 21]
     first_slot_address = first.slot_mapping.data_ptr()
     second_slot_address = second.slot_mapping.data_ptr()
+    original_corrections = dict(provider._metadata_tensor_cache)
     assert second.seq_lens_list == [65, 21]
     assert second.seq_lens.tolist() == [65, 21]
     assert second.slot_mapping.tolist() == [100 * 128 + 64, 20 * 128 + 20]
@@ -732,9 +771,15 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> Non
         [134, 21],
         table.slot_mapping.gpu,
     )
-    next_metadata, _ = provider.per_layer_attention_metadata(
-        ({layer.name: next_shared for layer in provider.layer_caches}, None), 2, 2
-    )
+
+    def forbid_repeated_transfer(*args, **kwargs):
+        raise AssertionError("Unchanged corrections must not construct another tensor")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(torch, "tensor", forbid_repeated_transfer)
+        next_metadata, _ = provider.per_layer_attention_metadata(
+            ({layer.name: next_shared for layer in provider.layer_caches}, None), 2, 2
+        )
     assert (
         next_metadata["model.layers.0.self_attn"].slot_mapping.data_ptr()
         == first_slot_address
@@ -751,6 +796,11 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> Non
     assert table.slot_mapping.gpu.tolist() == [12933, 2580]
     for slots in provider._per_layer_slot_buffers.values():
         assert slots[2:].tolist() == [-1, -1]
+
+    for key, (values, tensor) in original_corrections.items():
+        next_values, next_tensor = provider._metadata_tensor_cache[key]
+        assert values == next_values
+        assert tensor is next_tensor
 
 
 def test_undeclared_nonuniform_lengths_fail_closed_under_graph_replay() -> None:
