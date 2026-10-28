@@ -125,7 +125,6 @@ class AscendKVCompressionProvider:
             str, tuple[tuple[int, ...], torch.Tensor]
         ] = {}
         self._batched_slot_storage: torch.Tensor | None = None
-        self._batched_seq_storage: torch.Tensor | None = None
         self._physical_lengths_applied = False
         self._query_step_output: Any | None = None
         self._query_seen_layers: set[int] = set()
@@ -270,11 +269,6 @@ class AscendKVCompressionProvider:
             self._batched_slot_storage = torch.empty(
                 (len(self.layer_caches), runner.max_num_tokens),
                 dtype=torch.int64,
-                device=runner.device,
-            )
-            self._batched_seq_storage = torch.empty(
-                (len(self.layer_caches), runner.seq_lens.numel()),
-                dtype=runner.seq_lens.dtype,
                 device=runner.device,
             )
             self._per_layer_slot_buffers = {
@@ -805,12 +799,10 @@ class AscendKVCompressionProvider:
         No K/V, query, attention score, or method-selection arithmetic changes.
         """
         slots = self._batched_slot_storage
-        lengths = self._batched_seq_storage
         blocks = getattr(getattr(table, "block_table", None), "gpu", None)
         block_size = getattr(table, "block_size", 0)
         if (
             slots is None
-            or lengths is None
             or getattr(table, "dcp_world_size", None) != 1
             or getattr(table, "cp_kv_cache_interleave_size", 1) != 1
             or not isinstance(blocks, torch.Tensor)
@@ -840,10 +832,9 @@ class AscendKVCompressionProvider:
                 return None
         nseq = first.seq_lens.numel()
         if (
-            not num_reqs <= nseq <= lengths.shape[1]
+            nseq < num_reqs
             or num_tokens > slots.shape[1]
-            or lengths.dtype != first.seq_lens.dtype
-            or lengths.device != first.seq_lens.device
+            or first.seq_lens.dtype not in (torch.int32, torch.int64)
             or blocks.device != slots.device
             or blocks.shape[0] < num_reqs
         ):
@@ -880,7 +871,10 @@ class AscendKVCompressionProvider:
             tuple(value for row in deltas for value in row + [0] * (nseq - num_reqs)),
             first.seq_lens,
         ).reshape(layers, nseq)
-        lengths[:, :nseq].copy_(first.seq_lens.unsqueeze(0) + correction)
+        # The qualified Ascend builder keeps these lengths on CPU, whereas
+        # positions/slots live on NPU. Follow the actual metadata device. Keep
+        # each call's length storage independent from in-flight older views.
+        lengths = first.seq_lens.unsqueeze(0) + correction
         slots[:, num_tokens:].fill_(-1)
         if not any(any(row) for row in offsets):
             slots[:, :num_tokens].copy_(

@@ -78,3 +78,8 @@ metadata equivalence only. A live FULL_AND_PIECEWISE/MTP2 smoke is still require
 Freeze the flag and a separate source snapshot for both arms; preserve earlier
 candidate series even if negative. Do not combine different implementations'
 OFF/ON measurements into a paired comparison.
+
+The qualified builder keeps sequence lengths on CPU and slots on NPU. Batched
+length arithmetic follows the actual metadata device and creates independent
+storage per call, preserving older in-flight length views. Only slot addresses
+are persistent across calls.

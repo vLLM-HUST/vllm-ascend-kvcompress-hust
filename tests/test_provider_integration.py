@@ -138,7 +138,6 @@ def _provider() -> AscendKVCompressionProvider:
     provider._per_layer_slot_buffers = {}
     provider._metadata_tensor_cache = {}
     provider._batched_slot_storage = None
-    provider._batched_seq_storage = None
     provider._physical_lengths_applied = False
     provider.vllm_config = SimpleNamespace(
         cache_config=SimpleNamespace(enable_prefix_caching=False),
@@ -758,7 +757,6 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths(
             gpu=torch.tensor([[100, 101], [20, 21]], dtype=torch.int32)
         )
         provider._batched_slot_storage = torch.empty((2, 4), dtype=torch.int64)
-        provider._batched_seq_storage = torch.empty((2, 2), dtype=torch.int64)
         provider._per_layer_slot_buffers = {
             layer.name: provider._batched_slot_storage[index]
             for index, layer in enumerate(provider.layer_caches)
@@ -775,6 +773,7 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths(
     original_corrections = dict(provider._metadata_tensor_cache)
     assert second.seq_lens_list == [65, 21]
     assert second.seq_lens.tolist() == [65, 21]
+    first_length_snapshot = second.seq_lens.clone()
     assert second.slot_mapping.tolist() == [100 * 128 + 64, 20 * 128 + 20]
     assert table.slot_mapping.gpu.tolist() == [12928, 2580]
     for slots in provider._per_layer_slot_buffers.values():
@@ -798,6 +797,7 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths(
         next_metadata, _ = provider.per_layer_attention_metadata(
             ({layer.name: next_shared for layer in provider.layer_caches}, None), 2, 2
         )
+    assert torch.equal(second.seq_lens, first_length_snapshot)
     assert (
         next_metadata["model.layers.0.self_attn"].slot_mapping.data_ptr()
         == first_slot_address
@@ -823,7 +823,6 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths(
     if batched:
         # Unsupported host layouts must decline before touching captured rows.
         saved_slots = provider._batched_slot_storage.clone()
-        saved_lengths = provider._batched_seq_storage.clone()
         for field, unsupported in (
             ("dcp_world_size", 2),
             ("logical_block_size", 64),
@@ -843,7 +842,6 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths(
             )
             assert declined is None
             assert torch.equal(provider._batched_slot_storage, saved_slots)
-            assert torch.equal(provider._batched_seq_storage, saved_lengths)
             setattr(table, field, prior)
 
     if batched:
@@ -1065,7 +1063,6 @@ def test_mtp_rejected_draft_reuses_layer_specific_physical_slots(batched) -> Non
             gpu=torch.tensor([[0, 1]], dtype=torch.int32)
         )
         provider._batched_slot_storage = torch.empty((2, 4), dtype=torch.int64)
-        provider._batched_seq_storage = torch.empty((2, 1), dtype=torch.int64)
         provider._per_layer_slot_buffers = {
             layer.name: provider._batched_slot_storage[index]
             for index, layer in enumerate(provider.layer_caches)
