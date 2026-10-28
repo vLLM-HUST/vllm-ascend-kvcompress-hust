@@ -33,9 +33,8 @@ as a different comparison. No profiling decorators run in this series.
 Reuse the frozen synthetic input cohort from the prior selected-page series:
 1024/8192/24576 input tokens, 128 forced output tokens, concurrency 1 and 4,
 three cohorts per cell. Concurrency-one cohorts contain three requests;
-concurrency-four cohorts contain eight. Salt every prompt before tokenization;
-reuse exact saved token IDs across processes, and reject nonzero cached prompt
-tokens. Preserve 33 designated warmups and five repeatability probes, excluded
+concurrency-four cohorts contain eight. Use a unique API `cache_salt` for each synthetic case; reuse exact saved token IDs
+and salts across fresh processes, and reject nonzero cached prompt tokens. Preserve 33 designated warmups and five repeatability probes, excluded
 before measurement: 137 synthetic requests per process, 99 measured.
 
 Report pooled output tokens divided by cohort wall time, each process/cohort,
