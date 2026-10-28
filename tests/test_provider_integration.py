@@ -136,6 +136,8 @@ def _provider() -> AscendKVCompressionProvider:
     provider._per_layer_metadata_seen = False
     provider._per_layer_step_requires_metadata = False
     provider._per_layer_slot_buffers = {}
+    provider._metadata_tensor_cache = {}
+    provider._batched_slot_storage = None
     provider._physical_lengths_applied = False
     provider.vllm_config = SimpleNamespace(
         cache_config=SimpleNamespace(enable_prefix_caching=False),
@@ -651,7 +653,46 @@ def test_uniform_per_layer_result_keeps_shared_metadata_path() -> None:
     )
 
 
-def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> None:
+def test_metadata_corrections_reuse_storage_and_replace_changed_rows() -> None:
+    provider = _provider()
+    reference = torch.empty(4, dtype=torch.int64)
+    original = provider._metadata_correction_tensor(
+        "layer:offsets", (172, 0), reference
+    )
+    repeated = provider._metadata_correction_tensor(
+        "layer:offsets", (172, 0), reference
+    )
+    assert repeated is original
+    # Reordering, reset, batch growth/shrink must not reuse stale row values.
+    for values in ((0, 172), (0, 0), (172,), (172, 0, 200)):
+        current = provider._metadata_correction_tensor(
+            "layer:offsets", values, reference
+        )
+        assert current.tolist() == list(values)
+        assert current is not original
+        assert original.tolist() == [172, 0]  # Earlier in-flight storage is immutable.
+    changed_dtype = provider._metadata_correction_tensor(
+        "layer:offsets", (172, 0, 200), reference.to(torch.int32)
+    )
+    assert changed_dtype.dtype == torch.int32
+    assert len(provider._metadata_tensor_cache) == 1
+
+
+def test_metadata_correction_fields_do_not_alias() -> None:
+    provider = _provider()
+    reference = torch.empty(1, dtype=torch.int64)
+    a = provider._metadata_correction_tensor("a:delta", (10,), reference)
+    b = provider._metadata_correction_tensor("b:delta", (20,), reference)
+    assert a.tolist() == [10]
+    assert b.tolist() == [20]
+    assert a.data_ptr() != b.data_ptr()
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths(
+    monkeypatch,
+    batched,
+) -> None:
     @dataclass
     class AscendMetadata:
         seq_lens: torch.Tensor
@@ -707,6 +748,19 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> Non
         [129, 21],
         table.slot_mapping.gpu,
     )
+    if batched:
+        table.dcp_world_size = 1
+        table.block_size = table.logical_block_size = 128
+        table.physical_block_size = 256
+        table.blocks_per_phys_block = 2
+        table.block_table = SimpleNamespace(
+            gpu=torch.tensor([[100, 101], [20, 21]], dtype=torch.int32)
+        )
+        provider._batched_slot_storage = torch.empty((2, 4), dtype=torch.int64)
+        provider._per_layer_slot_buffers = {
+            layer.name: provider._batched_slot_storage[index]
+            for index, layer in enumerate(provider.layer_caches)
+        }
     metadata, common = provider.per_layer_attention_metadata(
         ({layer.name: shared for layer in provider.layer_caches}, "common"), 2, 2
     )
@@ -716,8 +770,10 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> Non
     assert first.seq_lens_list == [129, 21]
     first_slot_address = first.slot_mapping.data_ptr()
     second_slot_address = second.slot_mapping.data_ptr()
+    original_corrections = dict(provider._metadata_tensor_cache)
     assert second.seq_lens_list == [65, 21]
     assert second.seq_lens.tolist() == [65, 21]
+    first_length_snapshot = second.seq_lens.clone()
     assert second.slot_mapping.tolist() == [100 * 128 + 64, 20 * 128 + 20]
     assert table.slot_mapping.gpu.tolist() == [12928, 2580]
     for slots in provider._per_layer_slot_buffers.values():
@@ -732,9 +788,16 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> Non
         [134, 21],
         table.slot_mapping.gpu,
     )
-    next_metadata, _ = provider.per_layer_attention_metadata(
-        ({layer.name: next_shared for layer in provider.layer_caches}, None), 2, 2
-    )
+
+    def forbid_repeated_transfer(*args, **kwargs):
+        raise AssertionError("Unchanged corrections must not construct another tensor")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(torch, "tensor", forbid_repeated_transfer)
+        next_metadata, _ = provider.per_layer_attention_metadata(
+            ({layer.name: next_shared for layer in provider.layer_caches}, None), 2, 2
+        )
+    assert torch.equal(second.seq_lens, first_length_snapshot)
     assert (
         next_metadata["model.layers.0.self_attn"].slot_mapping.data_ptr()
         == first_slot_address
@@ -751,6 +814,57 @@ def test_per_layer_eager_metadata_uses_distinct_write_slots_and_lengths() -> Non
     assert table.slot_mapping.gpu.tolist() == [12933, 2580]
     for slots in provider._per_layer_slot_buffers.values():
         assert slots[2:].tolist() == [-1, -1]
+
+    for key, (values, tensor) in original_corrections.items():
+        next_values, next_tensor = provider._metadata_tensor_cache[key]
+        assert values == next_values
+        assert tensor is next_tensor
+
+    if batched:
+        # Unsupported host layouts must decline before touching captured rows.
+        saved_slots = provider._batched_slot_storage.clone()
+        for field, unsupported in (
+            ("dcp_world_size", 2),
+            ("logical_block_size", 64),
+            ("physical_block_size", 512),
+            ("cp_kv_cache_interleave_size", 2),
+        ):
+            prior = getattr(table, field, 1)
+            setattr(table, field, unsupported)
+            declined = provider._batched_per_layer_metadata(
+                {layer.name: next_shared for layer in provider.layer_caches},
+                None,
+                table,
+                ["compressed", "plain"],
+                (172, 0),
+                2,
+                2,
+            )
+            assert declined is None
+            assert torch.equal(provider._batched_slot_storage, saved_slots)
+            setattr(table, field, prior)
+
+    if batched:
+        # The same request IDs in a different scheduler row order must move
+        # their offsets and block-table rows together, without stale cache rows.
+        provider.runner.input_batch.req_ids = ["plain", "compressed"]
+        provider._request_offsets_cpu = torch.tensor([0, 172])
+        provider.runner.positions = torch.tensor([20, 305])
+        table.block_table.gpu = table.block_table.gpu.flip(0)
+        table.slot_mapping.gpu[:] = torch.tensor([2580, 12933])
+        reordered = AscendMetadata(
+            torch.tensor([21, 134]),
+            torch.tensor([21, 134]),
+            [21, 134],
+            table.slot_mapping.gpu,
+        )
+        reordered_meta, _ = provider.per_layer_attention_metadata(
+            ({layer.name: reordered for layer in provider.layer_caches}, None), 2, 2
+        )
+        second = reordered_meta["model.layers.1.self_attn"]
+        assert second.seq_lens.tolist() == [21, 70]
+        assert second.slot_mapping.tolist() == [2580, 12869]
+        assert second.slot_mapping.data_ptr() == second_slot_address
 
 
 def test_undeclared_nonuniform_lengths_fail_closed_under_graph_replay() -> None:
@@ -869,7 +983,8 @@ def test_query_observation_can_exclude_auxiliary_mtp_cache() -> None:
     assert tuple(cache.name for cache in selected) == ("model.layers.3.self_attn",)
 
 
-def test_mtp_rejected_draft_reuses_layer_specific_physical_slots() -> None:
+@pytest.mark.parametrize("batched", [False, True])
+def test_mtp_rejected_draft_reuses_layer_specific_physical_slots(batched) -> None:
     @dataclass
     class AscendMetadata:
         seq_lens: torch.Tensor
@@ -939,6 +1054,19 @@ def test_mtp_rejected_draft_reuses_layer_specific_physical_slots() -> None:
         torch.tensor([131]),
         torch.tensor([300]),
     )
+    if batched:
+        table.dcp_world_size = 1
+        table.block_size = table.logical_block_size = 128
+        table.physical_block_size = 256
+        table.blocks_per_phys_block = 2
+        table.block_table = SimpleNamespace(
+            gpu=torch.tensor([[0, 1]], dtype=torch.int32)
+        )
+        provider._batched_slot_storage = torch.empty((2, 4), dtype=torch.int64)
+        provider._per_layer_slot_buffers = {
+            layer.name: provider._batched_slot_storage[index]
+            for index, layer in enumerate(provider.layer_caches)
+        }
     metadata, common = provider.per_layer_attention_metadata(
         ({layer.name: first for layer in provider.layer_caches}, first_common),
         3,
