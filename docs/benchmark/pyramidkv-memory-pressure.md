@@ -28,7 +28,7 @@ recomputation path and must not be described as an entirely uncached run.
 
 The preregistered primary comparison is **24576 input tokens / concurrency 4**:
 pooled output tokens over cohort wall time. Report all six cells, individual
-process/cohort values, TTFT, TPOT, E2E, failures, counter deltas for preemption and
+process/cohort values, TTFT, TPOT, end-to-end latency, failures, counter deltas for preemption and
 MTP acceptance, observed HBM, and KV-pool usage. Do not select the best cell after
 measurement. A benefit in this budget-constrained scenario does not imply a
 benefit with 8 GiB, lower device HBM at equal reservation, an SLO guarantee, or a
