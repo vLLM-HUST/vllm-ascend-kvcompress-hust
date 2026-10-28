@@ -60,3 +60,21 @@ unchanged. CPU regressions and live output/transaction checks are necessary;
 the service series determines whether the resulting compression has a net benefit.
 Negative and mixed outcomes remain publishable outcomes. Canonical originals,
 analysis and exact experiment contracts belong in `vllm-hust-benchmark`.
+
+## Opt-in batched metadata candidate
+
+`VLLM_ASCEND_KVCOMPRESS_BATCHED_METADATA=1` groups the per-layer length and slot
+operations into two-dimensional tensors. It remains disabled by default. The
+implementation qualifies only single-CP, contiguous, expanded logical block
+tables with consistent physical/logical block geometry and shared base sequence
+metadata. Other shapes use the existing native per-layer path. Persistent slot
+rows preserve capture addresses; unused graph-bucket slots are reset to `-1`.
+
+Before service trials, compare every candidate slot against the pinned host's
+actual native NPU block-table kernel, including mixed active/uncompressed rows,
+row reordering, unequal query counts, multiple expanded physical pages, padding
+and speculative rollback. Synthetic CPU/NPU comparisons establish integer
+metadata equivalence only. A live FULL_AND_PIECEWISE/MTP2 smoke is still required.
+Freeze the flag and a separate source snapshot for both arms; preserve earlier
+candidate series even if negative. Do not combine different implementations'
+OFF/ON measurements into a paired comparison.

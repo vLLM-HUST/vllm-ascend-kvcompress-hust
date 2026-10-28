@@ -124,6 +124,8 @@ class AscendKVCompressionProvider:
         self._metadata_tensor_cache: dict[
             str, tuple[tuple[int, ...], torch.Tensor]
         ] = {}
+        self._batched_slot_storage: torch.Tensor | None = None
+        self._batched_seq_storage: torch.Tensor | None = None
         self._physical_lengths_applied = False
         self._query_step_output: Any | None = None
         self._query_seen_layers: set[int] = set()
@@ -261,12 +263,28 @@ class AscendKVCompressionProvider:
         self._physical_positions = torch.empty(
             runner.max_num_tokens, dtype=torch.int64, device=runner.device
         )
-        if self.requires_per_layer_physical_state:
+        if (
+            self.requires_per_layer_physical_state
+            and os.environ.get("VLLM_ASCEND_KVCOMPRESS_BATCHED_METADATA", "0") == "1"
+        ):
+            self._batched_slot_storage = torch.empty(
+                (len(self.layer_caches), runner.max_num_tokens),
+                dtype=torch.int64,
+                device=runner.device,
+            )
+            self._batched_seq_storage = torch.empty(
+                (len(self.layer_caches), runner.seq_lens.numel()),
+                dtype=runner.seq_lens.dtype,
+                device=runner.device,
+            )
+            self._per_layer_slot_buffers = {
+                cache.name: self._batched_slot_storage[index]
+                for index, cache in enumerate(self.layer_caches)
+            }
+        elif self.requires_per_layer_physical_state:
             self._per_layer_slot_buffers = {
                 cache.name: torch.empty(
-                    runner.max_num_tokens,
-                    dtype=torch.int64,
-                    device=runner.device,
+                    runner.max_num_tokens, dtype=torch.int64, device=runner.device
                 )
                 for cache in self.layer_caches
             }
@@ -770,6 +788,152 @@ class AscendKVCompressionProvider:
         self._metadata_tensor_cache[key] = values, tensor
         return tensor
 
+    def _batched_per_layer_metadata(
+        self,
+        metadata: dict,
+        common: Any,
+        table: Any,
+        request_ids: list[str],
+        global_offsets: tuple[int, ...],
+        num_tokens: int,
+        num_reqs: int,
+    ) -> Any:
+        """Batch integer metadata for the validated single-CP expanded table.
+
+        The persistent row views are the same slot addresses captured by FULL
+        graphs. Preserve the native path for other layouts or metadata shapes.
+        No K/V, query, attention score, or method-selection arithmetic changes.
+        """
+        slots = self._batched_slot_storage
+        lengths = self._batched_seq_storage
+        blocks = getattr(getattr(table, "block_table", None), "gpu", None)
+        block_size = getattr(table, "block_size", 0)
+        if (
+            slots is None
+            or lengths is None
+            or getattr(table, "dcp_world_size", None) != 1
+            or getattr(table, "cp_kv_cache_interleave_size", 1) != 1
+            or not isinstance(blocks, torch.Tensor)
+            or blocks.ndim != 2
+            or not blocks.is_contiguous()
+            or not isinstance(block_size, int)
+            or block_size <= 0
+            or blocks.dtype not in (torch.int32, torch.int64)
+            or getattr(table, "logical_block_size", None) != block_size
+            or getattr(table, "physical_block_size", 0)
+            != block_size * getattr(table, "blocks_per_phys_block", 0)
+        ):
+            return None
+        bases = [metadata.get(layer.name) for layer in self.layer_caches]
+        first = bases[0]
+        for base in bases:
+            if (
+                type(base).__name__ != "AscendMetadata"
+                or type(base).__module__ != "vllm_ascend.attention.attention_v1"
+                or not isinstance(base.seq_lens, torch.Tensor)
+                or base.seq_lens.ndim != 1
+                or base.seq_lens.shape != first.seq_lens.shape
+                or base.seq_lens.data_ptr() != first.seq_lens.data_ptr()
+                or base.seq_lens_list != first.seq_lens_list
+                or base.slot_mapping is None
+            ):
+                return None
+        nseq = first.seq_lens.numel()
+        if (
+            not num_reqs <= nseq <= lengths.shape[1]
+            or num_tokens > slots.shape[1]
+            or lengths.dtype != first.seq_lens.dtype
+            or lengths.device != first.seq_lens.device
+            or blocks.device != slots.device
+            or blocks.shape[0] < num_reqs
+        ):
+            return None
+        runner = self.runner
+        assert runner is not None
+        offsets_by_request = {
+            key: dict(self.active[key].per_layer_physical_num_tokens or ())
+            for key in request_ids
+            if key in self.active
+        }
+        offsets = [
+            tuple(
+                self.active[key].semantic_anchor
+                - offsets_by_request[key].get(
+                    layer.name, self.active[key].physical_anchor
+                )
+                if key in self.active
+                else 0
+                for key in request_ids
+            )
+            for layer in self.layer_caches
+        ]
+        deltas = [
+            [
+                global_value - value
+                for global_value, value in zip(global_offsets, row, strict=True)
+            ]
+            for row in offsets
+        ]
+        layers = len(bases)
+        correction = self._metadata_correction_tensor(
+            "batch:deltas",
+            tuple(value for row in deltas for value in row + [0] * (nseq - num_reqs)),
+            first.seq_lens,
+        ).reshape(layers, nseq)
+        lengths[:, :nseq].copy_(first.seq_lens.unsqueeze(0) + correction)
+        slots[:, num_tokens:].fill_(-1)
+        if not any(any(row) for row in offsets):
+            slots[:, :num_tokens].copy_(
+                table.slot_mapping.gpu[:num_tokens].unsqueeze(0)
+            )
+        else:
+            positions = runner.positions[:num_tokens]
+            req_indices = runner.req_indices.gpu[:num_tokens].to(torch.long)
+            offset_tensor = self._metadata_correction_tensor(
+                "batch:offsets",
+                tuple(value for row in offsets for value in row),
+                positions,
+            ).reshape(layers, num_reqs)
+            physical = positions.unsqueeze(0) - offset_tensor.index_select(
+                1, req_indices
+            )
+            indices = (
+                physical.div(block_size, rounding_mode="floor")
+                + req_indices.unsqueeze(0) * blocks.shape[1]
+            )
+            ids = blocks.view(-1).index_select(0, indices.reshape(-1).to(torch.long))
+            values = ids.reshape(layers, num_tokens) * block_size + physical.remainder(
+                block_size
+            )
+            slots[:, :num_tokens].copy_(values)
+        speculative = None
+        for index, (layer, base) in enumerate(
+            zip(self.layer_caches, bases, strict=True)
+        ):
+            seq_list = list(base.seq_lens_list)
+            for row, delta in enumerate(deltas[index]):
+                seq_list[row] += delta
+            metadata[layer.name] = replace(
+                base,
+                seq_lens=lengths[index, :nseq],
+                seq_lens_cpu=lengths[index, :nseq],
+                seq_lens_list=seq_list,
+                slot_mapping=slots[index, :num_tokens],
+            )
+            if layer is self.speculative_cache_layer:
+                speculative = index
+        if self.speculative_cache_layer is not None:
+            if speculative is None or common is None:
+                raise RuntimeError("MTP2 batched attention metadata is incomplete")
+            common = self._speculative_common_metadata(
+                common,
+                deltas[speculative],
+                offsets[speculative],
+                slots[speculative, :num_tokens],
+                num_reqs,
+            )
+        return metadata, common
+
     def per_layer_attention_metadata(
         self, result: Any, num_tokens: int, num_reqs: int
     ) -> Any:
@@ -833,6 +997,12 @@ class AscendKVCompressionProvider:
         global_offsets = tuple(
             int(value) for value in self._request_offsets_cpu[:num_reqs]
         )
+        batched = self._batched_per_layer_metadata(
+            metadata, common, table, request_ids, global_offsets, num_tokens, num_reqs
+        )
+        if batched is not None:
+            self._per_layer_metadata_seen = True
+            return batched
         original_slots = table.slot_mapping.gpu[:num_tokens].clone()
         speculative_view: (
             tuple[list[int], tuple[int, ...], torch.Tensor, torch.Tensor] | None
