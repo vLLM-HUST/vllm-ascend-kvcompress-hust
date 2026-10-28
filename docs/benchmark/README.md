@@ -13,6 +13,7 @@ results from different cohorts as if they were one pair.
 | Protocol                                                 | Scope                                                                      |
 | -------------------------------------------------------- | -------------------------------------------------------------------------- |
 | [PyramidKV metadata and net cost](pyramidkv-net-cost.md) | Experimental 32K BF16/TP2 compression OFF/ON and host metadata diagnostics |
+| [PyramidKV fixed-budget memory pressure](pyramidkv-memory-pressure.md) | Separate 2 GiB KV/worker OFF/ON service experiment under a fixed budget |
 | [Frontier SWE and AgentX](frontier-benchmarking.md)      | Qwen3.5-35B-A3B BF16, TP=2, Ascend 910B2 service comparisons               |
 
 Superseded procedures belong in the [benchmark archive](../archive/benchmark/).

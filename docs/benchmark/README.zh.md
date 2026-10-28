@@ -10,6 +10,7 @@
 | 规程                                                  | 适用范围                                            |
 | ----------------------------------------------------- | --------------------------------------------------- |
 | [PyramidKV 元数据与净成本](pyramidkv-net-cost.zh.md)  | 32K BF16/TP2 实验配置的压缩 OFF/ON 与宿主元数据诊断 |
+| [PyramidKV 固定预算内存压力](pyramidkv-memory-pressure.zh.md) | 独立的每 worker 2 GiB KV 预算 OFF/ON 服务对照 |
 | [Frontier SWE 与 AgentX](frontier-benchmarking.zh.md) | Qwen3.5-35B-A3B BF16、TP=2、Ascend 910B2 服务对照   |
 
 退役流程放在[测试规程归档](../archive/benchmark/)。
