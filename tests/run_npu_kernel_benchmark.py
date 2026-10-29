@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Manual microbenchmark for Ascend-specific compression kernels."""
+"""手动运行的 Ascend 专用压缩内核微基准。"""
 
 from __future__ import annotations
 
@@ -17,14 +17,13 @@ from vllm_ascend_kvcompress.methods.triattention.cache import (
 from vllm_ascend_kvcompress.methods.triattention.kernels import (
     aggregate_normalized_scores,
     prepare_mean_phase_coefficients,
-    score_paged_keys_mean,
     score_paged_keys_mean_precomputed,
-    shift_positions,
 )
 from vllm_ascend_kvcompress.methods.triattention.scoring import score_post_rope_keys
 from vllm_ascend_kvcompress.methods.triattention.stats import (
     DeviceLayerCalibrationStats,
 )
+from vllm_ascend_kvcompress.runtime.coordinates import shift_positions
 
 
 def elapsed_ms(function, warmup: int, iterations: int) -> float:
@@ -138,29 +137,10 @@ def main() -> None:
             aggregation="mean",
         )
 
-    def kernel_score() -> None:
-        score_paged_keys_mean(
-            k_cache,
-            source,
-            q_real,
-            q_imag,
-            frequency_scale,
-            extra_coefficient,
-            omega,
-            torch.cos(offsets.unsqueeze(1) * omega).mean(dim=0),
-            torch.sin(offsets.unsqueeze(1) * omega).mean(dim=0),
-            8192,
-            num_tokens,
-            output,
-            block_size,
-            "half",
-        )
-
     generic_score_ms = elapsed_ms(generic_score, 2, 5)
-    kernel_score_ms = elapsed_ms(kernel_score, 2, 5)
 
-    # Qwen2.5-14B has 48 attention layers; the validated default stride of 8
-    # scores six uniformly sampled layers per compression transaction.
+    # Qwen2.5-14B 有 48 个注意力层；已验证的默认采样步长为 8，
+    # 每次压缩事务对其中均匀分布的六层评分。
     sampled_layers = 6
     layer_omega = omega.unsqueeze(0).expand(sampled_layers, -1).contiguous()
     layer_offset_cos = (
@@ -263,8 +243,8 @@ def main() -> None:
         f"speedup={generic_copy_ms / kernel_copy_ms:.2f}x"
     )
     print(
-        f"score generic={generic_score_ms:.3f}ms kernel={kernel_score_ms:.3f}ms "
-        f"speedup={generic_score_ms / kernel_score_ms:.2f}x"
+        f"score generic={generic_score_ms:.3f}ms kernel={precomputed_score_ms:.3f}ms "
+        f"speedup={generic_score_ms / precomputed_score_ms:.2f}x"
     )
     print(
         f"score precomputed={precomputed_score_ms:.3f}ms "

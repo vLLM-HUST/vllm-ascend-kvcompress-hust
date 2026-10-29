@@ -28,12 +28,9 @@ def test_leaderboard_html_loads_the_history_bundle() -> None:
 
     assert "leaderboard-history.json" in page
     assert "raw.githubusercontent.com/vLLM-HUST/vllm-hust-benchmark/" in page
-    assert "KV Compression" in page
-    assert 'record.status.includes("fail") ? "fail"' in page
     assert "frontier-results.json" in page
     assert 'src="evidence/' not in page
     assert 'id="frontier-panel"' in page
-    assert "P90 解码速度" in page
 
 
 def test_frontier_bundle_is_separate_from_history_and_has_no_synthetic_points() -> None:

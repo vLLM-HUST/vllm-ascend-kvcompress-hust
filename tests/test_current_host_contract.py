@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Contract checks against the installed upstream-aligned host packages."""
+"""针对已安装且与上游对齐的宿主包检查接口契约。"""
 
 from __future__ import annotations
 
@@ -56,7 +56,6 @@ def test_ascend_v1_worker_seams_match_current_host() -> None:
         "positions",
     )
     assert _parameter_names(BlockTable.add_row) == ("self", "block_ids", "row_idx")
-    assert hasattr(MultiGroupBlockTable, "block_tables") is False
     assert _parameter_names(MultiGroupBlockTable.add_row) == (
         "self",
         "block_ids",
@@ -77,7 +76,7 @@ def test_grouped_topk_router_scaling_compatibility() -> None:
         get_routing_method_type,
     )
 
-    from vllm_ascend_kvcompress.host_compat import install_grouped_topk_router_compat
+    from vllm_ascend_kvcompress.host.compat import install_grouped_topk_router_compat
 
     if "routed_scaling_factor" in _parameter_names(get_routing_method_type):
         assert install_grouped_topk_router_compat() is False

@@ -5,29 +5,42 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from runtime_fakes import FakeBackend, host_config
 from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
     KVCacheGroupSpec,
     MambaSpec,
 )
 
-import vllm_ascend_kvcompress.stateful as stateful_module
-from vllm_ascend_kvcompress.config import ProviderSelection
-from vllm_ascend_kvcompress.methods.base import MethodRuntimeSpec
-from vllm_ascend_kvcompress.stateful import (
+from vllm_ascend_kvcompress.methods.backend import CompressionBackend
+from vllm_ascend_kvcompress.methods.base import MethodRuntimeSpec, ModelShape
+from vllm_ascend_kvcompress.methods.triattention.backend import TriAttentionBackend
+from vllm_ascend_kvcompress.runtime.scheduler import (
+    _DEFERRED_RELEASES_ATTRIBUTE,
     _GROUP_LENGTH_STATE_ATTRIBUTE,
     _PREFIX_ADMISSION_STATE_ATTRIBUTE,
-    SchedulerActiveCompression,
     SchedulerCompressionState,
     SchedulerDeferredRelease,
     _install_coordinator_hooks,
     _install_manager_hooks,
 )
-from vllm_ascend_kvcompress.transaction import PLAN_ATTRIBUTE, CompressionPlan
+from vllm_ascend_kvcompress.runtime.transaction import (
+    PLAN_ATTRIBUTE,
+    CompressionAnchor,
+    CompressionPlan,
+)
 
 
-def _selection() -> ProviderSelection:
-    return ProviderSelection.from_mapping(
+def _backend(mapping):
+    return TriAttentionBackend(
+        mapping["method_config"],
+        host_config(),
+        ModelShape("qwen2", 1, 1, 1, 4, 10000, False),
+    )
+
+
+def _selection() -> CompressionBackend:
+    return _backend(
         {
             "method": "triattention",
             "method_config": {
@@ -43,15 +56,12 @@ def _selection() -> ProviderSelection:
 def _scheduler(
     *,
     scheduler_module="vllm.v1.core.sched.scheduler",
-    balance=False,
     block_size=128,
     hybrid_model_type=None,
     attention_block_size=None,
     prefix_caching=False,
-    chunked_prefill=False,
     async_scheduling=False,
     mamba_cache_mode="none",
-    speculative=False,
     max_concurrent_batches=None,
 ):
     if async_scheduling and scheduler_module == "vllm.v1.core.sched.scheduler":
@@ -72,13 +82,10 @@ def _scheduler(
             is_hybrid=hybrid_model_type is not None,
             hf_text_config=SimpleNamespace(model_type=hybrid_model_type),
         ),
-        speculative_config=SimpleNamespace(num_speculative_tokens=2)
-        if speculative
-        else None,
+        speculative_config=None,
         kv_transfer_config=None,
         scheduler_config=SimpleNamespace(
             async_scheduling=async_scheduling,
-            enable_chunked_prefill=chunked_prefill,
         ),
         parallel_config=parallel,
     )
@@ -122,6 +129,8 @@ def _scheduler(
             SimpleNamespace(block_size=32768, req_to_blocks={}, num_cached_block={})
         )
     freed = []
+    # 目的页号从 50 起连续生成，与请求现有源页分离。
+    # freed 只记录归还顺序，便于核对确认前不释放、取消时归还预留块等行为。
     next_block_id = [50]
 
     def get_new_blocks(count):
@@ -167,7 +176,7 @@ def _scheduler(
         requests={"r": request},
         finished_req_ids=set(),
         reset_preempted_req_ids=set(),
-        _balance_enabled=balance,
+        _balance_enabled=False,
     )
     return scheduler, single_manager, freed
 
@@ -190,7 +199,7 @@ def test_qwen35_scheduler_separates_alignment_from_attention_pages() -> None:
         hybrid_model_type="qwen3_5_moe_text",
         attention_block_size=2048,
     )
-    selection = ProviderSelection.from_mapping(
+    selection = _backend(
         {
             "method": "triattention",
             "method_config": {
@@ -203,59 +212,33 @@ def test_qwen35_scheduler_separates_alignment_from_attention_pages() -> None:
     )
 
     state = SchedulerCompressionState(scheduler, selection)
+    # 调度粒度为 32768，但 4096-token 的目标只需两个 2048-token 注意力页。
+    scheduler.requests["r"].num_computed_tokens = 6144
+    scheduler.requests["r"].num_prompt_tokens = 6144
+    output = SimpleNamespace(
+        num_scheduled_tokens={"r": 44},
+        finished_req_ids=set(),
+        preempted_req_ids=set(),
+    )
+    state.after_schedule(output)
+    assert len(getattr(output, PLAN_ATTRIBUTE)["r"].destination_block_ids) == 2
 
-    assert state.scheduler_alignment_size == 32768
-    assert state.scheduler_block_size == 2048
 
-
-def test_scheduler_uses_registered_method_runtime_spec(monkeypatch) -> None:
+def test_scheduler_reads_static_backend_spec_without_creating_method(monkeypatch):
     scheduler, _, _ = _scheduler()
-    seen = []
+    backend = FakeBackend(scheduler.vllm_config, MethodRuntimeSpec(256, 128, 128, 32))
     monkeypatch.setattr(
-        stateful_module, "model_shape_from_config", lambda config: "shape"
+        backend, "create_method", lambda: pytest.fail("worker creation")
     )
 
-    def create(name, options, config, shape):
-        seen.append((name, options, config, shape))
-        return SimpleNamespace(
-            name=name,
-            runtime_spec=MethodRuntimeSpec(True, 256, 128, 128, 32),
-        )
+    state = SchedulerCompressionState(scheduler, backend)
 
-    monkeypatch.setattr(stateful_module, "create_method", create)
-    selection = ProviderSelection.from_mapping(
-        {"method": "external", "method_config": {"option": 1}}
-    )
-    state = SchedulerCompressionState(scheduler, selection)
-
-    assert seen == [("external", {"option": 1}, scheduler.vllm_config, "shape")]
     assert (
         state.threshold,
         state.budget,
         state.required_recompute_tokens,
         state.min_output_tokens,
     ) == (256, 128, 128, 32)
-
-
-def test_scheduler_rejects_query_window_larger_than_recompute_window(
-    monkeypatch,
-) -> None:
-    scheduler, _, _ = _scheduler(prefix_caching=True)
-    monkeypatch.setattr(
-        stateful_module, "model_shape_from_config", lambda config: "shape"
-    )
-    monkeypatch.setattr(
-        stateful_module,
-        "create_method",
-        lambda *args: SimpleNamespace(
-            name="external",
-            runtime_spec=MethodRuntimeSpec(True, 256, 8, 128),
-            query_window_tokens=16,
-        ),
-    )
-    selection = ProviderSelection.from_mapping({"method": "external"})
-    with pytest.raises(ValueError, match="no greater than required_recompute_tokens"):
-        SchedulerCompressionState(scheduler, selection)
 
 
 @pytest.mark.parametrize("missing", ["manager", "coordinator"])
@@ -306,21 +289,6 @@ def test_prefix_cache_hit_cap_reserves_the_method_query_suffix() -> None:
     assert state.prefix_cache_hit_cap(request) is None
 
 
-def test_prefix_cache_hit_cap_is_stable_with_chunked_prefill() -> None:
-    for chunked_prefill in (False, True):
-        scheduler, _, _ = _scheduler(
-            prefix_caching=True,
-            chunked_prefill=chunked_prefill,
-        )
-        state = SchedulerCompressionState(scheduler, _selection())
-        request = scheduler.requests["r"]
-        request.num_prompt_tokens = request.num_tokens = 648
-        state.threshold = 256
-        state.required_recompute_tokens = 8
-
-        assert state.prefix_cache_hit_cap(request) == 640
-
-
 def test_manager_applies_a_scoped_prefix_cache_hit_cap() -> None:
     class Coordinator:
         def __init__(self) -> None:
@@ -362,13 +330,13 @@ def test_manager_applies_a_scoped_prefix_cache_hit_cap() -> None:
     assert manager.emit_flags == [False]
     assert manager.coordinator.lookup_limits == [(["hash"], 640)]
 
-    # The ContextVar cap is reset after one request and does not leak into an
-    # unbound manager using the same patched coordinator class.
+    # 单个请求结束后会重置 ContextVar 上限，
+    # 不会影响使用同一已打补丁协调器类的未绑定管理器。
     unbound = Manager()
     assert unbound.get_computed_blocks(request) == ((), 647, 0)
     assert unbound.coordinator.lookup_limits == [(["hash"], 647)]
 
-    # With APC disabled, the host's normal early return remains untouched.
+    # 关闭 APC 时，保留宿主原有的提前返回行为。
     disabled = Manager(prefix_caching=False)
     setattr(disabled, _PREFIX_ADMISSION_STATE_ATTRIBUTE, state)
     assert disabled.get_computed_blocks(request) == ((), 0, 0)
@@ -381,7 +349,7 @@ def test_qwen35_scheduler_rejects_wrong_group_lcm_alignment() -> None:
         hybrid_model_type="qwen3_5_moe_text",
         attention_block_size=2048,
     )
-    selection = ProviderSelection.from_mapping(
+    selection = _backend(
         {
             "method": "triattention",
             "method_config": {
@@ -421,7 +389,7 @@ def test_scheduler_commits_private_blocks_only_after_output_ack() -> None:
 
     assert [block.block_id for block in manager.req_to_blocks["r"]] == [50]
     assert [block.block_id for block in freed] == [5, 4, 3]
-    assert state.active["r"] == SchedulerActiveCompression(300, 128)
+    assert state.active["r"] == CompressionAnchor(300, 128)
 
 
 def test_prefix_cache_keeps_original_blocks_and_never_hashes_private_kv() -> None:
@@ -527,7 +495,7 @@ def test_hybrid_cache_groups_keep_distinct_length_spaces() -> None:
         manager.remove_skipped_blocks = record(group, "skip")
     state = SchedulerCompressionState(
         scheduler,
-        ProviderSelection.from_mapping(
+        _backend(
             {
                 "method": "triattention",
                 "method_config": {
@@ -539,7 +507,7 @@ def test_hybrid_cache_groups_keep_distinct_length_spaces() -> None:
             }
         ),
     )
-    state.active["r"] = SchedulerActiveCompression(300, 128)
+    state.active["r"] = CompressionAnchor(300, 128)
     for manager in (attention, mamba):
         manager.get_num_blocks_to_allocate("r", 301, [], 300, 300, 301, prefill_end=300)
         manager.allocate_new_blocks("r", 301, 301)
@@ -572,15 +540,16 @@ def test_manager_free_releases_async_tail_on_abort() -> None:
     manager = Manager()
     request = SimpleNamespace(request_id="r")
     tail = (SimpleNamespace(block_id=5), SimpleNamespace(block_id=4))
-    manager._ascend_kvcompress_deferred_releases_v3 = {
+    releases = {
         "r": [
             SchedulerDeferredRelease(request_id="r", blocks=tail, remaining_outputs=1)
         ]
     }
+    setattr(manager, _DEFERRED_RELEASES_ATTRIBUTE, releases)
 
     assert manager.free(request) == "r"
     assert [block.block_id for block in freed] == [5, 4]
-    assert not manager._ascend_kvcompress_deferred_releases_v3
+    assert not releases
 
 
 def test_hybrid_coordinator_translates_only_full_attention_lengths() -> None:
@@ -666,7 +635,7 @@ def test_hybrid_coordinator_translates_only_full_attention_lengths() -> None:
         _GROUP_LENGTH_STATE_ATTRIBUTE,
         SimpleNamespace(
             attention_group_index=0,
-            active={"r": SchedulerActiveCompression(300, 128)},
+            active={"r": CompressionAnchor(300, 128)},
         ),
     )
 
@@ -694,8 +663,8 @@ def test_hybrid_coordinator_translates_only_full_attention_lengths() -> None:
     assert mamba.allocate_calls == [("r", 305, 305)]
     assert attention.remove_calls == [("r", 128, 300)]
     assert mamba.remove_calls == [("r", 300, 300)]
-    # The unmodified host coordinator handles replay-boundary-aware caching;
-    # the plugin's attention-manager hook suppresses only private KV hashes.
+    # 宿主原有协调器负责考虑回放边界的缓存登记；
+    # 插件的注意力管理器钩子仅阻止登记私有 KV 哈希。
 
 
 def test_hybrid_coordinator_supports_fixed_host_count_signature() -> None:
@@ -752,7 +721,7 @@ def test_hybrid_coordinator_supports_fixed_host_count_signature() -> None:
         _GROUP_LENGTH_STATE_ATTRIBUTE,
         SimpleNamespace(
             attention_group_index=0,
-            active={"r": SchedulerActiveCompression(300, 128)},
+            active={"r": CompressionAnchor(300, 128)},
         ),
     )
 
@@ -872,7 +841,7 @@ def test_finished_request_discards_pending_state() -> None:
 
 def test_short_decode_request_is_not_armed_for_compression() -> None:
     scheduler, _, _ = _scheduler()
-    selection = ProviderSelection.from_mapping(
+    selection = _backend(
         {
             "method": "triattention",
             "method_config": {
@@ -901,7 +870,7 @@ def test_short_decode_request_is_not_armed_for_compression() -> None:
 def test_preempted_request_discards_scheduler_state() -> None:
     scheduler, _, _ = _scheduler()
     state = SchedulerCompressionState(scheduler, _selection())
-    state.active["r"] = SchedulerActiveCompression(300, 128)
+    state.active["r"] = CompressionAnchor(300, 128)
 
     state.after_schedule(
         SimpleNamespace(
@@ -914,23 +883,12 @@ def test_preempted_request_discards_scheduler_state() -> None:
     assert not state.active
 
 
-def test_current_ascend_balance_scheduler_wrapper_is_supported_when_inert() -> None:
+def test_balance_scheduler_requires_disabled_balancing() -> None:
     scheduler, _, _ = _scheduler(
         scheduler_module="vllm_ascend.patch.platform.patch_balance_schedule"
     )
 
     SchedulerCompressionState(scheduler, _selection())
-
-
-def test_active_ascend_balance_scheduling_is_rejected() -> None:
-    scheduler, _, _ = _scheduler(
-        scheduler_module="vllm_ascend.patch.platform.patch_balance_schedule",
-        balance=True,
-    )
-
-    try:
+    scheduler._balance_enabled = True
+    with pytest.raises(RuntimeError, match="balance scheduling must be disabled"):
         SchedulerCompressionState(scheduler, _selection())
-    except RuntimeError as error:
-        assert "balance scheduling must be disabled" in str(error)
-    else:
-        raise AssertionError("active balance scheduling should be rejected")

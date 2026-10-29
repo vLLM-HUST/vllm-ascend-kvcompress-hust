@@ -1,11 +1,11 @@
-"""CPU contract checks for the plugin-owned Qwen GDN output operator."""
+"""在 CPU 上验证插件自有 Qwen GDN 输出算子的接口契约。"""
 
 from __future__ import annotations
 
 import pytest
 import torch
 
-from vllm_ascend_kvcompress.qwen_gdn_ops import (
+from vllm_ascend_kvcompress.host.qwen_gdn_ops import (
     _segments,
     _validate,
     causal_conv1d_spec_reference,

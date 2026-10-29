@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import pytest
 import torch
 
 from vllm_ascend_kvcompress.methods.triattention.scoring import (
@@ -26,6 +27,7 @@ def _slow_reference(
     stats: DeviceLayerCalibrationStats,
     round_start: int,
     offsets: torch.Tensor,
+    aggregation: str,
 ) -> torch.Tensor:
     key_real = keys[..., :2].permute(1, 0, 2).unsqueeze(1)
     key_imag = keys[..., 2:].permute(1, 0, 2).unsqueeze(1)
@@ -41,7 +43,8 @@ def _slow_reference(
                 dim=-1
             )
         )
-    position = torch.stack(candidates).mean(dim=0)
+    stacked = torch.stack(candidates)
+    position = stacked.mean(dim=0) if aggregation == "mean" else stacked.amax(dim=0)
     key_abs = torch.sqrt(key_real.square() + key_imag.square())
     q_mean_abs = torch.sqrt(
         stats.q_mean_real.square() + stats.q_mean_imag.square() + 1e-8
@@ -50,7 +53,8 @@ def _slow_reference(
     return position + extra
 
 
-def test_vectorized_mean_matches_reference() -> None:
+@pytest.mark.parametrize("aggregation", ["mean", "max"])
+def test_vectorized_scores_match_reference(aggregation) -> None:
     keys = torch.tensor(
         [
             [[1.0, 2.0, 3.0, 4.0]],
@@ -64,22 +68,10 @@ def test_vectorized_mean_matches_reference() -> None:
         _stats(),
         round_start=3,
         offsets=offsets,
-        aggregation="mean",
+        aggregation=aggregation,
     )
-    expected = _slow_reference(keys, _stats(), 3, offsets)
+    expected = _slow_reference(keys, _stats(), 3, offsets, aggregation)
     torch.testing.assert_close(actual, expected)
-
-
-def test_max_aggregation_shape() -> None:
-    keys = torch.randn(7, 1, 4)
-    scores = score_post_rope_keys(
-        keys,
-        _stats(),
-        round_start=7,
-        offsets=torch.tensor([1.0, 2.0]),
-        aggregation="max",
-    )
-    assert scores.shape == (1, 2, 7)
 
 
 def test_post_rope_keys_use_one_query_side_scaling_factor() -> None:
@@ -91,8 +83,8 @@ def test_post_rope_keys_use_one_query_side_scaling_factor() -> None:
         omega=torch.zeros(1),
         rope_style="half",
     )
-    # The post-RoPE key already carries one scale factor of two. The scorer
-    # supplies the query-side factor of two, for a final dot product of four.
+    # 经过 RoPE 的 key 已包含一个值为 2 的缩放因子。
+    # 评分器补上 query 侧值为 2 的因子，使最终点积缩放为 4 倍。
     keys = torch.tensor([[[2.0, 0.0]]])
     scores = score_post_rope_keys(
         keys,

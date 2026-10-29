@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Explicit compatibility shims for validated host/runtime ABI mismatches."""
+"""针对已确认的宿主与运行时 ABI 差异提供显式兼容层。"""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ from typing import Any, NamedTuple
 
 from vllm.logger import logger
 
+# 本文件处理宿主版本/算子 ABI，不计算 TriAttention 分数或选择 token。
+# 大部分安装器按符号/签名检测后幂等安装；GDN list bridge 另需显式环境开关。
 QWEN_GDN_LIST_COMPAT_ENV = "VLLM_ASCEND_KVCOMPRESS_QWEN_GDN_LIST_COMPAT"
 _GDN_OP_NAME = "npu_causal_conv1d_custom"
 _GDN_PATCH_MARKER = "_ascend_kvcompress_qwen_gdn_list_compat_v1"
@@ -22,28 +24,32 @@ _GDN_METADATA_ARGUMENTS = (
     (8, "num_accepted_tokens_opt"),
 )
 _MAX_METADATA_CACHE_ENTRIES = 64
+# 仅缓存旧 int[] ABI 的 tensor→Python list 转换；与 KV 稀疏索引无关。
+# 键按对象身份，值同时检查弱引用及 version；execute_model 每步清空，防止跨步陈旧。
+# 最大 64 项限制引用数量，list 化仍可能触发设备同步。
 _gdn_metadata_cache: OrderedDict[
     int, tuple[weakref.ReferenceType[Any], int | None, list[int]]
 ] = OrderedDict()
 
 
 def install_grouped_topk_router_compat() -> bool:
-    """Preserve the Ascend router's scaling check on newer vLLM hosts.
+    """在新版 vLLM 宿主上保留 Ascend 路由器的缩放检查。
 
-    The Ascend router still passes ``routed_scaling_factor`` to vLLM's
-    classifier. Newer vLLM removed that argument, but the old classifier
-    returned ``Unspecified`` for a biased, ungrouped sigmoid router with a
-    non-unit scale. Keep that behavior without changing the host itself.
+    Ascend 路由器仍向 vLLM 分类器传入 routed_scaling_factor，
+    但新版 vLLM 已删除该参数。旧分类器对带偏置、未分组、缩放非 1
+    的 sigmoid 路由返回 Unspecified。这里保留该行为，不修改宿主源码。
     """
     from vllm.model_executor.layers.fused_moe.config import (
         RoutingMethodType,
         get_routing_method_type,
     )
 
-    # The supported legacy core already handles scaling, and its Ascend
-    # companion predates the router package. Check the core ABI before
-    # importing that newer-only module. Import failures on a core that does
-    # need the shim must still propagate.
+    # 受支持的旧版核心已处理缩放，配套 Ascend 版本尚无 router 包。
+    # 因此先检查核心 ABI，再导入仅新版提供的模块。
+    # 若核心确实需要此兼容层，
+    # 则导入失败仍须向上传播。
+    # 先看核心分类函数是否已支持旧参数；支持时无需加载较新的 Ascend router 包。
+    # 需要桥接时只补参数语义，不重新实现 MoE 路由选择。
     if "routed_scaling_factor" in inspect.signature(get_routing_method_type).parameters:
         return False
 
@@ -85,81 +91,19 @@ def install_grouped_topk_router_compat() -> bool:
     return True
 
 
-def install_layer_aware_fia_graph_replay(vllm_config: Any) -> bool:
-    """Enable the host's existing layer-keyed FULL graph update path.
-
-    The validated Ascend host already records an attention layer name in each
-    captured FIA task and can rebind that task from the current per-layer
-    metadata.  It enables the path only for built-in mixed-attention model
-    families.  External compression methods with unequal physical lengths
-    need the same method-neutral mechanism, so opt into it only after checking
-    that every expected host seam is present.
-    """
-    mode = getattr(vllm_config.compilation_config, "cudagraph_mode", None)
-    mode_name = getattr(mode, "name", str(mode))
-    if mode_name == "NONE":
-        return False
-    if mode_name != "FULL_AND_PIECEWISE":
-        raise RuntimeError(
-            "per-layer KV compression requires FULL_AND_PIECEWISE graph mode"
-        )
-
-    from vllm_ascend.attention import attention_v1
-    from vllm_ascend.attention import utils as attention_utils
-
-    impl = attention_v1.AscendAttentionBackendImpl
-    marker = "_ascend_kvcompress_layer_aware_graph_v1"
-    if getattr(impl, marker, False):
-        return False
-    required_impl_seams = (
-        "_graph_metadata_layer_name",
-        "update_graph_params",
-        "full_graph_fia",
-    )
-    if any(not callable(getattr(impl, name, None)) for name in required_impl_seams):
-        raise RuntimeError(
-            "Ascend attention backend lacks layer-aware FIA graph replay seams"
-        )
-    original = getattr(attention_utils, "needs_layer_aware_fia_graph_replay", None)
-    if not callable(original):
-        raise RuntimeError("Ascend layer-aware graph capability probe is unavailable")
-    if attention_v1.needs_layer_aware_fia_graph_replay is not original:
-        raise RuntimeError("Ascend layer-aware graph capability probe changed")
-
-    # Validate semantics rather than enabling a similarly named older hook.
-    update_source = inspect.getsource(impl.update_graph_params)
-    if not all(
-        token in update_source
-        for token in ("layer_name", "metadata_key", "attn_metadata")
-    ):
-        raise RuntimeError(
-            "Ascend FIA graph updater cannot consume layer-distinct metadata"
-        )
-
-    def layer_aware_replay_enabled() -> bool:
-        return True
-
-    attention_utils.needs_layer_aware_fia_graph_replay = layer_aware_replay_enabled
-    attention_v1.needs_layer_aware_fia_graph_replay = layer_aware_replay_enabled
-    setattr(impl, marker, True)
-    logger.warning(
-        "Enabled layer-aware FIA graph replay for external per-layer KV compression"
-    )
-    return True
-
-
 @contextmanager
 def qwen_mtp2_cache_binding_bridge():
-    """Bind Qwen3.5's MTP layer alongside target layer zero, only at startup.
+    """仅在启动时，将 Qwen3.5 的 MTP 层与目标模型第零层一并绑定。
 
-    The current generic binder rejects duplicate numeric layer indices before
-    binding, although the runner's KV list is iterated as a collection rather
-    than indexed by that number. Retain the host's actual per-layer binding and
-    ordering. Fail closed for every collision except the exact Qwen3.5 pair.
+    当前通用绑定器在绑定前拒绝重复的数字层索引，但 runner 的 KV 列表
+    实际按集合遍历，并不按该数字索引访问。保留宿主原有的逐层绑定
+    与顺序，除 Qwen3.5 这组确切的索引冲突外，其余冲突均报错。
     """
     from vllm.model_executor.models.utils import extract_layer_index
     from vllm.v1.worker import utils as worker_utils
 
+    # 这个桥只临时替换启动时 binder；contextmanager 的 finally 恢复原函数。
+    # 持久类补丁和临时函数桥具有不同作用域，排查模型加载问题时应分别看待。
     original = worker_utils.bind_kv_cache
 
     def bind_kv_cache(
@@ -177,6 +121,8 @@ def qwen_mtp2_cache_binding_bridge():
         collisions = {
             index: names for index, names in index2names.items() if len(names) > 1
         }
+        # 正常层号布局直接委托原 binder；只有精确的目标层零/MTP 层零冲突才走桥。
+        # 保留宿主对层对象的真实绑定，修正的是 runner 列表构造阶段的重复层号限制。
         if not collisions:
             return original(
                 kv_caches,
@@ -203,10 +149,10 @@ def qwen_mtp2_cache_binding_bridge():
             runner_kv_caches.extend(kv_caches[name] for name in index2names[index])
         bind_to_layers = getattr(worker_utils, "bind_kv_cache_to_layers", None)
         if bind_to_layers is None:
-            # vLLM 0.23 keeps the layer-binding loop inside ``bind_kv_cache``;
-            # later hosts extracted it as a helper.  The collision bridge has
-            # already performed only the runner-list half, so reproduce the
-            # unchanged layer assignment on the older ABI.
+            # vLLM 0.23 将逐层绑定循环放在 bind_kv_cache 内部，
+            # 后续宿主才将其提取为辅助函数。索引冲突兼容层
+            # 已完成 runner 列表的绑定部分，
+            # 因此在旧 ABI 上补做原有的逐层赋值。
             if kv_cache_groups is not None:
                 raise RuntimeError(
                     "the legacy KV binder cannot accept explicit cache groups"
@@ -235,11 +181,10 @@ class _RoutedExpertsTensors(NamedTuple):
 
 
 def install_removed_routed_experts_types(outputs_module: Any | None = None) -> bool:
-    """Restore two import-only aliases removed by the newer vLLM host.
+    """恢复新版 vLLM 宿主删除的两个仅用于导入的类型别名。
 
-    Ascend imports these names even when routed-expert output is disabled.
-    The plugin does not enable that optional feature; this only lets the
-    worker module load without modifying either upstream repository.
+    即使关闭路由专家输出，Ascend 也会导入这些名称。插件不启用该功能，
+    这里只保证 worker 模块能够加载，无需修改两个上游仓库。
     """
     if outputs_module is None:
         from vllm.v1 import outputs as outputs_module
@@ -257,15 +202,16 @@ def install_removed_routed_experts_types(outputs_module: Any | None = None) -> b
 
 
 def install_removed_output_routing_field(outputs_module: Any | None = None) -> bool:
-    """Accept Ascend's disabled routed-expert field on a newer vLLM output.
+    """让新版 vLLM 输出类型接受 Ascend 已关闭的路由专家字段。
 
-    Ascend passes ``routed_experts=None`` unconditionally. The current vLLM
-    output removed that constructor argument. Reject non-None values rather
-    than silently discarding an enabled auxiliary output.
+    Ascend 总会传入 routed_experts=None，而当前 vLLM 输出构造器
+    已删除此参数。非 None 值仍须报错，避免静默丢弃已启用的辅助输出。
     """
     if outputs_module is None:
         from vllm.v1 import outputs as outputs_module
 
+    # 部分宿主输出类已移除 routed_experts 参数，但 Ascend 仍传入 None。
+    # 兼容层只接受关闭状态；不能静默吞掉真正启用的辅助路由输出。
     output_cls = outputs_module.ModelRunnerOutput
     marker = "_ascend_kvcompress_routing_field_compat_v1"
     if getattr(output_cls, marker, False):
@@ -291,11 +237,10 @@ def install_removed_output_routing_field(outputs_module: Any | None = None) -> b
 
 
 def install_removed_async_output_routing_field(output_cls: Any | None = None) -> bool:
-    """Accept Ascend's disabled routing field on the async output wrapper.
+    """让异步输出包装器接受 Ascend 已关闭的路由字段。
 
-    The aligned vLLM async class no longer accepts ``routed_experts``. Keep
-    non-None values fail-closed because this plugin cannot transport that
-    auxiliary data through the current host's async output path.
+    配套 vLLM 的异步类不再接受 routed_experts。由于插件无法通过当前
+    宿主异步输出路径传输该辅助数据，因此非 None 值仍须报错。
     """
     if output_cls is None:
         from vllm.v1.worker.gpu_model_runner import AsyncGPUModelRunnerOutput
@@ -324,11 +269,11 @@ def install_removed_async_output_routing_field(output_cls: Any | None = None) ->
 def install_step3p5_fp32_linear_alias(
     step3p5_module: Any | None = None, linear_class: Any | None = None
 ) -> bool:
-    """Supply a removed import used by Ascend's unrelated Step3p5 patch.
+    """补齐 Ascend 的 Step3p5 补丁使用、但宿主已删除的导入名称。
 
-    The old class was a replicated linear initialized with FP32 weights. The
-    current generic class accepts the same explicit ``params_dtype`` used at
-    that call site. This shim does not enable Step3p5 for KV compression.
+    旧类是使用 FP32 权重初始化的复制线性层。当前通用类接受调用点
+    显式传入的同一个 params_dtype 参数。该兼容层不为 KV 压缩启用
+    Step3p5 模型支持。
     """
     if step3p5_module is None:
         from vllm.model_executor.models import step3p5 as step3p5_module
@@ -344,7 +289,7 @@ def install_step3p5_fp32_linear_alias(
 
 
 def install_dcp_length_alias(cp_utils_module: Any | None = None) -> bool:
-    """Restore the optional DCP helper name expected by Ascend's v2 imports."""
+    """恢复 Ascend v2 导入路径期望的可选 DCP 辅助函数名。"""
     if cp_utils_module is None:
         from vllm.v1.worker.gpu import cp_utils as cp_utils_module
     if hasattr(cp_utils_module, "maybe_prepare_dcp_local_seq_lens"):
@@ -381,7 +326,7 @@ def install_dcp_length_alias(cp_utils_module: Any | None = None) -> bool:
 
 
 def install_removed_model_routing_flag(vllm_config: Any) -> bool:
-    """Supply Ascend's old model-level flag only when aux output is disabled."""
+    """仅在辅助输出关闭时补齐 Ascend 旧版模型级标志。"""
     model_config = vllm_config.model_config
     if hasattr(model_config, "enable_return_routed_experts"):
         return False
@@ -394,7 +339,7 @@ def install_removed_model_routing_flag(vllm_config: Any) -> bool:
 
 
 def qwen_gdn_list_compat_enabled() -> bool:
-    """Return whether the operator ABI workaround was explicitly requested."""
+    """返回是否显式启用了算子 ABI 兼容选项。"""
     return os.getenv(QWEN_GDN_LIST_COMPAT_ENV, "").strip().lower() in {
         "1",
         "true",
@@ -404,19 +349,18 @@ def qwen_gdn_list_compat_enabled() -> bool:
 
 
 def clear_qwen_gdn_list_compat_cache() -> None:
-    """Start a new model-execution step with fresh device metadata."""
+    """清除上一步设备元数据，开始新的模型执行步骤。"""
     _gdn_metadata_cache.clear()
 
 
 def install_qwen_gdn_list_compat(
     op_namespace: Any | None = None, *, mtp2_reference_fallback: bool = False
 ) -> bool:
-    """Bridge a legacy ``int[]`` GDN operator ABI without editing the host.
+    """在不修改宿主的前提下桥接旧版 int[] GDN 算子 ABI。
 
-    The current Python host passes device tensors for the four metadata inputs,
-    while an older installed ``vllm_ascend_C`` binary declares those inputs as
-    integer lists.  This opt-in wrapper is installed only for that exact schema.
-    Aligned binaries exposing ``Tensor?`` inputs are left untouched.
+    当前 Python 宿主为四项元数据传入设备张量，但部分已安装的旧版
+    vllm_ascend_C 二进制将其声明为整数列表。此可选包装仅对该确切
+    schema 安装，已对齐并使用 Tensor? 输入的二进制保持原有调用路径。
     """
     if not qwen_gdn_list_compat_enabled():
         return False
@@ -437,6 +381,8 @@ def install_qwen_gdn_list_compat(
         return True
 
     overload = getattr(operation, "default", None)
+    # 同名算子可能有不同 C++ schema，只有旧 int[] 版本需要桥接。
+    # 已经接收 Tensor 元数据的版本保持原路径，不额外做设备到 CPU 的转换。
     schema = str(getattr(overload, "_schema", ""))
     if "Tensor? query_start_loc_opt" in schema:
         logger.info("Qwen GDN custom operator already exposes the Tensor metadata ABI")
@@ -444,11 +390,14 @@ def install_qwen_gdn_list_compat(
     if "int[] query_start_loc_opt" not in schema:
         raise RuntimeError(f"unsupported Qwen GDN custom operator schema: {schema!r}")
 
+    # 旧 C++ schema 明确要求 int[]，因此这里只桥接已识别的旧版本。
+    # None 用空数组表达；二维 cache_indices 按行展平，其余字段必须是一维。
+    # 若张量来自 inference mode 且无 version counter，仍依靠步级清理防止跨步复用。
     def as_int_list(value: Any, name: str) -> Any:
         if value is None:
-            # The legacy schema is non-optional ``int[]``.  Its C++ caller
-            # represents absent optional metadata as an empty ArrayRef, so use
-            # an empty Python list rather than forwarding ``None``.
+            # 旧版 schema 使用非可选的 int[]。C++ 调用方
+            # 以空 ArrayRef 表示缺失的可选元数据，
+            # 因此这里使用空 Python 列表，而非传入 None。
             return []
         if isinstance(value, list):
             return value
@@ -456,11 +405,11 @@ def install_qwen_gdn_list_compat(
             return [int(item) for item in value]
         if not torch.is_tensor(value):
             raise RuntimeError(f"{name} must be a tensor or integer list")
-        # Current hybrid-cache metadata carries the complete per-request
-        # Mamba block table as a 2-D cache_indices tensor.  The legacy C++ ABI
-        # receives the same storage as a flat ArrayRef<int64_t>; preserve that
-        # row-major layout when bridging it to Python's int[].  The remaining
-        # metadata fields are semantically vectors and must stay one-dimensional.
+        # 当前混合缓存元数据以二维 cache_indices 张量保存
+        # 每个请求完整的 Mamba 块表。旧版 C++ ABI
+        # 将同一存储视为展平的 ArrayRef<int64_t>；
+        # 转成 Python int[] 时须保留行优先布局。
+        # 其余元数据字段在语义上是向量，必须保持一维。
         if name == "cache_indices_opt":
             value = value.reshape(-1)
         elif value.ndim != 1:
@@ -473,6 +422,8 @@ def install_qwen_gdn_list_compat(
             if "do not track version counter" not in str(error):
                 raise
             version = None
+        # 对象地址可能复用，张量也可能原地变化；因此同时核对弱引用和版本计数。
+        # 对没有版本计数的 inference tensor，还依赖 execute_model 开头的逐步清空。
         cached = _gdn_metadata_cache.get(identity)
         if cached is not None and cached[0]() is value and cached[1] == version:
             _gdn_metadata_cache.move_to_end(identity)
@@ -497,6 +448,10 @@ def install_qwen_gdn_list_compat(
         accepted = kwargs.get(
             "num_accepted_tokens_opt", args[8] if len(args) > 8 else None
         )
+        # 仅实验 MTP2 的 speculative 卷积进入插件参考实现，
+        # 以处理 accepted-token 滚动状态。
+        # 普通 prefill/未启用回退仍调用原生算子；此分支是模型 ABI 适配，
+        # 不是 KV 选取算法。
         if mtp2_reference_fallback and run_mode == 1 and accepted is not None:
             from .qwen_gdn_ops import causal_conv1d_spec_reference
 
@@ -599,3 +554,23 @@ def install_qwen_gdn_list_compat(
         schema,
     )
     return True
+
+
+# 这部分属于宿主/模型 ABI 准备，不依赖选中的稀疏化算法。
+# Qwen3.5 先加载原生算子注册，再只填补缺失项，最后准备通用路由兼容。
+def prepare_model_load(vllm_config: Any) -> None:
+    """安装宿主与模型 ABI 兼容支持，与算法准备流程分离。"""
+    from importlib import import_module
+
+    from .contracts import supports_mtp2
+
+    install_qwen_gdn_list_compat(mtp2_reference_fallback=supports_mtp2(vllm_config))
+    model_type = str(getattr(vllm_config.model_config.hf_config, "model_type", ""))
+    if model_type.startswith("qwen3_5"):
+        # 优先使用原生注册；JIT 算子仅补齐缺失的符号。
+        import_module("vllm_ascend.vllm_ascend_C")
+        from .qwen_gdn_ops import install_missing_chunk_output_op
+
+        if install_missing_chunk_output_op():
+            logger.info("Using plugin-owned Triton Qwen GDN output operator")
+    install_grouped_topk_router_compat()

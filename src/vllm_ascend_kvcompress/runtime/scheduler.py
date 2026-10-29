@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Scheduler-side state for the upstream-aligned plugin adapter."""
+"""对齐上游接口的插件适配器所使用的调度侧状态。"""
 
 from __future__ import annotations
 
@@ -11,26 +11,29 @@ from typing import Any
 
 from vllm.logger import logger
 
-from .config import ProviderSelection
-from .methods import create_method
-from .methods.triattention.config import TriAttentionConfig
-from .model import model_shape_from_config
-from .provider import (
-    _allowed_scheduler_block_sizes,
-    _find_full_attention_group,
-    _supports_mtp2,
-    _validate_method_runtime_spec,
+from ..core.config import PluginConfig
+from ..host.contracts import (
+    allowed_scheduler_block_sizes,
+    find_full_attention_group,
+    request_max_tokens,
+    supports_mtp2,
 )
-from .transaction import PLAN_ATTRIBUTE, CompressionPlan
+from ..host.model_config import model_shape_from_config
+from ..methods import create_backend
+from ..methods.backend import CompressionBackend
+from .coordinates import blocks_for_tokens
+from .transaction import PLAN_ATTRIBUTE, CompressionAnchor, CompressionPlan
 
-_STATE_ATTRIBUTE = "_ascend_kvcompress_scheduler_state_v3"
-_OFFSETS_ATTRIBUTE = "_ascend_kvcompress_active_offsets_v3"
-_DEFERRED_RELEASES_ATTRIBUTE = "_ascend_kvcompress_deferred_releases_v3"
-_PENDING_ATTRIBUTE = "_ascend_kvcompress_pending_transactions_v3"
-_GROUP_LENGTH_STATE_ATTRIBUTE = "_ascend_kvcompress_group_length_state_v3"
-_PREFIX_ADMISSION_STATE_ATTRIBUTE = "_ascend_kvcompress_prefix_admission_state_v3"
-_PATCH_MARKER = "_ascend_kvcompress_manager_patch_v3"
-_PREFIX_LOOKUP_PATCH_MARKER = "_ascend_kvcompress_prefix_lookup_patch_v3"
+# scheduler 持有块对象与分配器；worker 只收到 transaction.py 的不可变计划。
+# 下面挂到宿主对象上的属性均指向本插件维护的状态，宿主仓库本身无需增加字段。
+_STATE_ATTRIBUTE = "_ascend_kvcompress_scheduler_state"
+_OFFSETS_ATTRIBUTE = "_ascend_kvcompress_active_offsets"
+_DEFERRED_RELEASES_ATTRIBUTE = "_ascend_kvcompress_deferred_releases"
+_PENDING_ATTRIBUTE = "_ascend_kvcompress_pending_transactions"
+_GROUP_LENGTH_STATE_ATTRIBUTE = "_ascend_kvcompress_group_length_state"
+_PREFIX_ADMISSION_STATE_ATTRIBUTE = "_ascend_kvcompress_prefix_admission_state"
+_PATCH_MARKER = "_ascend_kvcompress_manager_patch"
+_PREFIX_LOOKUP_PATCH_MARKER = "_ascend_kvcompress_prefix_lookup_patch"
 _PREFIX_CACHE_HIT_CAP: ContextVar[tuple[int, int] | None] = ContextVar(
     "ascend_kvcompress_prefix_cache_hit_cap", default=None
 )
@@ -47,6 +50,8 @@ _SUPPORTED_SCHEDULER_TYPES = frozenset(
 
 
 @dataclass
+# reserved_blocks 是尚未接入请求块表的私有目的块；ready 只在宿主接受对应输出后置位。
+# 异步调度时 previous_eligible_step 保存冻结前的值，提交或取消时恢复。
 class SchedulerPendingCompression:
     plan: CompressionPlan
     reserved_blocks: tuple[Any, ...]
@@ -54,17 +59,9 @@ class SchedulerPendingCompression:
     previous_eligible_step: int | None = None
 
 
-@dataclass(frozen=True)
-class SchedulerActiveCompression:
-    semantic_anchor: int
-    physical_anchor: int
-
-    @property
-    def removed_tokens(self) -> int:
-        return self.semantic_anchor - self.physical_anchor
-
-
 @dataclass
+# 异步流水线里即使本事务已确认，其他在途 batch 仍可能引用旧块。
+# 按后续输出屏障计数延后 free，remaining_outputs 不是时间或 decode token 数。
 class SchedulerDeferredRelease:
     request_id: str
     blocks: tuple[Any, ...]
@@ -72,51 +69,26 @@ class SchedulerDeferredRelease:
 
 
 class SchedulerCompressionState:
-    """Mirror worker transactions across acknowledged model-output barriers."""
+    """在模型输出确认边界同步 worker 的压缩事务。"""
 
-    def __init__(self, scheduler: Any, selection: ProviderSelection) -> None:
-        if selection.method == "triattention":
-            # Keep the existing scheduler path independent of worker calibration.
-            config = TriAttentionConfig.from_method_config(selection.method_config)
-            threshold = config.compression_threshold_tokens
-            budget = config.kv_budget
-            required_recompute_tokens = config.recompute_window
-            min_output_tokens = config.min_output_tokens_for_compression
-        else:
-            method = create_method(
-                selection.method,
-                selection.method_config,
-                scheduler.vllm_config,
-                model_shape_from_config(scheduler.vllm_config.model_config),
-            )
-            spec = method.runtime_spec
-            _validate_method_runtime_spec(method.name, spec)
-            query_window = getattr(method, "query_window_tokens", 0)
-            if (
-                isinstance(query_window, bool)
-                or not isinstance(query_window, int)
-                or query_window < 0
-                or query_window > spec.required_recompute_tokens
-            ):
-                raise ValueError(
-                    "method query_window_tokens must be a non-negative integer "
-                    "no greater than required_recompute_tokens"
-                )
-            threshold = spec.compression_threshold_tokens
-            budget = spec.max_physical_num_tokens
-            required_recompute_tokens = spec.required_recompute_tokens
-            min_output_tokens = spec.min_output_tokens_for_compression
+    def __init__(self, scheduler: Any, backend: CompressionBackend) -> None:
+        self.backend = backend
         self.scheduler = scheduler
-        self.threshold = threshold
-        self.budget = budget
-        self.required_recompute_tokens = required_recompute_tokens
-        self.min_output_tokens = min_output_tokens
-        # Scheduler.block_size is the LCM alignment across every hybrid cache
-        # group; it can be larger than the full-attention manager page.
+        # 调度端只消费静态预算，不创建 method、不读取校准文件。
+        # 两端都据此计算触发阈值和目的页数，确保 worker 能复核计划。
+        spec = backend.runtime_spec
+        self.threshold = spec.compression_threshold_tokens
+        self.budget = spec.max_physical_num_tokens
+        self.required_recompute_tokens = spec.required_recompute_tokens
+        self.min_output_tokens = spec.min_output_tokens_for_compression
+        # Scheduler.block_size 是所有混合缓存组对齐粒度的最小公倍数，
+        # 可能大于全注意力管理器的逻辑页大小。
         self.scheduler_alignment_size = int(scheduler.block_size)
         self.scheduler_block_size = self.scheduler_alignment_size
+        # pending/active 是 scheduler 的事务镜像，不与 worker 共享 Python 对象。
+        # deferred_releases 单独保存已替换但仍受在途输出保护的源块，避免过早复用。
         self.pending: dict[str, SchedulerPendingCompression] = {}
-        self.active: dict[str, SchedulerActiveCompression] = {}
+        self.active: dict[str, CompressionAnchor] = {}
         self.deferred_releases: dict[str, list[SchedulerDeferredRelease]] = {}
         host_config = scheduler.vllm_config
         self.async_scheduling = bool(
@@ -133,8 +105,13 @@ class SchedulerCompressionState:
             raise RuntimeError("max_concurrent_batches must be positive")
         self.attention_group_index = 0
         self.group_specific_lengths = False
+        # 先检查宿主与缓存组布局，并确定真正的全注意力组下标和逻辑页大小。
+        # 只有完成这一步，才知道应把长度换算 hook 装到 coordinator 还是单组 manager。
         self._validate_host()
         coordinator = scheduler.kv_cache_manager.coordinator
+        # 两条长度适配路径：align 模式的 hybrid coordinator 可用时按 group 分发，
+        # 否则只包装 full-attention single-type manager；两者都不缩短 GDN 语义长度。
+        # 此分支服务于宿主缓存布局/ABI，而非 token 重要性算法。
         coordinator_hooks = self.group_specific_lengths and all(
             hasattr(type(coordinator), name)
             for name in (
@@ -147,6 +124,8 @@ class SchedulerCompressionState:
         if coordinator_hooks:
             _install_coordinator_hooks(type(coordinator))
             setattr(coordinator, _GROUP_LENGTH_STATE_ATTRIBUTE, self)
+        # manager 保存的是状态字典的引用；后续清理和分配 hook 会读到最新锚点。
+        # 这些引用只在本进程内共享，worker 端通过计划与确认边界维护自己的镜像。
         setattr(scheduler.kv_cache_manager, _OFFSETS_ATTRIBUTE, self.active)
         setattr(
             scheduler.kv_cache_manager,
@@ -174,12 +153,16 @@ class SchedulerCompressionState:
             self.required_recompute_tokens,
         )
 
+    # APC（自动前缀缓存）命中会跳过 forward；这里限制命中长度，
+    # 留出方法要求重算的后缀。
+    # required_recompute_tokens 是调度契约；TriAttention 将它设成 recompute_window，
+    # 命中上限只对满足压缩门槛的请求生效。
     def prefix_cache_hit_cap(self, request: Any) -> int | None:
-        """Limit APC so an eligible method receives its required query suffix."""
+        """限制 APC 命中长度，为符合条件的算法保留所需的后缀重算区间。"""
         prompt_tokens = int(request.num_prompt_tokens)
         if (
             prompt_tokens < self.threshold
-            or _request_max_tokens(request) < self.min_output_tokens
+            or request_max_tokens(request) < self.min_output_tokens
         ):
             return None
         return max(
@@ -203,7 +186,7 @@ class SchedulerCompressionState:
             )
         if bool(getattr(scheduler, "_balance_enabled", False)):
             reasons.append("Ascend balance scheduling must be disabled")
-        if config.speculative_config is not None and not _supports_mtp2(config):
+        if config.speculative_config is not None and not supports_mtp2(config):
             reasons.append(
                 "speculative decoding is unqualified; experimental Qwen3.5 "
                 "MTP2 requires mamba_cache_mode='align' and explicit opt-in"
@@ -229,7 +212,7 @@ class SchedulerCompressionState:
             if value != 1:
                 reasons.append(f"{name} size must be one, got {value}")
         try:
-            self.attention_group_index = _find_full_attention_group(
+            self.attention_group_index = find_full_attention_group(
                 scheduler.kv_cache_config.kv_cache_groups
             )
         except RuntimeError as error:
@@ -244,6 +227,9 @@ class SchedulerCompressionState:
             if any(block_size <= 0 for block_size in manager_block_sizes):
                 reasons.append("KV cache managers must expose positive block sizes")
             else:
+                # 混合模型统一调度粒度是各组逻辑页大小的最小公倍数。
+                # 压缩预算只需对齐全注意力页；GDN 页可能更大，不能用 LCM
+                # 直接计算目的页数。
                 expected_alignment = math.lcm(*manager_block_sizes)
                 if self.scheduler_alignment_size != expected_alignment:
                     reasons.append(
@@ -254,7 +240,7 @@ class SchedulerCompressionState:
                 self.scheduler_block_size = manager_block_sizes[
                     self.attention_group_index
                 ]
-                allowed_block_sizes = _allowed_scheduler_block_sizes(config)
+                allowed_block_sizes = allowed_scheduler_block_sizes(config)
                 if self.scheduler_block_size not in allowed_block_sizes:
                     reasons.append(
                         "full-attention logical block size must be one of "
@@ -279,8 +265,10 @@ class SchedulerCompressionState:
                 + "\n- ".join(reasons)
             )
 
+    # 同步模式可在下一次 schedule 开头提交已确认事务。
+    # 异步模式仍有其他在途 batch，提交改由输出接受后的路径处理。
     def before_schedule(self) -> None:
-        """Commit only plans whose model output has crossed the worker barrier."""
+        """仅提交模型输出已越过 worker 执行屏障的方案。"""
         scheduler = self.scheduler
         for request_id in tuple(scheduler.finished_req_ids):
             self._discard_pending(request_id)
@@ -290,22 +278,27 @@ class SchedulerCompressionState:
         self._commit_pending(defer_release_outputs=0)
 
     def after_model_output(self) -> None:
-        """Commit acknowledged async transactions after the worker barrier."""
+        """在 worker 执行屏障之后提交已确认的异步事务。"""
         if not self.async_scheduling:
             return
+        # 先推进已有延迟释放的计数，再加入本次提交产生的新延迟项。
+        # 这样当前确认边界不会被重复算作刚加入项的一个后续输出边界。
         self._drain_deferred_releases()
         self._commit_pending(
             defer_release_outputs=max(0, self.max_concurrent_batches - 1)
         )
 
+    # 事务顺序：after_schedule 保留目的块 → worker 写入 → after_output 标 ready
+    # →此处切换 scheduler 块表并释放/延迟释放源块 → 请求再次调度时 worker 跟进切表。
+    # 同步模式在下次 before_schedule 提交；异步模式在输出确认后提交并解除请求冻结。
     def _commit_pending(self, *, defer_release_outputs: int) -> None:
         scheduler = self.scheduler
         manager = scheduler.kv_cache_manager
         single_managers = manager.coordinator.single_type_managers
-        if self.attention_group_index >= len(single_managers):
-            raise RuntimeError("full-attention cache manager is unavailable")
         cache_manager = single_managers[self.attention_group_index]
         for request_id, pending in tuple(self.pending.items()):
+            # ready 来自宿主成功接受对应输出，单纯发出调度计划并不代表写入完成。
+            # 请求已结束或原块表发生变化时，不能把目的块接到错误的请求状态上。
             if not pending.ready:
                 continue
             if request_id not in scheduler.requests:
@@ -324,8 +317,13 @@ class SchedulerCompressionState:
                     "compression commit"
                 )
             source_blocks = tuple(blocks)
+            # 保持请求块列表对象身份，只替换内容；只操作 full-attention manager。
+            # 此时源块仍有自己的引用计数，释放经 block_pool 完成，
+            # 不能原地覆盖共享 APC 源块。
             blocks[:] = pending.reserved_blocks
             released = tuple(reversed(source_blocks))
+            # 切表后，其他已经排队的 batch 仍可能引用源块。
+            # 延迟释放保护的是源块地址的可用期，不会推迟本请求改用目的块。
             if defer_release_outputs:
                 self.deferred_releases.setdefault(request_id, []).append(
                     SchedulerDeferredRelease(
@@ -337,10 +335,10 @@ class SchedulerCompressionState:
             else:
                 manager.block_pool.free_blocks(released)
             if hasattr(cache_manager, "num_cached_block"):
-                # Private compressed KV has no valid prefix hash for the
-                # request's original semantic token sequence.
+                # 私有压缩 KV 与请求原始语义 token 序列不再对应，
+                # 因此不能使用该序列的前缀哈希。
                 cache_manager.num_cached_block[request_id] = 0
-            self.active[request_id] = SchedulerActiveCompression(
+            self.active[request_id] = CompressionAnchor(
                 plan.semantic_anchor, plan.physical_anchor
             )
             request = scheduler.requests[request_id]
@@ -359,8 +357,10 @@ class SchedulerCompressionState:
             )
             self.pending.pop(request_id, None)
 
+    # 包装器先调用宿主 update_from_output，正常返回后才到这里。
+    # 计划比较确认的是同一轮事务；这里没有额外的压缩成功响应对象。
     def after_output(self, output: Any) -> None:
-        """Acknowledge writes only after vLLM has accepted worker output."""
+        """仅在 vLLM 接受 worker 输出后确认缓存写入。"""
         for request_id, plan in getattr(output, PLAN_ATTRIBUTE, {}).items():
             pending = self.pending.get(request_id)
             if pending is not None and pending.plan == plan:
@@ -371,6 +371,8 @@ class SchedulerCompressionState:
         pool = self.scheduler.kv_cache_manager.block_pool
         for request_id, releases in tuple(self.deferred_releases.items()):
             retained: list[SchedulerDeferredRelease] = []
+            # 按接受输出的次数消耗保护期；减到零才交给 block_pool 处理引用计数。
+            # 一个请求可有多轮待释放源块，所以字典值是列表而非单个块集合。
             for release in releases:
                 release.remaining_outputs -= 1
                 if release.remaining_outputs <= 0:
@@ -382,6 +384,9 @@ class SchedulerCompressionState:
             else:
                 self.deferred_releases.pop(request_id, None)
 
+    # 取消只归还预留的目的块；当前请求源块仍交给宿主正常管理。
+    # 已提交源块若还在 deferred_releases 中，
+    # 由输出屏障或 manager.free 的清理路径回收。
     def _discard_pending(self, request_id: str) -> None:
         pending = self.pending.pop(request_id, None)
         if pending is None:
@@ -394,12 +399,14 @@ class SchedulerCompressionState:
             request.next_decode_eligible_step = pending.previous_eligible_step
 
     def _install_attention_cache_hook(self) -> None:
-        """Do not register private compressed KV under original token hashes."""
+        """阻止将私有压缩 KV 登记到原始 token 哈希下。"""
         cache_manager = (
             self.scheduler.kv_cache_manager.coordinator.single_type_managers[
                 self.attention_group_index
             ]
         )
+        # 压缩后的私有 KV 不再对应完整语义前缀，不能挂到原 token hash 下。
+        # 未压缩的请求继续走原缓存登记方法，保留正常 APC 复用。
         original = getattr(cache_manager, "cache_blocks", None)
         if original is None:
             return
@@ -412,11 +419,11 @@ class SchedulerCompressionState:
         cache_manager.cache_blocks = cache_blocks
 
     def _install_attention_length_hooks(self) -> None:
-        """Translate lengths only for full attention, never for Mamba state.
+        """仅换算全注意力长度，Mamba 状态仍使用语义长度。
 
-        KVCacheManager passes the same token counts to all cache groups. After
-        compression, that is correct for Mamba/GDN but full attention needs
-        the compacted count. Keep Request's semantic count untouched.
+        KVCacheManager 向所有缓存组传递相同的 token 数。压缩后，
+        该数值仍适用于 Mamba/GDN，但全注意力需要使用压缩后的长度。
+        因此保持 Request 的语义计数不变，只在管理器入口换算。
         """
         cache_manager = (
             self.scheduler.kv_cache_manager.coordinator.single_type_managers[
@@ -424,9 +431,11 @@ class SchedulerCompressionState:
             ]
         )
 
+        # 只对已有压缩锚点的请求减偏移，且只改全注意力 manager 收到的计数。
+        # 宿主 Request 与 GDN/Mamba manager 仍使用原始语义计数。
         def physical(request_id: str, tokens: int) -> int:
             active = self.active.get(request_id)
-            return max(0, tokens - active.removed_tokens) if active else tokens
+            return active.physical_tokens(tokens) if active else tokens
 
         original_count = getattr(cache_manager, "get_num_blocks_to_allocate", None)
         if original_count is not None:
@@ -486,8 +495,12 @@ class SchedulerCompressionState:
 
             cache_manager.remove_skipped_blocks = remove_skipped_blocks
 
+    # 计划在原 schedule 返回后附加，宿主本步 forward 仍读写源块。
+    # 首次只选 final-prefill；压缩后按物理长度增长触发下一轮；
+    # MTP2 禁止 decode 再压缩。
+    # 空闲块不足时跳过本轮，不通过原地搬运绕过目的块所有权约束。
     def after_schedule(self, output: Any) -> None:
-        """Arm the same deterministic transaction the worker performs."""
+        """安排与 worker 实际执行内容一致的确定性事务。"""
         reset_ids = set(getattr(output, "preempted_req_ids", ()))
         reset_ids.update(output.finished_req_ids)
         for request_id in reset_ids:
@@ -497,6 +510,8 @@ class SchedulerCompressionState:
         coordinator = self.scheduler.kv_cache_manager.coordinator
         single_manager = coordinator.single_type_managers[self.attention_group_index]
         plans: dict[str, CompressionPlan] = {}
+        # 有草稿 token 的步骤不能授权压缩，接受结果可能使其乐观尾部回滚。
+        # 已支持的 MTP2 只允许最初 prompt 边界压缩，不在投机 decode 中反复触发。
         speculative_requests = getattr(output, "scheduled_spec_decode_tokens", {})
         for request_id in output.num_scheduled_tokens:
             if speculative_requests.get(request_id):
@@ -506,11 +521,11 @@ class SchedulerCompressionState:
             request = self.scheduler.requests.get(request_id)
             if request is None:
                 continue
-            if _request_max_tokens(request) < self.min_output_tokens:
+            if request_max_tokens(request) < self.min_output_tokens:
                 continue
-            # The current host advances this value in ``_update_after_schedule``
-            # before ``Scheduler.schedule`` returns. The worker receives the
-            # pre-step value and separately adds its scheduled-token count.
+            # 当前宿主会在 Scheduler.schedule 返回前，
+            # 通过 _update_after_schedule 推进此值。worker 收到的是步前值，
+            # 并自行加上本步调度的 token 数。
             semantic = int(request.num_computed_tokens)
             active = self.active.get(request_id)
             if active is None:
@@ -518,20 +533,22 @@ class SchedulerCompressionState:
                 if semantic != int(request.num_prompt_tokens):
                     continue
             else:
-                physical = active.physical_anchor + semantic - active.semantic_anchor
+                physical = active.physical_tokens(semantic)
             if physical < self.threshold:
                 continue
             if self.scheduler.vllm_config.speculative_config is not None and active:
-                # A decode step's optimistic MTP length can roll back after
-                # acceptance. Initial prompt compression has no draft KV.
+                # 解码步中的乐观 MTP 长度可能在验收后回退；
+                # 首次提示词压缩则不包含草稿 KV。
                 continue
             blocks = single_manager.req_to_blocks.get(request_id, ())
-            keep = _blocks_for_tokens(self.budget, self.scheduler_block_size)
+            keep = blocks_for_tokens(self.budget, self.scheduler_block_size)
             if len(blocks) < keep:
                 raise RuntimeError(
                     f"request {request_id!r} has too few scheduler blocks"
                 )
             pool = self.scheduler.kv_cache_manager.block_pool
+            # 压缩本身也需要一份目的空间，不能先释放正在读取的源块来凑容量。
+            # 空闲不足就跳过，不以原地覆盖代替私有目的块事务。
             if pool.get_num_free_blocks() < keep:
                 logger.warning(
                     "Skipping KV compression for request %s: %d private "
@@ -548,6 +565,9 @@ class SchedulerCompressionState:
                 destination_block_ids=tuple(block.block_id for block in destination),
             )
             previous_step = None
+            # 冻结单个请求，其他请求仍可调度；
+            # 目的块写入获确认之前禁止该请求继续 decode。
+            # 1 << 62 是不可达的调度步哨兵，提交和异常/结束清理路径必须恢复原值。
             if self.async_scheduling:
                 previous_step = int(request.next_decode_eligible_step)
                 request.next_decode_eligible_step = 1 << 62
@@ -561,21 +581,12 @@ class SchedulerCompressionState:
             setattr(output, PLAN_ATTRIBUTE, plans)
 
 
-def _request_max_tokens(request: Any) -> int:
-    value = getattr(request, "max_tokens", None)
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise RuntimeError(
-            "current vLLM Request.max_tokens must be a non-negative integer"
-        )
-    return value
-
-
 def install_stateful_compression_hooks(
     scheduler_cls: type[Any],
     manager_cls: type[Any],
-    selection: ProviderSelection,
+    plugin_config: PluginConfig,
 ) -> None:
-    """Install idempotent scheduler and allocation wrappers."""
+    """安装可重复调用而不叠加包装的调度与分配钩子。"""
     _install_manager_hooks(manager_cls)
     marker = f"{_PATCH_MARKER}_scheduler"
     if scheduler_cls.__dict__.get(marker, False):
@@ -584,10 +595,19 @@ def install_stateful_compression_hooks(
     original_schedule = scheduler_cls.schedule
     original_update_from_output = scheduler_cls.update_from_output
 
+    # 先让宿主构造完整 scheduler，再用 Backend 工厂选取状态实现。
+    # 下游可替换整个调度状态类，不必向通用调度器加入算法名分支。
     def initialize(scheduler: Any, *args: Any, **kwargs: Any) -> None:
         original_init(scheduler, *args, **kwargs)
         setattr(
-            scheduler, _STATE_ATTRIBUTE, SchedulerCompressionState(scheduler, selection)
+            scheduler,
+            _STATE_ATTRIBUTE,
+            create_backend(
+                plugin_config.method,
+                plugin_config.method_config,
+                scheduler.vllm_config,
+                model_shape_from_config(scheduler.vllm_config.model_config),
+            ).create_scheduler(scheduler),
         )
 
     def schedule(scheduler: Any, *args: Any, **kwargs: Any) -> Any:
@@ -600,6 +620,7 @@ def install_stateful_compression_hooks(
     def update_from_output(
         scheduler: Any, scheduler_output: Any, *args: Any, **kwargs: Any
     ) -> Any:
+        # 输出先由宿主接受，返回后才标记事务 ready；异常时不会执行插件确认。
         result = original_update_from_output(
             scheduler, scheduler_output, *args, **kwargs
         )
@@ -622,9 +643,13 @@ def install_stateful_compression_hooks(
 def _install_manager_hooks(manager_cls: type[Any]) -> None:
     if manager_cls.__dict__.get(_PATCH_MARKER, False):
         return
+    # 除了宿主当前页表中的块，还要清理未接表的目的块和延迟释放的旧源块。
+    # 这三类所有权分开处理，避免漏释放或把当前页表重复释放。
     original_free = manager_cls.free
     original_get_computed_blocks = getattr(manager_cls, "get_computed_blocks", None)
 
+    # 宿主释放请求时一并清理 active、尚未提交的目的块和延迟释放的源块。
+    # 这些块没有全部挂在宿主 req_to_blocks 中，所以不能只调用原 free。
     def free(manager: Any, request: Any) -> Any:
         getattr(manager, _OFFSETS_ATTRIBUTE, {}).pop(request.request_id, None)
         pending = getattr(manager, _PENDING_ATTRIBUTE, {}).pop(request.request_id, None)
@@ -642,13 +667,14 @@ def _install_manager_hooks(manager_cls: type[Any]) -> None:
     def get_computed_blocks(
         manager: Any, request: Any, *args: Any, **kwargs: Any
     ) -> Any:
-        assert original_get_computed_blocks is not None
         state = getattr(manager, _PREFIX_ADMISSION_STATE_ATTRIBUTE, None)
         cap = None if state is None else state.prefix_cache_hit_cap(request)
         if cap is None:
             return original_get_computed_blocks(manager, request, *args, **kwargs)
         coordinator = manager.coordinator
         _install_prefix_lookup_hook(type(coordinator))
+        # 临时上限绑定当前 coordinator 身份，退出 admission 调用后恢复。
+        # 避免修改 coordinator 的永久配置或影响同进程其他实例/请求的 prefix lookup。
         token = _PREFIX_CACHE_HIT_CAP.set((id(coordinator), cap))
         try:
             return original_get_computed_blocks(manager, request, *args, **kwargs)
@@ -668,7 +694,7 @@ def _install_manager_hooks(manager_cls: type[Any]) -> None:
 
 
 def _install_prefix_lookup_hook(coordinator_cls: type[Any]) -> None:
-    """Cap only the lookup made inside the current request's admission call."""
+    """仅限制当前请求接纳调用内部的前缀查找长度。"""
     if coordinator_cls.__dict__.get(_PREFIX_LOOKUP_PATCH_MARKER, False):
         return
     original = coordinator_cls.find_longest_cache_hit
@@ -689,7 +715,7 @@ def _install_prefix_lookup_hook(coordinator_cls: type[Any]) -> None:
 
 
 def _install_coordinator_hooks(coordinator_cls: type[Any]) -> None:
-    """Translate only the compacted full-attention group's token lengths."""
+    """仅换算已压缩全注意力缓存组的 token 长度。"""
     marker = f"{_PATCH_MARKER}_coordinator"
     if coordinator_cls.__dict__.get(marker, False):
         return
@@ -697,9 +723,13 @@ def _install_coordinator_hooks(coordinator_cls: type[Any]) -> None:
     original_allocate = coordinator_cls.allocate_new_blocks
     original_remove = coordinator_cls.remove_skipped_blocks
 
+    # coordinator 与各 manager 的新旧签名可能不同（尤其 Mamba）。
+    # 先按真实宿主签名绑定参数，再只把支持的可选参数转发给各组；压缩组单独换算长度。
     count_signature = inspect.signature(original_count)
 
     def get_num_blocks_to_allocate(coordinator: Any, *args: Any, **kwargs: Any) -> int:
+        # 先按实际宿主签名恢复参数语义，兼容位置参数和关键字参数的调用方式。
+        # 随后逐组分发，避免把新参数直接传给仍使用旧签名的 Mamba manager。
         bound = count_signature.bind(coordinator, *args, **kwargs)
         bound.apply_defaults()
         values = bound.arguments
@@ -723,18 +753,20 @@ def _install_coordinator_hooks(coordinator_cls: type[Any]) -> None:
             for manager in coordinator.single_type_managers
         ):
             return original_count(coordinator, *args, **kwargs)
-        # The current Ascend Mamba manager still has the older signature.
-        # Route uncompressed requests through the same group loop so that
-        # prefill_end is passed only to managers that support it.
+        # 当前 Ascend Mamba 管理器仍使用旧版函数签名。
+        # 未压缩请求也走同一个缓存组循环，
+        # 只向支持 prefill_end 的管理器传入该参数。
         if active is None and getattr(coordinator, "retention_interval", 0):
             prefill_end = 0
         result = 0
+        # 每组保留自己的计数空间：全注意力减压缩偏移，循环状态组不减。
+        # 所需新块数再相加，由统一池判断是否能完成整个请求的分配。
         for index, manager in enumerate(coordinator.single_type_managers):
             if active is not None and index == state.attention_group_index:
-                group_tokens = _physical_tokens(num_tokens, active)
-                group_computed = _physical_tokens(total_computed_tokens, active)
-                group_local = _physical_tokens(num_local_computed_tokens, active)
-                group_main = _physical_tokens(num_tokens_main_model, active)
+                group_tokens = active.physical_tokens(num_tokens)
+                group_computed = active.physical_tokens(total_computed_tokens)
+                group_local = active.physical_tokens(num_local_computed_tokens)
+                group_main = active.physical_tokens(num_tokens_main_model)
             else:
                 group_tokens = num_tokens
                 group_computed = total_computed_tokens
@@ -756,7 +788,7 @@ def _install_coordinator_hooks(coordinator_cls: type[Any]) -> None:
                 and "prefill_end" in manager_signature.parameters
             ):
                 manager_values["prefill_end"] = (
-                    _physical_tokens(prefill_end, active)
+                    active.physical_tokens(prefill_end)
                     if active is not None and index == state.attention_group_index
                     else prefill_end
                 )
@@ -783,8 +815,8 @@ def _install_coordinator_hooks(coordinator_cls: type[Any]) -> None:
         allocated = []
         for index, manager in enumerate(coordinator.single_type_managers):
             if index == state.attention_group_index:
-                group_tokens = _physical_tokens(num_tokens, active)
-                group_main = _physical_tokens(num_tokens_main_model, active)
+                group_tokens = active.physical_tokens(num_tokens)
+                group_main = active.physical_tokens(num_tokens_main_model)
             else:
                 group_tokens = num_tokens
                 group_main = num_tokens_main_model
@@ -810,7 +842,7 @@ def _install_coordinator_hooks(coordinator_cls: type[Any]) -> None:
             )
         for index, manager in enumerate(coordinator.single_type_managers):
             group_tokens = (
-                _physical_tokens(total_computed_tokens, active)
+                active.physical_tokens(total_computed_tokens)
                 if index == state.attention_group_index
                 else total_computed_tokens
             )
@@ -823,11 +855,3 @@ def _install_coordinator_hooks(coordinator_cls: type[Any]) -> None:
     coordinator_cls.allocate_new_blocks = allocate_new_blocks
     coordinator_cls.remove_skipped_blocks = remove_skipped_blocks
     setattr(coordinator_cls, marker, True)
-
-
-def _physical_tokens(semantic_tokens: int, active: SchedulerActiveCompression) -> int:
-    return max(0, int(semantic_tokens) - active.removed_tokens)
-
-
-def _blocks_for_tokens(num_tokens: int, block_size: int) -> int:
-    return (num_tokens + block_size - 1) // block_size

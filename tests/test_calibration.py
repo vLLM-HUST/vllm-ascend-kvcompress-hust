@@ -10,12 +10,13 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-import vllm_ascend_kvcompress.calibration as calibration
-from vllm_ascend_kvcompress.calibration import (
+import vllm_ascend_kvcompress.methods.triattention.calibration as calibration
+from vllm_ascend_kvcompress.methods.base import ModelShape
+from vllm_ascend_kvcompress.methods.triattention.calibration import (
     CalibrationRequest,
     generate_calibration_artifact,
 )
-from vllm_ascend_kvcompress.methods.base import ModelShape
+from vllm_ascend_kvcompress.methods.triattention.config import TriAttentionConfig
 from vllm_ascend_kvcompress.methods.triattention.stats import CalibrationStats
 
 
@@ -161,10 +162,6 @@ def test_generator_loads_only_qwen35_text_model(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setattr(
         transformers.AutoModelForCausalLM, "from_pretrained", load_model
     )
-    monkeypatch.setattr(calibration, "_prepare_device", lambda device: None)
-    monkeypatch.setattr(
-        calibration, "_empty_device_cache", lambda *args, **kwargs: None
-    )
 
     request = CalibrationRequest(
         model="fake/model",
@@ -188,8 +185,9 @@ def test_generator_rejects_empty_explicit_input(tmp_path: Path) -> None:
         calibration._load_calibration_text(request)
 
 
+@pytest.mark.parametrize("tp_size", [1, 2])
 def test_runner_uses_model_settings_for_missing_artifact(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, tp_size
 ) -> None:
     output = tmp_path / "stats.pt"
     selection = SimpleNamespace(
@@ -210,7 +208,13 @@ def test_runner_uses_model_settings_for_missing_artifact(
         dtype=torch.float16,
         hf_text_config=hf_config,
     )
-    runner = SimpleNamespace(model_config=model_config, device=torch.device("npu:0"))
+    runner = SimpleNamespace(
+        model_config=model_config,
+        device=torch.device("npu:0"),
+        vllm_config=SimpleNamespace(
+            parallel_config=SimpleNamespace(tensor_parallel_size=tp_size)
+        ),
+    )
     captured = []
 
     def generate(request):
@@ -242,58 +246,16 @@ def test_runner_uses_model_settings_for_missing_artifact(
 
     monkeypatch.setattr(calibration, "generate_calibration_artifact", generate)
 
-    assert calibration.ensure_calibration_for_runner(runner, selection)
+    assert calibration.ensure_calibration_for_runner(
+        runner, TriAttentionConfig.from_method_config(selection.method_config)
+    )
     assert captured[0].model == "fake/model"
     assert captured[0].revision == "model-revision"
     assert captured[0].device == "npu:0"
-    assert captured[0].device_map is None
+    assert captured[0].device_map == ("auto" if tp_size > 1 else None)
     assert captured[0].dtype == "float16"
     assert captured[0].max_length == 1024
     assert captured[0].local_files_only
-
-
-def test_tensor_parallel_runner_uses_auto_calibration_device_map(
-    tmp_path: Path, monkeypatch
-) -> None:
-    output = tmp_path / "stats.pt"
-    selection = SimpleNamespace(
-        method="triattention",
-        method_config={"stats_path": str(output)},
-    )
-    runner = SimpleNamespace(
-        model_config=SimpleNamespace(
-            model="fake/model",
-            tokenizer=None,
-            revision=None,
-            tokenizer_revision=None,
-            trust_remote_code=False,
-            dtype=torch.bfloat16,
-            hf_text_config=_FakeConfig(),
-        ),
-        device=torch.device("npu:0"),
-        vllm_config=SimpleNamespace(
-            parallel_config=SimpleNamespace(tensor_parallel_size=2)
-        ),
-    )
-    captured = []
-
-    def generate(request):
-        captured.append(request)
-        layer_stats = {
-            str(index): {
-                "q_mean_real": torch.zeros(2, 2),
-                "q_mean_imag": torch.zeros(2, 2),
-                "q_abs_mean": torch.ones(2, 2),
-            }
-            for index in range(2)
-        }
-        torch.save({"metadata": {}, "layer_stats": layer_stats}, output)
-        return True
-
-    monkeypatch.setattr(calibration, "generate_calibration_artifact", generate)
-
-    assert calibration.ensure_calibration_for_runner(runner, selection)
-    assert captured[0].device_map == "auto"
 
 
 def test_runner_does_not_generate_when_auto_calibration_is_disabled(
@@ -313,7 +275,9 @@ def test_runner_does_not_generate_when_auto_calibration_is_disabled(
         lambda request: pytest.fail("generation should not run"),
     )
 
-    assert not calibration.ensure_calibration_for_runner(runner, selection)
+    assert not calibration.ensure_calibration_for_runner(
+        runner, TriAttentionConfig.from_method_config(selection.method_config)
+    )
 
 
 def test_plugin_generated_artifact_rejects_a_different_model_source(

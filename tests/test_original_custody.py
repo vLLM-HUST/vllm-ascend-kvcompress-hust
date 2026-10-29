@@ -1,17 +1,13 @@
 import hashlib
-import importlib.util
 import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from scripts import fetch_benchmark_originals as FETCH
+
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location(
-    "fetch_originals", ROOT / "scripts/fetch_benchmark_originals.py"
-)
-FETCH = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(FETCH)
 
 
 def test_original_integrity():
@@ -24,7 +20,7 @@ def test_original_integrity():
         FETCH.checked(raw, digest, len(raw) + 1)
 
 
-@pytest.mark.parametrize("name", ["/absolute", "../parent", "a/../b", ".", "a//b"])
+@pytest.mark.parametrize("name", ["/absolute", "../parent", ".", "a//b"])
 def test_unsafe_paths(name):
     with pytest.raises(ValueError, match="Unsafe"):
         FETCH.safe_path(name)

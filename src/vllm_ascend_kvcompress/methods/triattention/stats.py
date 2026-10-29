@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Safe TriAttention calibration loading and compatibility checks."""
+"""TriAttention 校准产物的安全加载与兼容性检查。"""
 
 from __future__ import annotations
 
@@ -31,6 +31,11 @@ SUPPORTED_MODEL_TYPES = frozenset(
 
 @dataclass(frozen=True)
 class LayerCalibrationStats:
+    """
+    CPU 规范化表示：[全局 Query 头或 KV 头,rotary_dim/2]。
+    q_mean_real/imag 是 E[Q] 的复数坐标，q_abs_mean 是 E[|Q|]，两者不能互换。
+    partial RoPE 额外保存未旋转维度均值 q_pass_mean；freq_scale_sq 表示 RoPE 缩放平方。
+    """
     q_mean_real: torch.Tensor
     q_mean_imag: torch.Tensor
     q_abs_mean: torch.Tensor
@@ -41,6 +46,10 @@ class LayerCalibrationStats:
 
 @dataclass(frozen=True)
 class DeviceLayerCalibrationStats:
+    """
+    设备表示：[local_kv_heads,queries_per_kv,frequency]，在 to_device 中按 TP 切分。
+    omega 是实际 inverse frequency；scaled RoPE 不能只凭 rope_theta 重新推导它。
+    """
     q_mean_real: torch.Tensor
     q_mean_imag: torch.Tensor
     q_abs_mean: torch.Tensor
@@ -72,6 +81,8 @@ class CalibrationStats:
         if not isinstance(metadata, Mapping):
             raise ValueError("calibration metadata must be a mapping")
 
+        # 支持旧平铺 layerN_headM 与新 layer_stats 两种产物布局，优先非空旧 stats。
+        # 两者都规范化为 layer_index → LayerCalibrationStats，方法层不再判断文件布局。
         flat_stats = payload.get("stats")
         if isinstance(flat_stats, Mapping) and flat_stats:
             layers = _load_flat_stats(flat_stats)
@@ -86,6 +97,12 @@ class CalibrationStats:
         return cls(metadata=dict(metadata), layers=layers)
 
     def validate(self, model: ModelShape) -> tuple[str, ...]:
+        """
+        启动阶段验证层集合、模型身份/形状、RoPE 约定与数值有效性。
+        这里的 .item() 会同步设备数据，但 load 已把统计放在 CPU，
+        验证也不属于压缩热路径。
+        返回理由列表供 provider 一次汇总，不在此修改模型或修复不兼容统计。
+        """
         reasons: list[str] = []
         if model.model_type not in SUPPORTED_MODEL_TYPES:
             reasons.append(
@@ -267,6 +284,10 @@ class CalibrationStats:
         tensor_parallel_rank: int = 0,
         tensor_parallel_size: int = 1,
     ) -> dict[int, DeviceLayerCalibrationStats]:
+        """
+        将 CPU 全局统计变成当前 TP rank 的 FP32 设备统计。
+        先按 GQA 组织头，再切本地 KV 头区间；不能先按 Query 头随意截断。
+        """
         if tensor_parallel_size <= 0 or not (
             0 <= tensor_parallel_rank < tensor_parallel_size
         ):
@@ -312,6 +333,9 @@ class CalibrationStats:
                     model.head_dim - rotary_dim,
                 )
 
+            # 先按 GQA 把全局 Query 头配到 KV 头，再按 KV 头连续切片给本 TP rank。
+            # 若产物只保存 KV 头均值，_group_query_stats 会扩展 Query 组维，
+            # 但不产生新统计信息。
             local_kv_heads = model.num_kv_heads // tensor_parallel_size
             shard_start = tensor_parallel_rank * local_kv_heads
             shard_stop = shard_start + local_kv_heads
@@ -325,6 +349,9 @@ class CalibrationStats:
             inv_freq = layer.inv_freq
             if inv_freq is None:
                 inv_freq = _get_metadata_inv_freq(self.metadata, layer_idx)
+            # 仅默认未缩放 RoPE 可在缺省频率时按 theta 推导；
+            # validate 已要求 scaled/non-default RoPE 必须显式保存精确 inv_freq，
+            # 避免外形兼容但评分相位错误。
             if inv_freq is None:
                 exponents = torch.arange(0, rotary_dim, 2, dtype=torch.float32)
                 inv_freq = 1.0 / (model.rope_theta ** (exponents / float(rotary_dim)))
@@ -345,7 +372,7 @@ class CalibrationStats:
 def _group_query_stats(
     tensor: torch.Tensor, model: ModelShape, group_size: int, width: int
 ) -> torch.Tensor:
-    """Group query-head rows by KV head, expanding KV-averaged statistics."""
+    """按 KV 头对 query 头分组，并展开按 KV 头平均的统计量。"""
     if tuple(tensor.shape) == (model.num_attention_heads, width):
         return tensor.reshape(model.num_kv_heads, group_size, width).contiguous()
     if tuple(tensor.shape) == (model.num_kv_heads, width):
@@ -374,6 +401,10 @@ def _as_matrix(value: Any, name: str) -> torch.Tensor:
 def _load_flat_stats(
     raw_stats: Mapping[str, Any],
 ) -> dict[int, LayerCalibrationStats]:
+    """
+    旧格式以 layerN_headM 为键，需要先按层和头聚合并检查头号连续。
+    此格式只恢复基础 Q 统计；scaled/partial RoPE 所需额外字段仍受后续验证约束。
+    """
     grouped: dict[int, dict[int, Mapping[str, Any]]] = {}
     for key, entry in raw_stats.items():
         match = _FLAT_STAT_KEY.match(str(key))
@@ -420,6 +451,10 @@ def _load_flat_stats(
 def _load_layer_stats(
     raw_stats: Mapping[Any, Any],
 ) -> dict[int, LayerCalibrationStats]:
+    """
+    新格式按层组织，支持复数张量、末维为 2 的实虚表示，或分开的 real/imag。
+    加载后都转为统一 CPU 矩阵，避免算法热路径再判断文件存储形式。
+    """
     layers: dict[int, LayerCalibrationStats] = {}
     for raw_layer_idx, entry in raw_stats.items():
         if not isinstance(entry, Mapping):

@@ -1,16 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Ascend Triton kernels used by the TriAttention hot paths."""
+"""TriAttention 热路径使用的 Ascend Triton 内核。"""
 
 from __future__ import annotations
 
 import torch
 
+# 本文件含三类热路径：位置偏移、mean 模式分页评分、标准化与聚合。
+# 前者当前用 torch 算子；后两者是 Triton-Ascend kernel，
+# CPU 调用返回 False 供上层回退。
+# 装饰器替身仅允许 CPU 环境导入源码，不是 NPU 执行实现；NPU 缺 Triton 会显式报错。
 try:
     import triton
     import triton.language as tl
 except (ImportError, ModuleNotFoundError):
-    # Static manifest discovery and CPU-only validation must not import the
-    # accelerator toolchain. NPU calls below still fail closed.
+    # 静态清单发现及纯 CPU 校验不得导入加速器工具链。
+    # 下方 NPU 调用在依赖缺失时仍会报错。
     class _UnavailableTriton:
         @staticmethod
         def jit(function=None, **kwargs):
@@ -30,21 +34,6 @@ except (ImportError, ModuleNotFoundError):
 
 def _triton_available() -> bool:
     return hasattr(triton, "cdiv") and hasattr(triton, "next_power_of_2")
-
-
-def shift_positions(
-    positions: torch.Tensor,
-    request_indices: torch.Tensor,
-    request_offsets: torch.Tensor,
-    output: torch.Tensor,
-) -> torch.Tensor:
-    """Subtract device-resident offsets using the fastest measured NPU ops."""
-    torch.sub(
-        positions,
-        request_offsets.index_select(0, request_indices.to(torch.long)),
-        out=output,
-    )
-    return output
 
 
 @triton.jit(do_not_specialize=["round_start", "num_values"])
@@ -90,11 +79,11 @@ def prepare_mean_phase_coefficients(
     phase_cos: torch.Tensor,
     phase_sin: torch.Tensor,
 ) -> bool:
-    """Prepare one mean-offset RoPE coefficient per layer and frequency.
+    """为每层、每个频率预计算一个平均偏移 RoPE 系数。
 
-    The scoring grid has one program for every query head and token tile. Doing
-    trigonometry there repeats identical work thousands of times. This compact
-    kernel computes it once for each sampled layer/frequency pair instead.
+    评分网格为每个 query 头与 token 分块启动一个程序，若在其中计算
+    三角函数，会重复相同工作数千次。此小型内核改为对每个采样层与
+    频率组合只计算一次。
     """
     if omega.device.type != "npu":
         return False
@@ -109,6 +98,8 @@ def prepare_mean_phase_coefficients(
     ):
         raise ValueError("phase coefficient tensors must have matching shapes")
     num_values = omega.numel()
+    # 每个程序处理最多 256 个系数，尾部用 mask 屏蔽越界项。
+    # 网格只覆盖 layer×frequency，不随 Query 头数和 token 数重复计算三角函数。
     _prepare_mean_phase_kernel[(triton.cdiv(num_values, 256),)](
         omega,
         offset_cos_mean,
@@ -149,6 +140,9 @@ def _score_paged_keys_mean_kernel(
     BLOCK_F: tl.constexpr,
     BLOCK_P: tl.constexpr,
 ):
+    # 二维 grid：[本地 Query 头,token tile]；query_head/queries_per_kv 定位 KV 头。
+    # 直接按块表读取已旋转 K，避免先 gather 整段 cache 到临时张量。
+    # 统计按 [KV 头,Query 组,frequency] 连续排布，故可把前两维视为 query_head。
     query_head = tl.program_id(0)
     token_offsets = tl.program_id(1) * BLOCK_N + tl.arange(0, BLOCK_N)
     frequency_offsets = tl.arange(0, BLOCK_F)
@@ -188,6 +182,8 @@ def _score_paged_keys_mean_kernel(
         other=0.0,
     ).to(tl.float32)
 
+    # 页编号来自 source_block_ids；cache_base 使用实际页/槽/头 stride。
+    # 最后一维已由 provider 验证连续，所以频率维可直接加元素下标，支持页间 padding。
     block_offsets = token_offsets // BLOCK_SIZE
     within_blocks = token_offsets - block_offsets * BLOCK_SIZE
     block_ids = tl.load(source_block_ids_ptr + block_offsets, mask=token_mask)
@@ -223,6 +219,8 @@ def _score_paged_keys_mean_kernel(
     key_abs = tl.sqrt(key_real * key_real + key_imag * key_imag)
     extra = tl.sum(key_abs * extra_coefficient[None, :] * scale[None, :], axis=1)
     score = base_score + extra
+    # partial RoPE 的非旋转部分直接加 E[Q_pass]·K_pass，无相位项。
+    # PASS_DIM 是编译期常量，完整 RoPE 不会执行这段载入与点积。
     if PASS_DIM > 0:
         pass_offsets = tl.arange(0, BLOCK_P)
         pass_mask = pass_offsets < PASS_DIM
@@ -261,7 +259,7 @@ def score_paged_keys_mean_precomputed(
     q_pass_mean: torch.Tensor | None = None,
     rotary_dim: int | None = None,
 ) -> bool:
-    """Score full- or partial-RoPE paged keys with precomputed query phases."""
+    """使用预计算的 query 相位，对全 RoPE 或部分 RoPE 分页 key 评分。"""
     if k_cache.device.type != "npu":
         return False
     if not _triton_available():
@@ -286,6 +284,8 @@ def score_paged_keys_mean_precomputed(
     elif q_pass_mean is not None:
         raise ValueError("full-RoPE scoring must not pass q_pass_mean")
     block_frequency = triton.next_power_of_2(frequency_count)
+    # 二维网格分别覆盖本地 Query 头与 token 分块；每块一次读取一组旋转频率。
+    # 显式传入 cache stride，使页间带 padding 的存储也可直接评分。
     _score_paged_keys_mean_kernel[
         (kv_heads * queries_per_kv, triton.cdiv(num_tokens, 16))
     ](
@@ -317,51 +317,6 @@ def score_paged_keys_mean_precomputed(
     return True
 
 
-def score_paged_keys_mean(
-    k_cache: torch.Tensor,
-    source_block_ids: torch.Tensor,
-    q_real: torch.Tensor,
-    q_imag: torch.Tensor,
-    frequency_scale: torch.Tensor,
-    extra_coefficient: torch.Tensor,
-    omega: torch.Tensor,
-    offset_cos_mean: torch.Tensor,
-    offset_sin_mean: torch.Tensor,
-    round_start: int,
-    num_tokens: int,
-    output: torch.Tensor,
-    block_size: int,
-    rope_style: str,
-    *,
-    q_pass_mean: torch.Tensor | None = None,
-    rotary_dim: int | None = None,
-) -> bool:
-    """Compatibility wrapper that prepares phases for one scoring layer."""
-    if k_cache.device.type != "npu":
-        return False
-    phase = omega * float(round_start)
-    round_cos = torch.cos(phase)
-    round_sin = torch.sin(phase)
-    phase_cos = round_cos * offset_cos_mean - round_sin * offset_sin_mean
-    phase_sin = round_sin * offset_cos_mean + round_cos * offset_sin_mean
-    return score_paged_keys_mean_precomputed(
-        k_cache,
-        source_block_ids,
-        q_real,
-        q_imag,
-        frequency_scale,
-        extra_coefficient,
-        phase_cos,
-        phase_sin,
-        num_tokens,
-        output,
-        block_size,
-        rope_style,
-        q_pass_mean=q_pass_mean,
-        rotary_dim=rotary_dim,
-    )
-
-
 @triton.jit(do_not_specialize=["num_tokens"])
 def _aggregate_normalized_scores_kernel(
     scores_ptr,
@@ -389,6 +344,9 @@ def _aggregate_normalized_scores_kernel(
     variance = tl.load(variance_ptr + head_offsets, mask=head_mask, other=0.0).to(
         tl.float32
     )
+    # mean/variance 由上层对完整 token 维计算；本 kernel 只做归一化及头间 max。
+    # MODE 控制层间累积是 sum 还是 max；mean 的最终除层数在 method 中完成。
+    # FIRST_LAYER 也用于 TP 暂存每层独立向量，避免误读 workspace 的旧值。
     normalized = (scores - mean[None, :]) * tl.rsqrt(
         tl.maximum(variance[None, :], 1e-6)
     )
@@ -414,7 +372,7 @@ def aggregate_normalized_scores(
     layer_aggregation: str,
     first_layer: bool,
 ) -> bool:
-    """Fuse normalization, query-head max, and cross-layer accumulation."""
+    """融合归一化、query 头最大值归约与跨层累加。"""
     if scores.device.type != "npu":
         return False
     if not _triton_available():

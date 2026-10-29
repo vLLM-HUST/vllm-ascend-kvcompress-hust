@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Manual Qwen3.5-shaped partial-RoPE scorer comparison on one Ascend NPU."""
+"""在单张 Ascend NPU 上手动比较 Qwen3.5 形状的部分 RoPE 评分器。"""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def main() -> None:
     num_tokens = 32768
     rotary_dim = 64
     head_dim = 256
-    kv_heads = 1  # Qwen3.5 TP=2: two KV heads split over two ranks.
+    kv_heads = 1  # Qwen3.5 在 TP=2 时将两个 KV 头分配到两个 rank。
     queries_per_kv = 8
     frequency_count = rotary_dim // 2
     cache = torch.randn(

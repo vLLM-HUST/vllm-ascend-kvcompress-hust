@@ -1,4 +1,4 @@
-"""Historical document entry points must retain canonical original links."""
+"""验证历史文档入口保留规范的原件链接。"""
 
 import hashlib
 import json
@@ -53,13 +53,3 @@ def test_release_data_links_bind_downloaded_originals():
                 hashlib.sha256((originals / row["path"]).read_bytes()).hexdigest()
                 == row["sha256"]
             )
-
-
-def test_agent_guidance_keeps_measurements_in_benchmark():
-    guidance = (ROOT / "AGENTS.md").read_text()
-    assert "only in `vLLM-HUST/vllm-hust-benchmark`" in guidance
-    assert "docs/usage/benchmark-originals.md" in guidance
-    assert "docs/usage/benchmark-originals.zh.md" in guidance
-    assert "archive the complete original and verify remote bytes" in guidance
-    assert "summaries and aggregate evidence in `docs/results/`" not in guidance
-    assert "`results/` for dated measurements" not in guidance

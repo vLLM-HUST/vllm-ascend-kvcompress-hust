@@ -22,10 +22,15 @@
 
 ## 配置契约
 
-Extension Manager 保存一个 JSON 对象，必须包含 `schema_version`、`provider`、
-`method` 和 `method_config`。完整示例见
-[`examples/triattention.json`](../../examples/triattention.json)。未知字段、未知方法、
-不满足 block 对齐的值及无效校准文件都会报错，不会被静默忽略。仅在
+Extension Manager 保存一个 JSON 对象。`provider` 默认使用 `ascend_kvcompress`，
+`method` 默认使用 `triattention`，`method_config` 默认使用空对象；TriAttention
+要求在 `method_config` 中提供 `stats_path`。完整示例见
+[`examples/triattention.json`](../../examples/triattention.json)。
+
+顶层和 TriAttention 的 `method_config` 中的未知字段均直接忽略，包括嵌套的额外值；
+原有 `schema_version` 字段不再生效。方法选项直接传给所选 backend，公共层不再限制
+选项值必须为标量，由各方法读取并校验自身使用的字段。不支持的 provider/方法、
+已知选项的非法值、不满足 block 对齐的值及无效校准文件仍会报错。仅在
 `auto_calibrate` 启用时生成缺失文件，详见校准产物文档。
 
 `min_output_tokens_for_compression` 是非负的请求输出门槛。当请求的最大生成长度低于
@@ -162,7 +167,7 @@ my_method = "my_package.method:create_method"
 
 ## 验收清单
 
-- 只解析本方法拥有的选项，拒绝未知值；
+- 读取并校验本方法拥有的选项，忽略未知字段；
 - scheduler 限制必须确定且满足 block 对齐；
 - 服务启动前校验模型、RoPE、校准、dtype 和 cache layout；
 - `compress` 返回前完成所有层的物化；

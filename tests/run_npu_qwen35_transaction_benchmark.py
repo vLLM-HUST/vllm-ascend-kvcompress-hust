@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Measure Qwen3.5-shaped selection and KV movement on one Ascend NPU."""
+"""在单张 Ascend NPU 上测量 Qwen3.5 形状的选择与 KV 搬运。"""
 
 from __future__ import annotations
 

@@ -2,6 +2,7 @@
 
 import torch
 
+from vllm_ascend_kvcompress.host.contracts import validate_cache_tensor
 from vllm_ascend_kvcompress.methods.base import ModelShape
 from vllm_ascend_kvcompress.methods.triattention.cache import (
     gather_paged_tokens,
@@ -9,7 +10,6 @@ from vllm_ascend_kvcompress.methods.triattention.cache import (
     materialize_token_slots,
     token_slots,
 )
-from vllm_ascend_kvcompress.provider import _validate_cache_tensor
 
 
 def test_tuple_cache_materialization_gathers_before_overlapping_write() -> None:
@@ -59,8 +59,8 @@ def test_padded_pages_preserve_separate_kv_and_unused_storage() -> None:
     k_cache.copy_(torch.arange(num_blocks * logical_page).view(shape))
     v_cache.copy_(torch.arange(num_blocks * logical_page).view(shape) + 100)
     model = ModelShape("qwen2", 1, 1, heads, dim, 10_000.0, False)
-    _validate_cache_tensor("layer", "K", k_cache, model, expected_block_size=block_size)
-    _validate_cache_tensor("layer", "V", v_cache, model, expected_block_size=block_size)
+    validate_cache_tensor("layer", "K", k_cache, model, expected_block_size=block_size)
+    validate_cache_tensor("layer", "V", v_cache, model, expected_block_size=block_size)
 
     source_blocks = torch.tensor([2, 0, 3])
     keep = torch.tensor([1, 4, 6, 9])

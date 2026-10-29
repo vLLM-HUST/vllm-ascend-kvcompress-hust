@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Built-in TriAttention compression method package."""
+"""TriAttention 配置与 压缩后端，worker 代码按需加载。"""
 
+from .backend import TriAttentionBackend, create_triattention_backend
 from .config import TriAttentionConfig
-from .method import (
-    METHOD_NAME,
-    TriAttentionAscendConfig,
-    TriAttentionLayerCache,
-    TriAttentionMethod,
-    create_triattention_method,
-)
 
-__all__ = [
-    "METHOD_NAME",
-    "TriAttentionAscendConfig",
-    "TriAttentionConfig",
-    "TriAttentionLayerCache",
-    "TriAttentionMethod",
-    "create_triattention_method",
-]
+__all__ = ["TriAttentionBackend", "TriAttentionConfig", "create_triattention_backend"]

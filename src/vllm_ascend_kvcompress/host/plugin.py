@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Opt-in ``vllm.general_plugins`` registration for current vLLM Ascend."""
+"""通过显式启用的 vllm.general_plugins 入口注册当前 vLLM Ascend 插件。"""
 
 from __future__ import annotations
 
@@ -15,15 +15,13 @@ from typing import Any
 
 from vllm.logger import logger
 
-from .config import extension_enabled, load_runtime_selection
-from .provider import (
-    ATTENTION_QUERY_PROVIDER_ATTRIBUTE,
-    RUNNER_PROVIDER_ATTRIBUTE,
-    AscendKVCompressionProvider,
-    _supports_mtp2,
-)
+from ..core.config import extension_enabled, load_runtime_selection
+from ..methods import create_backend
+from ..runtime.provider import RUNNER_PROVIDER_ATTRIBUTE, AscendKVCompressionProvider
+from .contracts import supports_mtp2
+from .model_config import model_shape_from_config
 
-_PATCH_MARKER = "_ascend_kvcompress_patch_v3"
+_PATCH_MARKER = "_ascend_kvcompress_patch_v4"
 _RUNNER_MODULE = "vllm_ascend.worker.model_runner_v1"
 _runner_patch_finder: _RunnerPatchFinder | None = None
 _TRITON_GLUON_MODULES = (
@@ -34,13 +32,20 @@ _TRITON_GLUON_MODULES = (
 )
 _MESSAGE_QUEUE_MODULE = "vllm.distributed.device_communicators.shm_broadcast"
 _MESSAGE_QUEUE_PATCH_MARKER = "_ascend_kvcompress_env_chunk_default"
+# 仅在一次 attention metadata 构建调用中传播当前 provider。
+# GDN builder 与 full-attention builder 共用上游元数据，但两者需要不同的长度语义；
+# 用调用作用域而非全局 runner 引用，确保嵌套调用后能恢复原上下文。
 _METADATA_PROVIDER: ContextVar[AscendKVCompressionProvider | None] = ContextVar(
     "ascend_kvcompress_metadata_provider", default=None
 )
 
 
+# 阅读入口：pyproject.toml 的 vllm.general_plugins 指向这里。
+# 安装包本身不会开启压缩；显式启用后才给 scheduler、cache manager 和 runner 打补丁。
+# 算法实现由 selection.method 决定，
+# 补丁主要负责把宿主生命周期转交给 stateful/provider。
 def register() -> None:
-    """Install hooks only when direct or Extension Manager activation is explicit."""
+    """仅在直接配置或 Extension Manager 明确启用插件时安装钩子。"""
     if not extension_enabled():
         return
     selection = load_runtime_selection()
@@ -57,11 +62,13 @@ def register() -> None:
 
     _install_lazy_runner_hook(selection)
 
-    from .stateful import install_stateful_compression_hooks
+    from ..runtime.scheduler import install_stateful_compression_hooks
 
     install_stateful_compression_hooks(Scheduler, KVCacheManager, selection)
 
 
+# runner 延迟导入链：Finder 定位模块 → Loader 执行原 loader → 安装 runner hooks。
+# 这样 API/scheduler 进程注册插件时不必提前加载 NPU worker 的完整依赖。
 class _RunnerPatchLoader(Loader):
     def __init__(self, wrapped: Loader, selection: Any) -> None:
         self.wrapped = wrapped
@@ -72,7 +79,7 @@ class _RunnerPatchLoader(Loader):
         return create(spec) if create is not None else None
 
     def exec_module(self, module: ModuleType) -> None:
-        from .host_compat import install_removed_routed_experts_types
+        from .compat import install_removed_routed_experts_types
 
         install_removed_routed_experts_types()
         self.wrapped.exec_module(module)
@@ -80,7 +87,7 @@ class _RunnerPatchLoader(Loader):
 
 
 class _RunnerPatchFinder(MetaPathFinder):
-    """Wrap only the Ascend runner loader without importing it in API processes."""
+    """仅包装 Ascend runner 加载器，避免在 API 进程中导入 runner。"""
 
     def __init__(self, selection: Any) -> None:
         self.selection = selection
@@ -119,7 +126,7 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
         runner_cls.__module__ == _RUNNER_MODULE
         and runner_cls.__name__ == "NPUModelRunner"
     ):
-        from .host_compat import (
+        from .compat import (
             install_dcp_length_alias,
             install_removed_async_output_routing_field,
             install_removed_output_routing_field,
@@ -131,105 +138,81 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
         install_removed_output_routing_field()
         install_removed_async_output_routing_field()
         _install_gdn_metadata_hook()
-    # Current vLLM folded the legacy ``xdrope_section`` check into
-    # ``uses_mrope`` while the aligned Ascend runner still reads this old
-    # attribute in three paths.  Supply the neutral legacy value only when the
-    # host no longer defines it; models using xdrope are already represented by
-    # ``uses_mrope`` on this validated vLLM line.
+    # 当前 vLLM 已将旧的 xdrope_section 检查并入 uses_mrope，
+    # 但配套 Ascend runner 仍有三条路径读取旧属性。
+    # 仅在宿主不再定义该属性时补上中性的旧版默认值；
+    # 在已验证的 vLLM 版本中，使用 xdrope 的模型
+    # 已由 uses_mrope 表示。
     if not hasattr(runner_cls, "uses_xdrope_dim"):
         runner_cls.uses_xdrope_dim = 0
-    # The current Ascend runner reads this flag even when routed-expert
-    # capture is disabled. Its initializer only sets the flag in the enabled
-    # branch, while this plugin explicitly rejects that optional output.
+    # 当前 Ascend runner 即使关闭路由专家捕获，也会读取此标志。
+    # 其初始化逻辑只在启用分支设置该标志，
+    # 而本插件明确不支持这项可选输出。
     if not hasattr(runner_cls, "routed_experts_initialized"):
         runner_cls.routed_experts_initialized = False
+    # 包装器只分发通用生命周期事件；观测与 metadata 策略由选中的 provider 决定。
+    # 这里不再根据 Query 或逐层能力标志选择执行路径。
     original_initialize = runner_cls.initialize_kv_cache
     original_load_model = runner_cls.load_model
     original_update = runner_cls._update_states
     original_metadata = runner_cls._build_attention_metadata
     original_sample = runner_cls.sample_tokens
-    from .host_compat import qwen_gdn_list_compat_enabled
+    from .compat import qwen_gdn_list_compat_enabled
 
     gdn_list_compat = qwen_gdn_list_compat_enabled()
-    original_execute_model = getattr(runner_cls, "execute_model", None)
-    if gdn_list_compat and original_execute_model is None:
-        raise RuntimeError("Qwen GDN list compatibility requires execute_model")
+    original_execute_model = runner_cls.execute_model
 
+    # v2 加载顺序：解析 Backend → 选择 provider → 宿主 ABI 准备 → 算法产物准备，
+    # 随后才加载服务权重。此处不创建 method，调度端也不需要读取校准统计。
     def load_model(runner: Any) -> Any:
-        from .calibration import ensure_calibration_for_runner
-        from .host_compat import (
-            install_grouped_topk_router_compat,
-            install_layer_aware_fia_graph_replay,
-            install_qwen_gdn_list_compat,
-        )
-        from .methods import create_method
-        from .model import model_shape_from_config
+        from .compat import prepare_model_load
 
-        runner_config = getattr(runner, "vllm_config", None)
-        if runner_config is not None:
-            method_probe = create_method(
-                selection.method,
-                selection.method_config,
-                runner_config,
-                model_shape_from_config(runner_config.model_config),
-            )
-            if method_probe.requires_per_layer_physical_state:
-                install_layer_aware_fia_graph_replay(runner_config)
-            if method_probe.query_window_tokens:
-                _install_attention_query_hook()
-
-        install_qwen_gdn_list_compat(
-            mtp2_reference_fallback=_supports_mtp2(getattr(runner, "vllm_config", None))
+        config = runner.vllm_config
+        backend = create_backend(
+            selection.method,
+            selection.method_config,
+            config,
+            model_shape_from_config(config.model_config),
         )
-        model_config = getattr(
-            getattr(runner, "vllm_config", None), "model_config", None
-        )
-        hf_config = getattr(model_config, "hf_config", None)
-        model_type = str(getattr(hf_config, "model_type", ""))
-        if model_type.startswith("qwen3_5"):
-            # Load the host's native registrations first. Only fill the
-            # missing GDN output op; never shadow a newer Ascend binary.
-            import_module("vllm_ascend.vllm_ascend_C")
-            from .qwen_gdn_ops import install_missing_chunk_output_op
-
-            if install_missing_chunk_output_op():
-                logger.info("Using plugin-owned Triton Qwen GDN output operator")
-        install_grouped_topk_router_compat()
-        generated = ensure_calibration_for_runner(runner, selection)
-        if generated:
-            logger.info(
-                "Generated model-matched TriAttention calibration artifact "
-                "before loading serving weights"
-            )
-        return original_load_model(runner)
+        provider = backend.create_provider()
+        setattr(runner, RUNNER_PROVIDER_ATTRIBUTE, provider)
+        prepare_model_load(config)
+        provider.before_model_load(runner)
+        result = original_load_model(runner)
+        provider.after_model_load(runner)
+        return result
 
     def initialize_kv_cache(
         runner: Any, kv_cache_config: Any, *args: Any, **kwargs: Any
     ) -> Any:
-        provider = AscendKVCompressionProvider(runner.vllm_config, selection)
-        provider.validate_host(runner)
-        setattr(runner, RUNNER_PROVIDER_ATTRIBUTE, provider)
-        from .host_compat import (
+        # provider 生命周期与一个 runner 绑定。
+        # 先检查兼容性，再让宿主分配 KV，最后绑定真实 cache view；
+        # 不能用分配前传入的计划替代 runner 规范化后的配置。
+        provider = getattr(runner, RUNNER_PROVIDER_ATTRIBUTE)
+        provider.before_kv_cache_initialize(runner)
+        from .compat import (
             install_removed_model_routing_flag,
             qwen_mtp2_cache_binding_bridge,
         )
 
         install_removed_model_routing_flag(runner.vllm_config)
+        # 只在实验 MTP2 的 KV 绑定期间临时使用重复层号桥。
+        # 退出 with 后恢复原 binder，避免启动兼容动作成为整个进程的长期行为。
         bridge = (
             qwen_mtp2_cache_binding_bridge()
-            if _supports_mtp2(runner.vllm_config)
+            if supports_mtp2(runner.vllm_config)
             else nullcontext()
         )
         with bridge:
             result = original_initialize(runner, kv_cache_config, *args, **kwargs)
-        # Ascend deep-copies and normalizes the incoming plan before storing
-        # the cache config that actually owns the allocated tensors.
+        # Ascend 会先深拷贝并规范化传入的缓存方案，
+        # 再保存真正对应已分配张量的缓存配置。
         provider.bind_model_runner(runner, runner.kv_cache_config)
-        _install_runtime_slot_mapping_hooks(
-            runner, getattr(provider, "attention_group_index", 0)
-        )
+        _install_runtime_slot_mapping_hooks(runner, provider.attention_group_index)
         return result
 
+    # 原更新前确认上一轮目的块，原更新后清理消失请求并按新批次行同步偏移。
+    # 这两个时点分别依赖旧请求镜像和宿主已经完成的行重排，不能合并。
     def update_states(runner: Any, scheduler_output: Any) -> Any:
         provider = getattr(runner, RUNNER_PROVIDER_ATTRIBUTE, None)
         if provider is not None:
@@ -243,116 +226,86 @@ def _install_runner_hooks(runner_cls: type[Any], selection: Any) -> None:
         provider = getattr(runner, RUNNER_PROVIDER_ATTRIBUTE, None)
         if provider is not None:
             provider.apply_physical_attention_lengths()
+        # full attention 在此之前切到物理长度；
+        # GDN builder 通过上下文取回保存的语义长度。
+        # finally 只复位 ContextVar，并不把 runner 的长度张量恢复为语义值。
         token = _METADATA_PROVIDER.set(provider)
         try:
             result = original_metadata(runner, *args, **kwargs)
         finally:
             _METADATA_PROVIDER.reset(token)
-        if provider is not None and (
-            getattr(provider, "requires_per_layer_physical_state", False)
-            or getattr(provider, "_has_per_layer_rows", False)
-        ):
+        if provider is not None:
             num_tokens = args[0] if args else kwargs["num_tokens"]
             num_reqs = args[1] if len(args) > 1 else kwargs["num_reqs"]
-            return provider.per_layer_attention_metadata(result, num_tokens, num_reqs)
+            # 默认直接返回统一 metadata；下游 provider 可在此创建逐层或其他专用视图。
+            # 包装层只传递结果和批次尺寸，不判断下游能力标志。
+            return provider.after_attention_metadata(result, num_tokens, num_reqs)
         return result
 
+    # 先保存对应调度输出，原采样方法可能消费或清空 execute_model_state。
+    # 采样成功后才能执行本步压缩；失败则通知 provider 丢弃尚未发布的观测。
     def sample_tokens(runner: Any, grammar_output: Any) -> Any:
         state = runner.execute_model_state
         scheduler_output = state[0] if state is not None else None
         provider = getattr(runner, RUNNER_PROVIDER_ATTRIBUTE, None)
         try:
+            # 本步 forward 已完成后才执行选取/拷贝；
+            # 返回采样结果时 worker 已提交写入任务。
+            # 这里不切换 scheduler 的块表，
+            # 事务确认和旧块释放由 runtime/scheduler.py 的输出屏障控制。
             output = original_sample(runner, grammar_output)
             if provider is not None and scheduler_output is not None:
                 provider.compress_scheduled_requests(scheduler_output)
             return output
         except Exception:
-            if (
-                provider is not None
-                and scheduler_output is not None
-                and getattr(provider, "query_window_tokens", 0)
-            ):
-                provider.abort_query_step(scheduler_output)
+            if provider is not None and scheduler_output is not None:
+                provider.on_step_error(scheduler_output)
             raise
 
+    # GDN list 缓存属于宿主 ABI 兼容，每步单独清空。
+    # 其余步骤统一交给 provider：前置观测、正常返回后的处理、异常时的清理。
     def execute_model(runner: Any, *args: Any, **kwargs: Any) -> Any:
-        assert original_execute_model is not None
         if gdn_list_compat:
-            from .host_compat import clear_qwen_gdn_list_compat_cache
+            from .compat import clear_qwen_gdn_list_compat_cache
 
             clear_qwen_gdn_list_compat_cache()
         provider = getattr(runner, RUNNER_PROVIDER_ATTRIBUTE, None)
-        output = args[0] if args else kwargs.get("scheduler_output")
-        observes = provider is not None and getattr(provider, "query_window_tokens", 0)
-        has_per_layer_metadata = provider is not None and (
-            getattr(provider, "requires_per_layer_physical_state", False)
-            or getattr(provider, "_has_per_layer_rows", False)
-        )
-        if has_per_layer_metadata:
-            provider.begin_per_layer_step(output)
-        if observes:
-            provider.begin_query_step(output)
+        scheduler_output = args[0] if args else kwargs["scheduler_output"]
         try:
+            if provider is not None:
+                provider.before_execute_model(scheduler_output)
             result = original_execute_model(runner, *args, **kwargs)
-            if has_per_layer_metadata:
-                provider.finish_per_layer_step()
-            if observes:
-                provider.finish_query_step()
+            if provider is not None:
+                return provider.after_execute_model(scheduler_output, result)
             return result
         except Exception:
-            if observes:
-                provider.abort_query_step(output)
+            if provider is not None:
+                provider.on_step_error(scheduler_output)
             raise
 
+    # 保留原方法供检查与复用，再用 marker 防止同一类被多层重复包装。
+    # 这些属性保存的是宿主方法，不是下游方法能力或每请求状态。
     setattr(runner_cls, f"{_PATCH_MARKER}_original_initialize", original_initialize)
     setattr(runner_cls, f"{_PATCH_MARKER}_original_load_model", original_load_model)
     setattr(runner_cls, f"{_PATCH_MARKER}_original_update", original_update)
     setattr(runner_cls, f"{_PATCH_MARKER}_original_metadata", original_metadata)
     setattr(runner_cls, f"{_PATCH_MARKER}_original_sample", original_sample)
-    if original_execute_model is not None:
-        setattr(
-            runner_cls,
-            f"{_PATCH_MARKER}_original_execute_model",
-            original_execute_model,
-        )
+    setattr(
+        runner_cls, f"{_PATCH_MARKER}_original_execute_model", original_execute_model
+    )
     runner_cls.load_model = load_model
     runner_cls.initialize_kv_cache = initialize_kv_cache
     runner_cls._update_states = update_states
     runner_cls._build_attention_metadata = build_attention_metadata
     runner_cls.sample_tokens = sample_tokens
-    if original_execute_model is not None:
-        runner_cls.execute_model = execute_model
+    runner_cls.execute_model = execute_model
     setattr(runner_cls, _PATCH_MARKER, True)
 
 
-def _install_attention_query_hook() -> None:
-    """Observe queries at the graph-splitting attention custom-op boundary."""
-    from vllm_ascend.attention.attention_v1 import AscendAttentionBackendImpl
-
-    marker = "_ascend_kvcompress_query_observer_v1"
-    if AscendAttentionBackendImpl.__dict__.get(marker, False):
-        return
-    original = AscendAttentionBackendImpl.forward
-
-    def forward(
-        backend: Any,
-        layer: Any,
-        query: Any,
-        *args: Any,
-        **kwargs: Any,
-    ) -> Any:
-        provider = getattr(layer, ATTENTION_QUERY_PROVIDER_ATTRIBUTE, None)
-        if provider is not None:
-            provider.capture_attention_query(layer.layer_name, query)
-        return original(backend, layer, query, *args, **kwargs)
-
-    AscendAttentionBackendImpl.forward = forward
-    setattr(AscendAttentionBackendImpl, f"{marker}_original", original)
-    setattr(AscendAttentionBackendImpl, marker, True)
-
-
+# full attention 的 KV 长度可以缩短，但 GDN 的循环状态时间轴不能回退。
+# 构建 GDN metadata 时从当前调用上下文取回原长度，其他字段沿用宿主生成值。
 def _install_gdn_metadata_hook() -> None:
-    """Keep recurrent GDN metadata in semantic space during hybrid builds."""
+    """构造混合元数据时，保持循环 GDN 元数据处于语义坐标系。"""
     from vllm_ascend.ops.gdn_attn_builder import AscendGDNAttentionMetadataBuilder
 
     marker = "_ascend_kvcompress_semantic_lengths_v4"
@@ -379,28 +332,29 @@ def _install_gdn_metadata_hook() -> None:
 
 
 def _prepare_current_triton_runtime() -> None:
-    """Preload a module required by the current Ascend JIT specializer.
+    """预加载当前 Ascend JIT 特化器需要的模块。
 
-    Triton Ascend 3.6 resolves Gluon descriptor types from its native argument
-    specializer.  Its first RoPE launch fails unless the NVIDIA descriptor
-    namespace has already been materialized, even though the package is present
-    in the wheel.  Keep the workaround local to enabled plugin processes and
-    fail with a useful installation error if the expected module is absent.
+    Triton Ascend 3.6 的原生参数特化器从 Gluon 命名空间解析描述符类型。
+    即使 wheel 已包含对应包，首次 RoPE 启动前也必须先加载 NVIDIA
+    描述符命名空间。该兼容措施仅作用于启用插件的进程；
+    若缺少预期模块，则报告可用于排查安装问题的错误。
     """
-    # Triton Ascend 3.2 does not ship the Gluon API and does not use its
-    # descriptor specializer.  The Frontier host still carries that runtime,
-    # so leave it on the ordinary JIT path instead of importing a namespace
-    # that belongs only to 3.6 and newer.
+    # Triton Ascend 3.2 不提供 Gluon API，也不使用其描述符特化器。
+    # Frontier 宿主仍搭载该运行时，
+    # 因此保留普通 JIT 路径，
+    # 不导入仅属于 3.6 及更新版本的命名空间。
+    # Triton 3.2 与较新版本的模块布局不同；此分支只处理 JIT 导入条件。
+    # 导入 NVIDIA 描述符命名空间不代表在 NVIDIA 设备上执行推理。
     triton_module = sys.modules.get("triton")
     triton_version = str(getattr(triton_module, "__version__", ""))
     if triton_version.startswith("3.2."):
         return
 
-    # vLLM-Ascend's legacy compatibility path creates parent modules with an
-    # empty ``__path__``.  Triton Ascend is distributed as ``triton-ascend``,
-    # so a host check for distribution ``triton`` can select that path even on
-    # 3.6.  Remove only those unmistakable empty stubs before importing the
-    # real packages from the wheel.
+    # vLLM-Ascend 的旧版兼容路径会创建 __path__ 为空的父模块。
+    # Triton Ascend 的发行包名为 triton-ascend，
+    # 因此宿主对 triton 发行包的检测即使在 3.6 上也可能选中旧路径。
+    # 仅清除这些明确可识别的空占位模块，
+    # 然后从 wheel 中导入真实包。
     legacy_stub_present = any(
         getattr(sys.modules.get(name), "__path__", None) == []
         for name in _TRITON_GLUON_MODULES[:-1]
@@ -419,17 +373,17 @@ def _prepare_current_triton_runtime() -> None:
 
 
 def _configure_message_queue_defaults() -> None:
-    """Apply vLLM's explicit MQ chunk-size override to every local queue.
+    """将 vLLM 显式配置的消息队列分块大小应用于所有本地队列。
 
-    Current vLLM applies ``VLLM_MQ_MAX_CHUNK_BYTES_MB`` to the scheduler
-    broadcast queue, but its per-worker response queue still constructs
-    ``MessageQueue(1, 1)`` with the 24 MiB Python default.  Ten chunks therefore
-    require 240 MiB of ``/dev/shm`` even when the operator has deliberately
-    selected a smaller chunk for a low-concurrency container.  Align the omitted
-    default with the same opt-in environment variable.  Messages larger than a
-    chunk already use MessageQueue's socket fallback, so this changes only the
-    shared-memory fast-path capacity, not the accepted message size.
+    当前 vLLM 仅对调度器广播队列应用 VLLM_MQ_MAX_CHUNK_BYTES_MB，
+    每个 worker 的响应队列仍以 MessageQueue(1, 1) 使用默认 24 MiB 分块。
+    十个分块会占用 240 MiB 的 /dev/shm，即使操作人员已为低并发容器
+    显式选择更小的分块。这里用同一环境变量统一未传入的默认值。
+    超过分块容量的消息已有 socket 回退路径，因此这里只改变共享内存
+    快速路径的容量，不改变允许传输的消息大小。
     """
+    # 仅当操作者显式设置 MQ chunk 大小时，才统一 worker 响应队列的默认值。
+    # 修改的是共享内存快路径容量，大消息仍由宿主的 socket 回退机制传输。
     configured = os.getenv("VLLM_MQ_MAX_CHUNK_BYTES_MB")
     if configured is None:
         return
@@ -445,9 +399,9 @@ def _configure_message_queue_defaults() -> None:
         return
     initializer = queue_cls.__init__
     defaults = initializer.__defaults__
-    # Current MessageQueue defaults are, in order: local_reader_ranks,
-    # max_chunk_bytes, max_chunks, connect_ip. Fail closed if the host seam
-    # changes instead of silently patching the wrong parameter.
+    # 当前 MessageQueue 的默认参数依次为 local_reader_ranks、
+    # max_chunk_bytes、max_chunks、connect_ip。若宿主接口改变则报错，
+    # 避免静默修改错误的参数。
     if defaults is None or len(defaults) != 4 or defaults[2] != 10:
         raise RuntimeError("unsupported vLLM MessageQueue constructor defaults")
     updated = list(defaults)
@@ -463,27 +417,21 @@ def _configure_message_queue_defaults() -> None:
 def _install_runtime_slot_mapping_hooks(
     runner: Any, attention_group_index: int = 0
 ) -> None:
-    """Patch the concrete tables allocated by the current Ascend runner.
+    """为当前 Ascend runner 实际分配的块表安装钩子。
 
-    vLLM-Ascend owns a device-specific BlockTable implementation.  Patching
-    vLLM's generic table is therefore neither sufficient nor a stable way to
-    locate the active slot-mapping seam.  Resolve it from the initialized
-    runner and fail closed if the expected single-group structure changes.
+    vLLM-Ascend 使用设备专用的 BlockTable 实现，仅修改通用 vLLM
+    块表无法覆盖实际槽位映射入口。这里从已初始化的 runner 获取块表；
+    缓存组及组下标由此前的 provider.bind_model_runner 验证；
+    此处只检查槽位映射方法这一新增的宿主 ABI 要求。
     """
-    group_table = getattr(getattr(runner, "input_batch", None), "block_table", None)
-    block_tables = getattr(group_table, "block_tables", None)
-    if (
-        not isinstance(block_tables, list)
-        or attention_group_index < 0
-        or attention_group_index >= len(block_tables)
-    ):
-        raise RuntimeError("Ascend full-attention block table is unavailable")
-    block_table = block_tables[attention_group_index]
+    block_table = runner.input_batch.block_table.block_tables[attention_group_index]
     if not callable(getattr(block_table, "compute_slot_mapping", None)):
         raise RuntimeError("Ascend block table does not expose compute_slot_mapping")
     _install_slot_mapping_hook(type(block_table))
 
 
+# 仅绑定了 provider 的 full-attention 表做位置偏移；同类的其他表保持原路径。
+# 替换传给原方法的 positions 引用，不原地改 runner.positions，RoPE 仍用语义位置。
 def _install_slot_mapping_hook(block_table_cls: type[Any]) -> None:
     marker = f"{_PATCH_MARKER}_slot_mapping"
     if block_table_cls.__dict__.get(marker, False):

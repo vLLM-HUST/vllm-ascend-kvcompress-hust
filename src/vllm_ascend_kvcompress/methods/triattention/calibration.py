@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Generate model-matched TriAttention calibration statistics.
+"""生成与模型匹配的 TriAttention 校准统计。
 
-The service hook invokes this module before vLLM loads its model weights.  The
-temporary Hugging Face model is therefore released before the serving model is
-allocated.  A process lock and atomic rename make startup safe when more than
-one worker observes the same missing output path.
+服务钩子在 vLLM 加载模型权重前调用本模块，因此临时 Hugging Face
+模型会在服务模型分配前释放。进程锁与原子重命名可处理多个 worker
+同时发现输出产物缺失的启动竞争。
 """
 
 from __future__ import annotations
@@ -26,11 +25,11 @@ from typing import Any
 
 import torch
 
-from . import __version__
-from .methods.base import ModelShape
-from .methods.triattention.config import TriAttentionConfig
-from .methods.triattention.stats import SUPPORTED_MODEL_TYPES, CalibrationStats
-from .model import model_shape_from_config
+from ... import __version__
+from ...host.model_config import model_shape_from_config
+from ..base import ModelShape
+from .config import TriAttentionConfig
+from .stats import SUPPORTED_MODEL_TYPES, CalibrationStats
 
 _BUILTIN_CALIBRATION_SECTIONS = (
     """A reliable systems service must preserve correctness before optimizing
@@ -67,6 +66,8 @@ causes and keeps the original units.""",
 
 
 @dataclass(frozen=True)
+# 离线 CLI 与服务启动前自动校准共用的任务描述。
+# 它不属于每请求推理状态；output 是持久化统计产物，force 决定能否覆盖既有文件。
 class CalibrationRequest:
     model: str
     output: Path
@@ -85,6 +86,8 @@ class CalibrationRequest:
 
 
 @dataclass
+# 只累计各层 Q 的和、幅度和与 token 数，最终得到均值，不保存整段 Q。
+# 捕获点优先 q_norm、否则 q_proj，位于 RoPE 前，和运行时 attention Query 观测不同。
 class _LayerAccumulator:
     real_sum: torch.Tensor | None = None
     imag_sum: torch.Tensor | None = None
@@ -101,18 +104,20 @@ class _LayerAccumulator:
     ) -> None:
         expected = heads * head_dim
         if projected.shape[-1] == expected * 2:
-            # Qwen3.5 q_proj packs the attention-output gate after Q.
+            # Qwen3.5 的 q_proj 将注意力输出门控打包在 Q 之后。
             projected = projected[..., :expected]
         if projected.shape[-1] == expected:
             values = projected.detach().reshape(-1, heads, head_dim).float()
         elif projected.shape[-1] == head_dim and projected.numel() % expected == 0:
-            # Q/K normalization modules commonly expose [..., heads, head_dim].
+            # Q/K 归一化模块通常输出 [..., heads, head_dim] 形状。
             values = projected.detach().reshape(-1, heads, head_dim).float()
         else:
             raise RuntimeError(
                 "query projection width does not match model attention shape: "
                 f"got {projected.shape[-1]}, expected {expected}"
             )
+        # half RoPE 把旋转子空间前后两半视为实/虚部；尾部 pass_values 不参与复旋转。
+        # Qwen3.5 的 q_proj 还可能拼接输出 gate，上面先剥离，不能把 gate 纳入 Q 均值。
         frequency_count = rotary_dim // 2
         real = values[..., :frequency_count]
         imag = values[..., frequency_count:rotary_dim]
@@ -131,12 +136,11 @@ class _LayerAccumulator:
         self.count += values.shape[0]
 
 
-def ensure_calibration_for_runner(runner: Any, selection: Any) -> bool:
-    """Generate and validate a missing artifact before serving weights load."""
-    if getattr(selection, "method", None) != "triattention":
-        return False
-    config = TriAttentionConfig.from_method_config(selection.method_config)
+def ensure_calibration_for_runner(runner: Any, config: TriAttentionConfig) -> bool:
+    """在加载服务权重前，生成并验证缺失的校准产物。"""
     model_shape = model_shape_from_config(runner.model_config)
+    # 服务启动前优先验证已有产物；不因 auto_calibrate=True 就覆盖它。
+    # 若缺失且关闭自动生成，后续 method 加载统计时会报告文件缺失。
     if config.stats_path.is_file():
         _validate_artifact(config.stats_path, model_shape, runner.model_config)
         return False
@@ -165,9 +169,9 @@ def ensure_calibration_for_runner(runner: Any, selection: Any) -> bool:
         local_files_only=config.calibration_local_files_only,
         max_length=config.calibration_max_length,
         device=device,
-        # A single Qwen3.5-35B-A3B BF16 snapshot is larger than one 910B2.
-        # Let Accelerate distribute the temporary calibration model across the
-        # visible NPUs when the serving topology is already tensor parallel.
+        # 单份 Qwen3.5-35B-A3B BF16 权重快照超过一张 910B2 的容量。
+        # 若服务拓扑已使用张量并行，
+        # 则让 Accelerate 将临时校准模型分散到可见 NPU 上。
         device_map="auto" if tensor_parallel_size > 1 else None,
         dtype=dtype,
         attn_implementation=config.calibration_attn_implementation,
@@ -178,12 +182,14 @@ def ensure_calibration_for_runner(runner: Any, selection: Any) -> bool:
 
 
 def generate_calibration_artifact(request: CalibrationRequest) -> bool:
-    """Generate one artifact, returning false when another process won the race."""
+    """生成校准产物，若另一进程已先完成生成，则返回 False。"""
     if request.max_length < 128:
         raise ValueError("calibration max_length must be at least 128")
     output = request.output.expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     lock_path = output.with_name(f".{output.name}.lock")
+    # 多 worker 可同时发现文件缺失；文件锁覆盖检查、生成和保存整个临界区。
+    # 锁内再次检查，等待者复用胜出者产物；原子替换防止读者看到半写文件。
     with lock_path.open("a+b") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         if output.is_file() and not request.force:
@@ -271,14 +277,16 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
     if request.attn_implementation:
         load_options["attn_implementation"] = request.attn_implementation
     if is_qwen35_multimodal:
-        # The published Qwen3.5 checkpoint nests text weights below
-        # model.language_model. Loading only the causal text model avoids
-        # constructing an unused vision tower during calibration.
+        # 已发布的 Qwen3.5 检查点将文本权重嵌套在
+        # model.language_model 下。只加载因果文本模型，
+        # 避免在校准时构造用不到的视觉塔。
         load_options["key_mapping"] = {r"^model\.language_model\.(.+)$": r"model.\1"}
 
     model: torch.nn.Module | None = None
     handles: list[Any] = []
     try:
+        # Qwen3.5 多模态 checkpoint 只加载文本因果模型并做权重键映射。
+        # 校准只消费文本 Q，不需要构建未使用的视觉塔。
         model_loader = AutoModelForCausalLM if is_qwen35_multimodal else AutoModel
         model = model_loader.from_pretrained(request.model, **load_options)
         model.eval()
@@ -290,10 +298,16 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
                 f"got {actual_layer_indices}, expected "
                 f"{shape.full_attention_layer_indices}"
             )
+        # 每层只存统计累计量与 token 数，不保留全部前向激活。
+        # 完整 Q 仅在 hook 回调中短暂使用，均值以实际采样 token 总数为分母。
         accumulators = {
             layer_idx: _LayerAccumulator() for layer_idx, _ in attention_layers
         }
         for layer_idx, attention in attention_layers:
+            # 若存在 Q 归一化，必须采集归一化后的 Q，
+            # 单采 q_proj 会与服务模型评分不一致。
+            # 每层闭包通过默认参数 index 固定层号，
+            # 避免循环结束后所有 hook 指向最后一层。
             capture_module = getattr(attention, "q_norm", None)
             if not isinstance(capture_module, torch.nn.Module):
                 capture_module = getattr(attention, "q_proj", None)
@@ -327,6 +341,8 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
             for name, value in encoded.items()
             if isinstance(value, torch.Tensor)
         }
+        # 只前向一次、use_cache=False；统计量来自校准输入，不来自实际服务请求。
+        # 生成后在 finally 移除 hook 并回收临时模型，随后宿主才加载服务权重。
         with torch.inference_mode():
             model(**model_inputs, use_cache=False)
 
@@ -339,12 +355,8 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
         )
         layer_stats: dict[str, dict[str, torch.Tensor]] = {}
         for layer_idx, accumulator in accumulators.items():
-            if (
-                accumulator.count <= 0
-                or accumulator.real_sum is None
-                or accumulator.imag_sum is None
-                or accumulator.abs_sum is None
-            ):
+            # add 同步初始化三个accumulator累计量；这里只检查外部 forward 是否真正产生了样本。
+            if accumulator.count <= 0:
                 raise RuntimeError(f"no query values captured for layer {layer_idx}")
             divisor = float(accumulator.count)
             inv_freq, freq_scale_sq = rope_values[layer_idx]
@@ -362,6 +374,9 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
         config_payload = (
             config.to_dict() if hasattr(config, "to_dict") else vars(config)
         )
+        # 产物同时保存评分所需形状/RoPE 信息和来源信息；二者承担不同验证职责。
+        # 统计 loader 检查数值与模型形状，
+        # _validate_artifact 对本插件产物额外检查模型来源。
         metadata = {
             "schema_version": 3,
             "generator": "vllm-ascend-kvcompress-hust",
@@ -412,7 +427,7 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
 
 
 def _load_payload(payload: Mapping[str, Any]) -> CalibrationStats:
-    """Materialize a short-lived payload for the safe loader/validator path."""
+    """构造临时载荷，交由安全加载及验证路径处理。"""
     handle, raw_path = tempfile.mkstemp(suffix=".pt")
     os.close(handle)
     path = Path(raw_path)
@@ -476,6 +491,8 @@ def _validate_existing_for_request(path: Path, request: CalibrationRequest) -> N
     _validate_artifact(path, shape, model_config)
 
 
+# 临时文件放在目标同一目录，写完 flush/fsync 后再原子替换。
+# 配合外层文件锁，其他 worker 只会读到完整旧文件或完整新文件。
 def _atomic_torch_save(payload: Mapping[str, Any], output: Path) -> None:
     descriptor, raw_path = tempfile.mkstemp(
         prefix=f".{output.name}.", suffix=".tmp", dir=output.parent
@@ -498,8 +515,8 @@ def _find_attention_layers(
     model: torch.nn.Module,
 ) -> list[tuple[int, torch.nn.Module]]:
     backbone = _find_transformer_backbone(model)
-    layers = getattr(backbone, "layers", None)
-    assert layers is not None
+    # 查找函数只返回具有 ModuleList 层集合的 backbone。
+    layers = backbone.layers
     attention_layers: list[tuple[int, torch.nn.Module]] = []
     for layer_idx, layer in enumerate(list(layers)):
         attention = getattr(layer, "self_attn", None)
@@ -509,7 +526,7 @@ def _find_attention_layers(
 
 
 def _find_transformer_backbone(model: torch.nn.Module) -> torch.nn.Module:
-    """Locate text decoder layers through common causal/VLM wrappers."""
+    """穿过常见因果语言模型或视觉语言模型包装，定位文本解码层。"""
     candidates = [model]
     seen: set[int] = set()
     while candidates:
@@ -526,6 +543,9 @@ def _find_transformer_backbone(model: torch.nn.Module) -> torch.nn.Module:
     raise RuntimeError("cannot locate transformer decoder layers")
 
 
+# 优先读取模型真实 rotary_emb.inv_freq 与 attention_scaling。
+# 只允许 default RoPE 用 theta 补频率；缩放 RoPE 必须暴露真实值，不能猜测。
+# 保存 scale² 是为兼容统计格式，运行时 post-RoPE K 评分只补 query-side scale。
 def _extract_rope_values(
     model: torch.nn.Module,
     attention_layers: Sequence[tuple[int, torch.nn.Module]],
@@ -591,6 +611,8 @@ def _rope_type(config: Any) -> str:
 
 
 def _load_calibration_text(request: CalibrationRequest) -> tuple[str, str]:
+    # 外部文本保持原内容用于来源哈希；没有指定时才生成内置多语种材料。
+    # 内置材料按字符数预留长度，最终 token 数仍以 tokenizer 截断结果为准。
     if request.input_path is not None:
         path = request.input_path.expanduser().resolve()
         if not path.is_file():
@@ -664,13 +686,15 @@ def _sha256_json(value: Any) -> str:
 
 
 def _model_source_fingerprint(model: str, revision: str | None) -> str:
-    """Fingerprint a local checkpoint manifest without rereading all weights."""
+    """基于本地检查点清单生成指纹，避免重新读取全部权重。"""
     path = Path(model).expanduser()
     if not path.is_dir():
         return (
             "identifier:"
             + hashlib.sha256(f"{model}@{revision or 'default'}".encode()).hexdigest()
         )
+    # 此指纹基于文件名、大小、mtime 的本地清单，不读取全部权重内容。
+    # 可检测常见 checkpoint 替换，但不是逐字节权重哈希或模型语义等价证明。
     entries: list[tuple[str, int, int]] = []
     patterns = ("*.safetensors", "*.bin", "*.pt", "*.index.json", "config.json")
     candidates = {candidate for pattern in patterns for candidate in path.glob(pattern)}

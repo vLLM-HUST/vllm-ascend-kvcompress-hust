@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded BF16 numerical smoke for the plugin-owned Qwen GDN output op."""
+"""对插件自有 Qwen GDN 输出算子执行有限规模的 BF16 数值冒烟检查。"""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ import math
 import torch
 import torch_npu  # noqa: F401
 
-from vllm_ascend_kvcompress.plugin import _prepare_current_triton_runtime
-from vllm_ascend_kvcompress.qwen_gdn_ops import _run as run_plugin_fallback
-from vllm_ascend_kvcompress.qwen_gdn_ops import install_missing_chunk_output_op
+from vllm_ascend_kvcompress.host.plugin import _prepare_current_triton_runtime
+from vllm_ascend_kvcompress.host.qwen_gdn_ops import _run as run_plugin_fallback
+from vllm_ascend_kvcompress.host.qwen_gdn_ops import install_missing_chunk_output_op
 
 
 def reference(
@@ -56,8 +56,8 @@ def main() -> None:
     import vllm_ascend.vllm_ascend_C  # noqa: F401
     from vllm_ascend.utils import bootstrap_custom_op_env
 
-    # A direct op test bypasses the normal platform bootstrap performed by
-    # serving, so expose the host's installed vendor kernels explicitly.
+    # 直接测试算子会绕过服务启动时的平台初始化，
+    # 因此需要显式加载宿主已安装的厂商内核。
     bootstrap_custom_op_env(include_vendor_lib=True)
 
     installed = install_missing_chunk_output_op()
@@ -92,8 +92,8 @@ def main() -> None:
     source = "plugin fallback" if installed else "host operator"
     print(f"PASS {source} GDN output BF16 max_abs={max_abs:.6f}")
     if not installed:
-        # The new host registers the same schema, so verify the plugin's own
-        # Triton fallback directly without replacing the host registration.
+        # 新宿主已注册同名 schema，因此直接验证插件自身的 Triton 回退实现，
+        # 不替换宿主注册。
         _prepare_current_triton_runtime()
         fallback = run_plugin_fallback(
             npu_q,

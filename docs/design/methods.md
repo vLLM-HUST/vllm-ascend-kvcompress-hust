@@ -27,12 +27,12 @@ the tested host version line and fail closed after incompatible changes.
 
 ## Configuration contract
 
-The manager stores one JSON object. `schema_version`, `provider`, `method`, and
-`method_config` are required. For example:
+The manager stores one JSON object. `provider` defaults to `ascend_kvcompress`,
+`method` defaults to `triattention`, and `method_config` defaults to an empty
+object. TriAttention requires `stats_path` inside `method_config`. For example:
 
 ```json
 {
-  "schema_version": 1,
   "provider": "ascend_kvcompress",
   "method": "triattention",
   "method_config": {
@@ -55,9 +55,14 @@ The manager stores one JSON object. `schema_version`, `provider`, `method`, and
 }
 ```
 
-Unknown keys, methods, incompatible block alignment, and invalid calibration
-files are rejected rather than ignored. A missing file is generated only when
-`auto_calibrate` is enabled; see the calibration artifact guide.
+Unknown fields at the top level and inside TriAttention's `method_config` are
+ignored, including nested extra values. The former `schema_version` field has
+no effect. Method options are passed to the selected backend without a shared
+scalar-only restriction; each method reads and validates the options it uses.
+Unsupported providers/methods, invalid values for recognized options,
+incompatible block alignment and invalid calibration files still raise errors.
+A missing file is generated only when `auto_calibrate` is enabled; see the
+calibration artifact guide.
 
 `min_output_tokens_for_compression` is a non-negative requested-output gate.
 When a request's maximum generation is below it, both scheduler and worker skip
@@ -225,7 +230,7 @@ bad factories, and name mismatches fail closed.
 
 ## Acceptance checklist
 
-- Parse only method-owned options and reject unknown values.
+- Read and validate method-owned options; ignore unknown fields.
 - Make all scheduler limits deterministic and block aligned.
 - Validate model, RoPE, calibration, dtype, and cache layout before serving.
 - Materialize every layer before returning from `compress`.

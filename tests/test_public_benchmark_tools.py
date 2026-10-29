@@ -1,23 +1,13 @@
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
+from collections import UserDict
 
-ROOT = Path(__file__).resolve().parents[1]
+import pytest
 
-
-def _load(name: str):
-    path = ROOT / "scripts" / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-data = _load("kvcompress_benchmark_data")
-score = _load("kvcompress_benchmark_score")
-run = _load("kvcompress_benchmark_run")
+from scripts import kvcompress_benchmark_data as data
+from scripts import kvcompress_benchmark_run as run
+from scripts import kvcompress_benchmark_score as score
+from scripts import kvcompress_long_context_run as long_run
 
 
 def test_public_source_revisions_and_hashes_are_pinned() -> None:
@@ -27,8 +17,9 @@ def test_public_source_revisions_and_hashes_are_pinned() -> None:
     assert len(data.SOURCES["longbench"]["sha256"]) == 64
 
 
-def test_public_runner_freezes_every_sampling_control() -> None:
-    assert run.FROZEN_SAMPLING_PARAMS == {
+@pytest.mark.parametrize("runner", [run, long_run], ids=["public", "long-context"])
+def test_runners_freeze_the_sampling_protocol(runner) -> None:
+    assert runner.FROZEN_SAMPLING_PARAMS == {
         "temperature": 0.0,
         "top_p": 1.0,
         "top_k": -1,
@@ -49,18 +40,11 @@ def test_public_runner_freezes_every_sampling_control() -> None:
 def test_tokenize_accepts_current_transformers_batch_encoding() -> None:
     class Tokenizer:
         def apply_chat_template(self, *_args, **_kwargs):
-            return {"input_ids": [1, 2, 3], "attention_mask": [1, 1, 1]}
+            # BatchEncoding 实现 Mapping，但不一定是 dict。
+            # 普通 dict 替身无法捕获该回归。
+            return UserDict(input_ids=[1, 2, 3], attention_mask=[1, 1, 1])
 
     assert data._tokenize(Tokenizer(), "prompt", 8) == [1, 2, 3]
-
-    class MappingOnly(dict):
-        pass
-
-    class MappingTokenizer:
-        def apply_chat_template(self, *_args, **_kwargs):
-            return MappingOnly(input_ids=[4, 5], attention_mask=[1, 1])
-
-    assert data._tokenize(MappingTokenizer(), "prompt", 8) == [4, 5]
 
 
 def test_tokenize_can_freeze_non_thinking_chat_template() -> None:

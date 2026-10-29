@@ -1,5 +1,4 @@
 {
-  "schema_version": 1,
   "provider": "ascend_kvcompress",
   "method": "triattention",
   "method_config": {

@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Configuration owned by the built-in TriAttention method."""
+"""内置 TriAttention 方法自行持有的配置。"""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
-from ...config import ASCEND_BLOCK_SIZE, JsonScalar, require_choice, require_int
+from ...core.constants import KERNEL_CACHE_BLOCK_SIZE
+from ...core.validation import require_bool, require_choice, require_int
 
 ScoreAggregation = Literal["mean", "max"]
 LayerAggregation = Literal["mean", "max"]
@@ -17,61 +18,37 @@ PositionPolicy = Literal["global", "v3"]
 
 @dataclass(frozen=True)
 class TriAttentionConfig:
-    """Validated options owned exclusively by the TriAttention method."""
-
-    stats_path: Path
-    auto_calibrate: bool = True
-    calibration_input_path: Path | None = None
-    calibration_max_length: int = 4096
-    calibration_device: str = "auto"
+    stats_path: Path  # 模型匹配的校准统计文件路径。
+    auto_calibrate: bool = True  # 统计文件缺失时自动生成。
+    calibration_input_path: Path | None = None  # 校准文本路径；None 使用内置文本。
+    calibration_max_length: int = 4096  # 校准输入的最大 token 数。
+    calibration_device: str = "auto"  # 校准设备；auto 自动选择。
+    # 临时校准模型使用的注意力实现。
     calibration_attn_implementation: str = "eager"
-    calibration_local_files_only: bool = False
-    kv_budget: int = 2048
-    recompute_window: int = ASCEND_BLOCK_SIZE
-    position_policy: PositionPolicy = "global"
-    protected_prefix_window: int = 0
-    protected_recent_window: int = ASCEND_BLOCK_SIZE
-    position_segments: int = 8
-    score_aggregation: ScoreAggregation = "mean"
-    layer_aggregation: LayerAggregation = "mean"
-    score_chunk_size: int = 512
-    score_layer_stride: int = 8
-    min_output_tokens_for_compression: int = 0
+    calibration_local_files_only: bool = False  # 校准加载仅使用本地模型文件。
+
+    kv_budget: int = 2048  # 压缩后保留的 KV token 总数，包含保护区。
+    # 重算窗口决定触发间隔，同时为 APC 保留前向后缀；不表示压缩后重跑历史。
+    recompute_window: int = KERNEL_CACHE_BLOCK_SIZE
+    position_policy: PositionPolicy = "global"  # 位置选择策略：global 或分段 v3。
+    protected_prefix_window: int = 0  # 强制保留的起始 token 数。
+    # 强制保留的末尾 token 数。
+    protected_recent_window: int = KERNEL_CACHE_BLOCK_SIZE
+    position_segments: int = 8  # v3 策略的中间区间分段数。
+
+    score_aggregation: ScoreAggregation = "mean"  # 未来 query 采样位置间的聚合方式。
+    layer_aggregation: LayerAggregation = "mean"  # 不同评分层之间的聚合方式。
+    score_chunk_size: int = 512  # 分块评分时每块处理的 token 数。
+    score_layer_stride: int = 8  # 评分层采样步长；所有缓存层仍搬运所选 KV。
+    min_output_tokens_for_compression: int = 0  # 请求最大输出 token 数门槛；0 不限制。
 
     @property
     def compression_threshold_tokens(self) -> int:
         return self.kv_budget + self.recompute_window
 
     @classmethod
-    def from_method_config(
-        cls, method_config: Mapping[str, JsonScalar]
-    ) -> TriAttentionConfig:
-        known_options = {
-            "stats_path",
-            "auto_calibrate",
-            "calibration_input_path",
-            "calibration_max_length",
-            "calibration_device",
-            "calibration_attn_implementation",
-            "calibration_local_files_only",
-            "kv_budget",
-            "recompute_window",
-            "position_policy",
-            "protected_prefix_window",
-            "protected_recent_window",
-            "position_segments",
-            "score_aggregation",
-            "layer_aggregation",
-            "score_chunk_size",
-            "score_layer_stride",
-            "min_output_tokens_for_compression",
-        }
-        unknown = sorted(set(method_config) - known_options)
-        if unknown:
-            raise ValueError(
-                "unknown TriAttention method options: " + ", ".join(unknown)
-            )
-
+    def from_method_config(cls, method_config: Mapping[str, Any]) -> TriAttentionConfig:
+        # 只读取本方法拥有的字段，额外字段不参与解析或校验。
         stats_path_raw = method_config.get("stats_path")
         if not isinstance(stats_path_raw, str) or not stats_path_raw.strip():
             raise ValueError("method option 'stats_path' must be a non-empty string")
@@ -91,7 +68,7 @@ class TriAttentionConfig:
 
         config = cls(
             stats_path=Path(stats_path_raw).expanduser(),
-            auto_calibrate=_require_bool(method_config, "auto_calibrate", True),
+            auto_calibrate=require_bool(method_config, "auto_calibrate", True),
             calibration_input_path=(
                 Path(input_path_raw).expanduser()
                 if isinstance(input_path_raw, str)
@@ -110,12 +87,12 @@ class TriAttentionConfig:
                     {"eager", "sdpa", "flash_attention_2"},
                 ),
             ),
-            calibration_local_files_only=_require_bool(
+            calibration_local_files_only=require_bool(
                 method_config, "calibration_local_files_only", False
             ),
             kv_budget=require_int(method_config, "kv_budget", 2048),
             recompute_window=require_int(
-                method_config, "recompute_window", ASCEND_BLOCK_SIZE
+                method_config, "recompute_window", KERNEL_CACHE_BLOCK_SIZE
             ),
             position_policy=cast(
                 PositionPolicy,
@@ -130,7 +107,7 @@ class TriAttentionConfig:
                 method_config, "protected_prefix_window", 0
             ),
             protected_recent_window=require_int(
-                method_config, "protected_recent_window", ASCEND_BLOCK_SIZE
+                method_config, "protected_recent_window", KERNEL_CACHE_BLOCK_SIZE
             ),
             position_segments=require_int(method_config, "position_segments", 8),
             score_aggregation=cast(
@@ -161,16 +138,19 @@ class TriAttentionConfig:
         return config
 
     def _validate(self) -> None:
+        # 这里检查内核的 128-token 对齐；若 hybrid manager 页更大，
+        # 预算还需通过 provider/stateful 的逻辑页对齐校验，
+        # 方法配置单独通过并不保证启动成功。
         aligned_options = {
             "kv_budget": self.kv_budget,
             "recompute_window": self.recompute_window,
             "score_chunk_size": self.score_chunk_size,
         }
         for name, value in aligned_options.items():
-            if value <= 0 or value % ASCEND_BLOCK_SIZE != 0:
+            if value <= 0 or value % KERNEL_CACHE_BLOCK_SIZE != 0:
                 raise ValueError(
                     f"method option {name!r} must be a positive multiple of "
-                    f"{ASCEND_BLOCK_SIZE}"
+                    f"{KERNEL_CACHE_BLOCK_SIZE}"
                 )
         for name, value in (
             ("protected_prefix_window", self.protected_prefix_window),
@@ -178,8 +158,6 @@ class TriAttentionConfig:
         ):
             if value < 0:
                 raise ValueError(f"method option {name!r} must be non-negative")
-            if value > self.kv_budget:
-                raise ValueError(f"method option {name!r} cannot exceed 'kv_budget'")
         if self.protected_prefix_window + self.protected_recent_window > self.kv_budget:
             raise ValueError(
                 "protected prefix and recent windows cannot exceed 'kv_budget'"
@@ -196,10 +174,3 @@ class TriAttentionConfig:
             raise ValueError(
                 "method option 'calibration_max_length' must be at least 128"
             )
-
-
-def _require_bool(options: Mapping[str, JsonScalar], name: str, default: bool) -> bool:
-    value = options.get(name, default)
-    if not isinstance(value, bool):
-        raise ValueError(f"method option {name!r} must be a boolean")
-    return value

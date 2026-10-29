@@ -3,12 +3,11 @@
 # SPDX-FileCopyrightText: Songlin Yang, Yu Zhang
 # Derived from flash-linear-attention (MIT), Copyright (c) 2023-2025,
 # Songlin Yang and Yu Zhang. See NOTICE for the attribution boundary.
-"""Plugin-owned Triton implementation of the missing Qwen GDN output op.
+"""由插件提供缺失的 Qwen GDN 输出算子的 Triton 实现。
 
-The synced Ascend Python path calls ``_C_ascend.chunk_fwd_o_vllm`` while some
-deployed Ascend binaries predate that registration. The plugin defines exactly
-this missing op, compiles its kernel through Triton Ascend on first use, and
-leaves an upstream implementation untouched when one is present.
+同步后的 Ascend Python 路径调用 _C_ascend.chunk_fwd_o_vllm，
+但部分部署中的 Ascend 二进制尚未注册它。插件仅补齐此算子，
+首次使用时通过 Triton Ascend 编译内核，已有上游实现时优先保留。
 """
 
 from __future__ import annotations
@@ -21,6 +20,8 @@ import torch
 import torch.nn.functional as functional
 from vllm.triton_utils import tl, triton
 
+# 此处实现 hybrid 模型运行所需的 GDN 运算兼容，和 TriAttention 压缩独立。
+# _LIBRARY 持有 torch.library 注册对象，避免对象析构导致自定义算子注册被撤销。
 _LIBRARY: torch.library.Library | None = None
 _SCHEMA = (
     "chunk_fwd_o_vllm(Tensor q, Tensor k, Tensor v, Tensor h, float scale, "
@@ -42,12 +43,12 @@ def causal_conv1d_spec_reference(
     activation_mode: int,
     pad_slot_id: int,
 ) -> torch.Tensor:
-    """Emulate the host MTP convolution's extended rolling-state semantics."""
+    """模拟宿主 MTP 卷积扩展后的滚动状态语义。"""
     if cache_indices.ndim == 2:
         if cache_indices.shape[1] < 1:
             raise RuntimeError("Qwen GDN MTP cache block table is empty")
-        # Match the host Qwen GDN reference: convolution updates the target
-        # state; the recurrent MTP path owns the additional draft states.
+        # 与宿主 Qwen GDN 参考实现保持一致：卷积更新目标状态，
+        # 额外草稿状态由循环 MTP 路径负责。
         cache_indices = cache_indices[:, 0]
     if activation_mode not in (0, 1):
         raise RuntimeError("unsupported Qwen GDN activation mode")
@@ -72,6 +73,8 @@ def causal_conv1d_spec_reference(
         conv_state = conv_state.transpose(-1, -2)
     if conv_state.shape[-2] != feature_dim or conv_state.shape[-1] < width - 1:
         raise RuntimeError("Qwen GDN speculative state dimensions disagree")
+    # 这是兼容参考路径，CPU 读取各请求边界/接受数会同步设备；不属于纯设备压缩热路径。
+    # accepted-1 定位有效历史窗口，用于回滚后重新拼接已接受前缀与本次候选 token。
     boundaries = [int(value) for value in query_start_loc.detach().cpu().tolist()]
     indices = [int(value) for value in cache_indices.detach().cpu().tolist()]
     accepted = [int(value) for value in num_accepted_tokens.detach().cpu().tolist()]
@@ -83,6 +86,8 @@ def causal_conv1d_spec_reference(
         start, end = boundaries[row : row + 2]
         if cache_index == pad_slot_id or end == start:
             continue
+        # 接受数定位当前有效的历史状态窗口；草稿被拒绝后，不能直接沿用乐观尾部。
+        # 先复制有效历史，再拼接本步候选 token，避免原地更新覆盖仍需读取的状态。
         offset = accepted[row] - 1
         if (
             start < 0
@@ -169,6 +174,8 @@ def _chunk_fwd_o_kernel(
     o_base = o_ptr + batch * o_sb + head * o_sh + start * o_st
     g_base = g_ptr + batch * g_sb + head * g_sh + start * g_st
 
+    # GDN chunk 输出由跨 chunk 状态项 Q·H 与当前 chunk 的因果 QKᵀ·V 两项组成。
+    # 可选 gate 修正历史衰减，三角 mask 禁止读未来 token；这里没有 KV token 淘汰。
     for chunk in range(tl.cdiv(length, block_t)):
         h_base = h_ptr + batch * h_sb + head * h_sh + (chunk_base + chunk) * h_sc
         output = tl.zeros((block_t, block_v), dtype=tl.float32)
@@ -232,6 +239,8 @@ def _chunk_fwd_o_kernel(
         tl.store(o_block, output.to(o_block.dtype.element_ty), boundary_check=(0, 1))
 
 
+# 把普通 batch 或 packed 变长输入转换为 (batch,start,length,chunk_base)。
+# chunk_base 指向 h 的 chunk 轴；零长序列不占 chunk，需与宿主标签规则一致。
 def _segments(
     q: torch.Tensor,
     block_t: int,
@@ -259,8 +268,8 @@ def _segments(
         flat = tuple(int(value) for value in chunk_indices)
         if len(flat) != 2 * chunk_base:
             raise ValueError("chunk_indices must contain one pair per chunk")
-        # Ascend's prepare_chunk_indices labels nonempty sequences densely;
-        # zero-length segments consume no chunk and no sequence label.
+        # Ascend 的 prepare_chunk_indices 对非空序列连续编号；
+        # 零长度片段不占用分块，也不占用序列编号。
         expected = tuple(
             value
             for seq, (_, _, length, _) in enumerate(
@@ -292,6 +301,8 @@ def _validate(
     if v.shape[0] != batch or v.shape[2] != total or h.shape[0] != batch:
         raise ValueError("GDN batch or token dimensions do not match")
     heads, value_dim = v.shape[1], v.shape[3]
+    # GDN 的 Q/K 头数可能少于 V/输出头数，用整除分组关系将其广播到值头。
+    # h 按 [batch,值头,chunk,key_dim,value_dim] 存储跨 chunk 的循环状态。
     if heads % key_heads or h.shape[1] != heads or h.shape[-2:] != (key_dim, value_dim):
         raise ValueError("GDN head or feature dimensions do not match")
     if g is not None and g.shape != (batch, heads, total):
@@ -342,6 +353,8 @@ def _run(
     key_heads = q.shape[1]
     value_dim = v.shape[3]
     key_dim = q.shape[3]
+    # packed 输入的每个真实序列分别启动 kernel，避免因果计算跨越请求边界。
+    # base 指向该序列的首个状态 chunk，不是 token 下标。
     for batch, start, length, base in segments:
         if length == 0:
             continue
@@ -377,6 +390,8 @@ def _run(
     return output
 
 
+# Meta 实现只描述输出形状/类型供 tracing 使用，不执行数值计算。
+# 真实 NPU 调用走 PrivateUse1 的 _run；安装前先检查宿主是否已有原生注册。
 def _meta(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -390,12 +405,14 @@ def _meta(
 
 
 def install_missing_chunk_output_op() -> bool:
-    """Register the plugin JIT kernel only when Ascend lacks the same schema."""
+    """仅在 Ascend 缺少同名 schema 时注册插件 JIT 内核。"""
     global _LIBRARY
     if hasattr(torch.ops._C_ascend, "chunk_fwd_o_vllm"):
         return False
     if _LIBRARY is not None:
         return True
+    # FRAGMENT 为已有命名空间补充单个缺失算子。
+    # PrivateUse1 对应 NPU 数值实现，Meta 只向追踪器提供输出形状与类型。
     library = torch.library.Library("_C_ascend", "FRAGMENT")
     library.define(_SCHEMA)
     library.impl("chunk_fwd_o_vllm", _run, "PrivateUse1")

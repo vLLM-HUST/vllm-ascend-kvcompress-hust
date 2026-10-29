@@ -4,15 +4,12 @@ import re
 from pathlib import Path
 
 import vllm_ascend_kvcompress
-from vllm_ascend_kvcompress.methods import METHOD_API_VERSION
 
 
 def test_runtime_version_matches_distribution_version() -> None:
-    assert vllm_ascend_kvcompress.__version__ == "0.10.0"
-
-
-def test_external_method_api_is_explicitly_versioned() -> None:
-    assert METHOD_API_VERSION == 1
+    project = (Path(__file__).parents[1] / "pyproject.toml").read_text()
+    declared = re.search(r'(?m)^version = "([^"]+)"$', project).group(1)
+    assert vllm_ascend_kvcompress.__version__ == declared
 
 
 def test_wheel_does_not_reresolve_the_hardware_host_stack() -> None:
@@ -20,20 +17,3 @@ def test_wheel_does_not_reresolve_the_hardware_host_stack() -> None:
     pyproject = (project_root / "pyproject.toml").read_text(encoding="utf-8")
 
     assert re.search(r"(?m)^dependencies = \[\]$", pyproject)
-
-
-def test_builtin_method_owns_its_implementation_modules() -> None:
-    package_root = Path(vllm_ascend_kvcompress.__file__).parent
-    method_root = package_root / "methods" / "triattention"
-
-    assert {path.name for path in method_root.glob("*.py")} >= {
-        "__init__.py",
-        "cache.py",
-        "config.py",
-        "method.py",
-        "scoring.py",
-        "selection.py",
-        "stats.py",
-    }
-    for method_specific_module in ("cache.py", "scoring.py", "stats.py"):
-        assert not (package_root / method_specific_module).exists()

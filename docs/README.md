@@ -19,7 +19,7 @@ after archival.
 | Benchmark protocols | [Choose a protocol for the workload and claim](benchmark/README.md) |
 | Implementation | [Method API and TriAttention](design/methods.md), [Ascend adaptation](design/ascend-adaptation-vs-triattention-vllm.md), [Qwen3.5 hybrid model](design/qwen3.5-35b-a3b-adaptation.md) |
 | Optimization history | [Dated implementation and tuning records](optimization/README.md) |
-| Development | [Environment](development/environment-installation.md), [calibration](development/calibration-artifacts.md), [ownership and licensing](development/ownership-and-licensing.md), [commit conventions](development/git-commit.md), [packaging and release](development/packaging-and-release.md) |
+| Development | [Source reading](development/source-reading.md), [environment](development/environment-installation.md), [calibration](development/calibration-artifacts.md), [ownership and licensing](development/ownership-and-licensing.md), [commit conventions](development/git-commit.md), [packaging and release](development/packaging-and-release.md) |
 | Results | [Result scope and evidence](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.md), [HTML leaderboard](results/benchmark-leaderboard.html) |
 | Project issues | [Five-dataset applicability, issue #17](issue/dataset-program-issue-17.md) |
 | Reporting | [Weekly](template/weekly-report-template.md) and [monthly](template/monthly-report-template.md) templates |

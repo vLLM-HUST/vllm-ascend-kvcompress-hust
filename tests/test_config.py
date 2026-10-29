@@ -1,58 +1,44 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-from vllm_ascend_kvcompress.config import (
+from vllm_ascend_kvcompress.core.config import (
     CONFIG_ENV,
     ENABLE_ENV,
     EXTENSION_ID,
-    LEGACY_PROVIDER_NAME,
     MANAGER_ENABLED_ENV,
     PROVIDER_NAME,
-    ProviderSelection,
+    PluginConfig,
     extension_enabled,
     load_runtime_selection,
 )
 from vllm_ascend_kvcompress.methods.triattention import TriAttentionConfig
 
 
-def _core_config(provider: str, **options: object) -> SimpleNamespace:
-    return SimpleNamespace(
-        schema_version=1,
-        provider=provider,
-        provider_config=options,
+def test_provider_selection_accepts_provider_name():
+    plugin_config = PluginConfig.from_mapping(
+        {
+            "provider": PROVIDER_NAME,
+            "method_config": {"stats_path": "/tmp/stats.pt"},
+        }
     )
+    assert plugin_config.provider_name == PROVIDER_NAME
+    assert plugin_config.method == "triattention"
+    assert plugin_config.method_config == {"stats_path": "/tmp/stats.pt"}
 
 
-def test_provider_selection_routes_canonical_method() -> None:
-    selection = ProviderSelection.from_core_config(
-        _core_config(
-            PROVIDER_NAME,
-            method="triattention",
-            stats_path="/tmp/stats.pt",
-        )
+def test_provider_selection_rejects_unsupported_provider():
+    with pytest.raises(ValueError, match="provider .* is unsupported"):
+        PluginConfig.from_mapping({"provider": "unknown"})
+
+
+def test_provider_selection_ignores_unknown_fields() -> None:
+    plugin_config = PluginConfig.from_mapping(
+        {"schema_version": 99, "extra": {"nested": [1, 2]}}
     )
-    assert selection.provider_name == PROVIDER_NAME
-    assert selection.method == "triattention"
-    assert selection.method_config == {"stats_path": "/tmp/stats.pt"}
-
-
-def test_provider_selection_preserves_legacy_triattention_config() -> None:
-    selection = ProviderSelection.from_core_config(
-        _core_config(LEGACY_PROVIDER_NAME, stats_path="/tmp/stats.pt")
-    )
-    assert selection.provider_name == LEGACY_PROVIDER_NAME
-    assert selection.method == "triattention"
-
-
-def test_legacy_provider_rejects_other_methods() -> None:
-    with pytest.raises(ValueError, match="legacy provider"):
-        ProviderSelection.from_core_config(
-            _core_config(LEGACY_PROVIDER_NAME, method="future_method")
-        )
+    assert plugin_config == PluginConfig.from_mapping({})
 
 
 def test_triattention_config_accepts_documented_values() -> None:
@@ -94,30 +80,30 @@ def test_triattention_config_accepts_documented_values() -> None:
     [
         ("kv_budget", 2000),
         ("recompute_window", 0),
-        ("score_chunk_size", 129),
         ("score_layer_stride", 0),
         ("min_output_tokens_for_compression", -1),
         ("protected_prefix_window", -1),
-        ("protected_recent_window", -1),
+        ("protected_prefix_window", 4096),
         ("position_segments", 0),
         ("position_policy", "unknown"),
-        ("score_aggregation", "median"),
         ("auto_calibrate", 1),
         ("calibration_max_length", 127),
-        ("calibration_attn_implementation", "unknown"),
     ],
 )
 def test_triattention_config_rejects_invalid_values(option: str, value: object) -> None:
     method_config = {"stats_path": "/tmp/stats.pt", option: value}
     with pytest.raises(ValueError):
-        TriAttentionConfig.from_method_config(method_config)  # type: ignore[arg-type]
+        TriAttentionConfig.from_method_config(method_config)
 
 
-def test_triattention_config_rejects_unknown_option() -> None:
-    with pytest.raises(ValueError, match="unknown"):
-        TriAttentionConfig.from_method_config(
-            {"stats_path": "/tmp/stats.pt", "typo": 1}
-        )
+def test_triattention_config_ignores_unknown_options() -> None:
+    # 嵌套的额外字段也应通过通用配置层，不因旧版标量限制被提前拒绝。
+    options = {"stats_path": "/tmp/stats.pt", "kv_budget": 4096}
+    plugin_config = PluginConfig.from_mapping(
+        {"method_config": {**options, "extra": {"nested": [1, 2]}}}
+    )
+    config = TriAttentionConfig.from_method_config(plugin_config.method_config)
+    assert config == TriAttentionConfig.from_method_config(options)
 
 
 def test_extension_activation_is_explicit() -> None:

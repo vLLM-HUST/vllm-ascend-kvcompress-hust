@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Manual Ascend correctness/compilation smoke test for plugin kernels."""
+"""手动运行的插件内核 Ascend 正确性与编译冒烟测试。"""
 
 from __future__ import annotations
 
@@ -14,14 +14,13 @@ from vllm_ascend_kvcompress.methods.triattention.cache import (
 from vllm_ascend_kvcompress.methods.triattention.kernels import (
     aggregate_normalized_scores,
     prepare_mean_phase_coefficients,
-    score_paged_keys_mean,
     score_paged_keys_mean_precomputed,
-    shift_positions,
 )
 from vllm_ascend_kvcompress.methods.triattention.scoring import score_post_rope_keys
 from vllm_ascend_kvcompress.methods.triattention.stats import (
     DeviceLayerCalibrationStats,
 )
+from vllm_ascend_kvcompress.runtime.coordinates import shift_positions
 
 
 def main() -> None:
@@ -94,22 +93,6 @@ def main() -> None:
     future_offsets = torch.tensor([1.0, 2.0, 4.0], device=device)
     extra_coefficient = q_abs - torch.sqrt(q_real.square() + q_imag.square() + 1e-8)
     output = torch.empty((2, 2, 256), dtype=torch.float32, device=device)
-    assert score_paged_keys_mean(
-        score_cache,
-        score_source,
-        q_real,
-        q_imag,
-        frequency_scale,
-        extra_coefficient,
-        omega,
-        torch.cos(future_offsets.unsqueeze(1) * omega).mean(dim=0),
-        torch.sin(future_offsets.unsqueeze(1) * omega).mean(dim=0),
-        300,
-        256,
-        output,
-        block_size,
-        "half",
-    )
     keys = gather_paged_range(
         score_cache,
         score_source,
@@ -132,11 +115,6 @@ def main() -> None:
         offsets=future_offsets,
         aggregation="mean",
     )
-    torch.npu.synchronize()
-    torch.testing.assert_close(
-        output.cpu(), expected_scores.cpu(), rtol=2e-3, atol=2e-3
-    )
-
     layer_count = 3
     layer_omega = omega.unsqueeze(0).expand(layer_count, -1).contiguous()
     offset_cos = torch.cos(future_offsets.unsqueeze(1) * omega).mean(dim=0)
@@ -153,7 +131,7 @@ def main() -> None:
         phase_cos,
         phase_sin,
     )
-    precomputed_output = torch.empty_like(output)
+    precomputed_output = output
     assert score_paged_keys_mean_precomputed(
         score_cache,
         score_source,
@@ -173,8 +151,8 @@ def main() -> None:
         precomputed_output.cpu(), expected_scores.cpu(), rtol=2e-3, atol=2e-3
     )
 
-    # Qwen3.5 rotates only the first part of each key. The fused path must
-    # include the direct Q·K contribution from the remaining dimensions.
+    # Qwen3.5 仅旋转每个 key 的前一部分，
+    # 融合路径必须计入其余维度的直接 Q·K 贡献。
     partial_q_real = q_real[..., :2].contiguous()
     partial_q_imag = q_imag[..., :2].contiguous()
     partial_q_abs = q_abs[..., :2].contiguous()

@@ -3,14 +3,15 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 
+from vllm_ascend_kvcompress.host.model_config import model_shape_from_config
 from vllm_ascend_kvcompress.methods.base import ModelShape
 from vllm_ascend_kvcompress.methods.triattention.stats import (
     CalibrationStats,
     LayerCalibrationStats,
 )
-from vllm_ascend_kvcompress.model import model_shape_from_config
 
 
 def _write_flat_stats(path: Path, *, layers: int = 2, heads: int = 4) -> None:
@@ -173,6 +174,19 @@ def test_structured_kv_head_stats_expand_across_gqa_queries() -> None:
     torch.testing.assert_close(grouped.freq_scale_sq, torch.full((2, 2, 4), 4.0))
 
 
+def test_model_shape_rejects_zero_heads_before_deriving_head_dim() -> None:
+    text_config = SimpleNamespace(
+        num_attention_heads=0,
+        num_key_value_heads=1,
+        hidden_size=16,
+        num_hidden_layers=1,
+    )
+    with pytest.raises(
+        ValueError, match="model attention head counts must be positive"
+    ):
+        model_shape_from_config(SimpleNamespace(hf_text_config=text_config))
+
+
 def test_model_shape_reads_transformers_v5_rope_parameters() -> None:
     text_config = SimpleNamespace(
         model_type="qwen2",
@@ -311,6 +325,9 @@ def test_qwen35_calibration_shards_kv_heads_for_tensor_parallelism() -> None:
         model, torch.device("cpu"), tensor_parallel_rank=1, tensor_parallel_size=2
     )[3]
 
-    assert rank_zero.q_mean_real.shape == (1, 8, 32)
-    assert rank_one.q_mean_real.shape == (1, 8, 32)
-    assert not torch.equal(rank_zero.q_mean_real, rank_one.q_mean_real)
+    torch.testing.assert_close(
+        rank_zero.q_mean_real, layer.q_mean_real[:8].reshape(1, 8, 32)
+    )
+    torch.testing.assert_close(
+        rank_one.q_mean_real, layer.q_mean_real[8:].reshape(1, 8, 32)
+    )

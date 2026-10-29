@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Router shims must follow the core ABI without importing absent legacy modules."""
+"""验证路由兼容层遵循核心 ABI，且不导入旧环境中不存在的模块。"""
 
 import builtins
 import sys
@@ -8,7 +8,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 from vllm.model_executor.layers.fused_moe import config
 
-from vllm_ascend_kvcompress.host_compat import install_grouped_topk_router_compat
+from vllm_ascend_kvcompress.host.compat import install_grouped_topk_router_compat
 
 OPTIONS = dict(
     scoring_func="sigmoid",

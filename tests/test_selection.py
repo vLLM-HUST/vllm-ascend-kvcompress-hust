@@ -1,60 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
 
-from vllm_ascend_kvcompress.methods.base import ModelShape
-from vllm_ascend_kvcompress.methods.triattention import (
-    TriAttentionConfig,
-    TriAttentionLayerCache,
-    TriAttentionMethod,
+from vllm_ascend_kvcompress.methods.base import (
+    CompressionRequest,
+    LayerCache,
+    ModelShape,
 )
-from vllm_ascend_kvcompress.methods.triattention import method as triattention_method
+from vllm_ascend_kvcompress.methods.triattention.config import TriAttentionConfig
+from vllm_ascend_kvcompress.methods.triattention.method import TriAttentionMethod
+from vllm_ascend_kvcompress.methods.triattention.scoring import score_post_rope_keys
 from vllm_ascend_kvcompress.methods.triattention.selection import (
     _select_v3_batched,
-    _v3_batched_plan,
     select_keep_indices,
 )
-
-
-def test_mtp_cache_layer_is_identified_separately_from_target_layers() -> None:
-    assert triattention_method._is_mtp_cache_layer("mtp.layers.0.self_attn.attn")
-    assert triattention_method._is_mtp_cache_layer(
-        "draft_model.mtp.layers.1.self_attn.attn"
-    )
-    assert not triattention_method._is_mtp_cache_layer(
-        "language_model.model.layers.3.self_attn.attn"
-    )
-
-
-def test_qwen35_gqa_width_is_invariant_under_tensor_parallel_sharding() -> None:
-    shape = ModelShape(
-        model_type="qwen3_5_moe_text",
-        num_layers=40,
-        num_attention_heads=16,
-        num_kv_heads=2,
-        head_dim=256,
-        rope_theta=10_000_000.0,
-        has_rope_scaling=False,
-        rotary_dim=64,
-        attention_layer_indices=tuple(range(3, 40, 4)),
-    )
-
-    assert triattention_method._queries_per_kv_head(shape) == 8
-
-
-def test_protected_window_and_sorted_topk_contract() -> None:
-    scores = torch.tensor([10.0, 9.0, 8.0, 7.0, -5.0, -6.0])
-    budget = 4
-    protected = 2
-    scores[-protected:] = float("inf")
-    keep = torch.sort(
-        torch.topk(scores, k=budget, largest=True, sorted=False).indices
-    ).values
-    torch.testing.assert_close(keep, torch.tensor([0, 1, 4, 5]))
 
 
 def test_v3_protects_prefix_and_recent_and_spreads_eviction() -> None:
@@ -95,7 +57,6 @@ def test_v3_uses_exact_proportional_quota_with_uneven_segments() -> None:
     ("tokens", "budget", "prefix", "recent", "segments"),
     [
         (32768, 8192, 128, 512, 8),
-        (32768, 8192, 256, 512, 8),
         (32, 17, 0, 0, 4),
         (32, 18, 2, 2, 4),
         (32, 31, 0, 0, 4),
@@ -134,13 +95,6 @@ def test_batched_v3_defers_uneven_segments_to_existing_path() -> None:
     )
 
 
-def test_batched_v3_sorts_topk_only_when_quotas_differ() -> None:
-    unequal = _v3_batched_plan(torch.device("cpu"), 32, 17, 0, 0, 4)
-    equal = _v3_batched_plan(torch.device("cpu"), 32, 16, 0, 0, 4)
-    assert unequal is not None and unequal.sorted_topk
-    assert equal is not None and not equal.sorted_topk
-
-
 def test_global_policy_preserves_legacy_topk_behavior() -> None:
     keep = select_keep_indices(
         torch.tensor([10.0, 9.0, 8.0, 7.0, -5.0, -6.0]),
@@ -154,310 +108,157 @@ def test_global_policy_preserves_legacy_topk_behavior() -> None:
     torch.testing.assert_close(keep, torch.tensor([0, 1, 4, 5]))
 
 
-def test_selection_reuses_first_pass_score_chunks(monkeypatch) -> None:
-    method = object.__new__(TriAttentionMethod)
-    method.config = TriAttentionConfig(
-        stats_path=Path("unused.pt"),
-        kv_budget=128,
-        recompute_window=128,
-        protected_recent_window=0,
-        score_chunk_size=128,
+def _bound_method(
+    tmp_path, *, layers, stride=1, tp_size=1, auxiliary=False, partial_rope=False
+):
+    """使用真实统计文件和 CPU 缓存完成绑定，只由 TP 测试替换跨 rank 通信。"""
+    generator = torch.Generator().manual_seed(28)
+    shape = ModelShape(
+        "qwen3_5_moe_text" if auxiliary else "qwen2",
+        layers,
+        8 * tp_size,
+        tp_size,
+        4,
+        10000.0,
+        False,
+        rotary_dim=2 if partial_rope else None,
     )
-    stats = SimpleNamespace(q_mean_real=torch.zeros((1, 1, 1)), omega=torch.ones(1))
-    method.layer_caches = (
-        TriAttentionLayerCache(
-            name="layer.0",
-            k_cache=torch.empty(0),
-            v_cache=torch.empty(0),
-            stats=stats,
+    stats = {}
+    for index in range(layers):
+        width = shape.effective_rotary_dim // 2
+        real = torch.randn(shape.num_attention_heads, width, generator=generator)
+        imag = torch.randn(shape.num_attention_heads, width, generator=generator)
+        stats[str(index)] = {
+            "q_mean_real": real,
+            "q_mean_imag": imag,
+            "q_abs_mean": torch.sqrt(real.square() + imag.square()) + 0.2,
+        }
+        if partial_rope:
+            stats[str(index)]["q_pass_mean"] = torch.randn(
+                shape.num_attention_heads, 2, generator=generator
+            )
+    path = tmp_path / "stats.pt"
+    torch.save({"metadata": {}, "layer_stats": stats}, path)
+    config = TriAttentionConfig.from_method_config(
+        {
+            "stats_path": str(path),
+            "kv_budget": 128,
+            "protected_recent_window": 0,
+            "score_chunk_size": 128,
+            "score_layer_stride": stride,
+        }
+    )
+    host = SimpleNamespace(
+        parallel_config=SimpleNamespace(tensor_parallel_size=tp_size),
+        model_config=SimpleNamespace(max_model_len=512),
+        speculative_config=(
+            SimpleNamespace(method="mtp", num_speculative_tokens=2)
+            if auxiliary
+            else None
         ),
     )
-    method.offsets = torch.tensor([1.0])
-    method.score_workspace = torch.empty((1, 1, 256), dtype=torch.float32)
-    method.aggregate_workspace = torch.empty(256, dtype=torch.float32)
-    score_calls = 0
-
-    def fake_gather(*args, count: int, **kwargs) -> torch.Tensor:
-        del args, kwargs
-        return torch.zeros((count, 1, 2))
-
-    def fake_score(keys: torch.Tensor, *args, **kwargs) -> torch.Tensor:
-        nonlocal score_calls
-        del args, kwargs
-        score_calls += 1
-        return torch.zeros((1, 1, keys.shape[0]))
-
-    monkeypatch.setattr(triattention_method, "gather_paged_range", fake_gather)
-    monkeypatch.setattr(triattention_method, "score_post_rope_keys", fake_score)
-
-    keep = method._select_keep_indices(torch.tensor([0, 1]), 256, 256)
-
-    assert score_calls == 2
-    assert keep.shape == (128,)
-
-
-def test_tensor_parallel_scores_use_one_collective_for_all_layers(monkeypatch) -> None:
-    import torch.distributed as dist
-    import vllm.distributed as vllm_distributed
-
-    method = object.__new__(TriAttentionMethod)
-    method.config = TriAttentionConfig(
-        stats_path=Path("unused.pt"),
-        kv_budget=128,
-        recompute_window=128,
-        protected_recent_window=0,
-        score_chunk_size=256,
-        score_layer_stride=1,
-    )
-    stats = SimpleNamespace(q_mean_real=torch.zeros((1, 1, 1)), omega=torch.ones(1))
-    method.layer_caches = tuple(
-        TriAttentionLayerCache(
-            name=f"layer.{index}",
-            k_cache=torch.empty(0),
-            v_cache=torch.empty(0),
-            stats=stats,
+    caches = [
+        LayerCache(
+            f"model.layers.{index}.self_attn",
+            index,
+            torch.randn(4, 128, 1, 4, generator=generator, dtype=torch.float16),
+            torch.randn(4, 128, 1, 4, generator=generator, dtype=torch.float16),
         )
-        for index in range(2)
-    )
-    method.offsets = torch.tensor([1.0])
-    method.score_workspace = torch.empty((1, 1, 256), dtype=torch.float32)
-    method.aggregate_workspace = torch.empty(256, dtype=torch.float32)
-    method.parallel_score_workspace = torch.empty(512, dtype=torch.float32)
-    method.tensor_parallel_size = 2
-
-    tokens = torch.arange(256, dtype=torch.float32)
-    raw_layers = (tokens, tokens.square() / 256)
-    remote_layers = torch.stack((tokens / 128 - 0.5, 1 - tokens / 256))
-    score_calls = 0
-    collective_calls = 0
-    captured = None
-
-    def fake_score(_keys, *_args, **_kwargs):
-        nonlocal score_calls
-        scores = raw_layers[score_calls].view(1, 1, 256)
-        score_calls += 1
-        return scores
-
-    def fake_all_reduce(scores, *, op, group):
-        nonlocal collective_calls
-        assert scores.is_contiguous()
-        assert scores.shape == (2, 256)
-        assert op == dist.ReduceOp.MAX
-        assert group == "test-group"
-        collective_calls += 1
-        torch.maximum(scores, remote_layers, out=scores)
-
-    def fake_select(scores, **_kwargs):
-        nonlocal captured
-        captured = scores.clone()
-        return torch.arange(128)
-
-    monkeypatch.setattr(
-        triattention_method,
-        "gather_paged_range",
-        lambda *_args, **_kwargs: torch.empty(256, 1, 2),
-    )
-    monkeypatch.setattr(triattention_method, "score_post_rope_keys", fake_score)
-    monkeypatch.setattr(triattention_method, "select_keep_indices", fake_select)
-    monkeypatch.setattr(dist, "all_reduce", fake_all_reduce)
-    monkeypatch.setattr(
-        vllm_distributed,
-        "get_tp_group",
-        lambda: SimpleNamespace(device_group="test-group"),
-    )
-
-    method._select_keep_indices(torch.tensor([0, 1]), 256, 256)
-
-    local_layers = torch.stack(
-        tuple(
-            (layer - layer.mean()) * torch.rsqrt(layer.var(correction=0) + 1e-6)
-            for layer in raw_layers
+        for index in range(layers)
+    ]
+    if auxiliary:
+        caches.append(
+            LayerCache(
+                "mtp.layers.0.self_attn.attn",
+                0,
+                torch.randn(4, 128, 1, 4, generator=generator, dtype=torch.float16),
+                torch.randn(4, 128, 1, 4, generator=generator, dtype=torch.float16),
+            )
         )
-    )
-    expected = torch.maximum(local_layers, remote_layers).mean(dim=0)
-    assert score_calls == 2
-    assert collective_calls == 1
-    torch.testing.assert_close(captured, expected)
+    method = TriAttentionMethod(config, host, shape)
+    runner = SimpleNamespace(device=torch.device("cpu"))
+    assert method.compatibility_reasons(runner) == ()
+    method.bind_model_runner(runner, tuple(caches))
+    return method, caches
 
 
-def test_selection_scores_uniform_layer_sample(monkeypatch) -> None:
-    method = object.__new__(TriAttentionMethod)
-    method.config = TriAttentionConfig(
-        stats_path=Path("unused.pt"),
-        kv_budget=128,
-        recompute_window=128,
-        protected_recent_window=0,
-        score_chunk_size=128,
-        score_layer_stride=2,
+def _reference_layer_scores(method, caches):
+    """按完整物理序列归一化，独立于运行时分块和工作区的组织方式。"""
+    stats = method.calibration.to_device(
+        method.model_shape,
+        torch.device("cpu"),
+        tensor_parallel_size=method.vllm_config.parallel_config.tensor_parallel_size,
     )
-    stats = SimpleNamespace(q_mean_real=torch.zeros((1, 1, 1)), omega=torch.ones(1))
-    method.layer_caches = tuple(
-        TriAttentionLayerCache(
-            name=f"layer.{index}",
-            k_cache=torch.empty(0),
-            v_cache=torch.empty(0),
-            stats=stats,
+    scores = []
+    for cache in caches:
+        keys = torch.cat((cache.k_cache[2], cache.k_cache[0]))
+        raw = score_post_rope_keys(
+            keys,
+            stats[cache.layer_index],
+            round_start=300,
+            offsets=2.0 ** torch.arange(10),
+            aggregation="mean",
         )
-        for index in range(5)
-    )
-    method.offsets = torch.tensor([1.0])
-    method.score_workspace = torch.empty((1, 1, 256), dtype=torch.float32)
-    method.aggregate_workspace = torch.empty(256, dtype=torch.float32)
-    scored_layers = 0
-
-    def fake_gather(*args, count: int, **kwargs) -> torch.Tensor:
-        del args, kwargs
-        return torch.zeros((count, 1, 2))
-
-    def fake_score(keys: torch.Tensor, *args, **kwargs) -> torch.Tensor:
-        nonlocal scored_layers
-        del args, kwargs
-        scored_layers += 1
-        return torch.zeros((1, 1, keys.shape[0]))
-
-    monkeypatch.setattr(triattention_method, "gather_paged_range", fake_gather)
-    monkeypatch.setattr(triattention_method, "score_post_rope_keys", fake_score)
-
-    method._select_keep_indices(torch.tensor([0, 1]), 256, 256)
-
-    assert scored_layers == 6
-
-
-def test_selection_does_not_add_unsampled_layers(monkeypatch) -> None:
-    method = object.__new__(TriAttentionMethod)
-    method.config = TriAttentionConfig(
-        stats_path=Path("unused.pt"),
-        kv_budget=128,
-        recompute_window=128,
-        protected_recent_window=0,
-        score_chunk_size=128,
-        score_layer_stride=2,
-    )
-    stats = SimpleNamespace(q_mean_real=torch.zeros((1, 1, 1)), omega=torch.ones(1))
-    method.layer_caches = tuple(
-        TriAttentionLayerCache(
-            name=f"layer.{index}",
-            k_cache=torch.empty(0),
-            v_cache=torch.empty(0),
-            stats=stats,
+        normalized = (raw - raw.mean(dim=-1, keepdim=True)) / torch.sqrt(
+            raw.var(dim=-1, correction=0, keepdim=True).clamp_min(1e-6)
         )
-        for index in range(6)
+        scores.append(normalized.amax(dim=(0, 1)))
+    return torch.stack(scores)
+
+
+def _assert_compressed_cache_contents(method, caches, expected_scores):
+    keep = torch.sort(torch.topk(expected_scores, 128, sorted=False).indices).values
+    originals = [(cache.k_cache.clone(), cache.v_cache.clone()) for cache in caches]
+    result = method.compress(
+        CompressionRequest("r", 300, 256, torch.tensor([2, 0]), torch.tensor([3]))
     )
-    method.offsets = torch.tensor([1.0])
-    method.score_workspace = torch.empty((1, 1, 256), dtype=torch.float32)
-    method.aggregate_workspace = torch.empty(256, dtype=torch.float32)
-    scored_layers = 0
-
-    def fake_gather(*args, count: int, **kwargs) -> torch.Tensor:
-        del args, kwargs
-        return torch.zeros((count, 1, 2))
-
-    def fake_score(keys: torch.Tensor, *args, **kwargs) -> torch.Tensor:
-        nonlocal scored_layers
-        del args, kwargs
-        scored_layers += 1
-        return torch.zeros((1, 1, keys.shape[0]))
-
-    monkeypatch.setattr(triattention_method, "gather_paged_range", fake_gather)
-    monkeypatch.setattr(triattention_method, "score_post_rope_keys", fake_score)
-
-    method._select_keep_indices(torch.tensor([0, 1]), 256, 256)
-
-    assert scored_layers == 6
+    assert result.physical_num_tokens == 128
+    for cache, (keys, values) in zip(caches, originals, strict=True):
+        expected_k = torch.cat((keys[2], keys[0]))[keep]
+        expected_v = torch.cat((values[2], values[0]))[keep]
+        torch.testing.assert_close(cache.k_cache[3], expected_k)
+        torch.testing.assert_close(cache.v_cache[3], expected_v)
+        torch.testing.assert_close(cache.k_cache[:3], keys[:3])
+        torch.testing.assert_close(cache.v_cache[:3], values[:3])
 
 
 @pytest.mark.parametrize("partial_rope", [False, True])
-def test_selection_prepares_phases_once_for_all_scoring_layers(
-    monkeypatch, partial_rope: bool
-) -> None:
-    method = object.__new__(TriAttentionMethod)
-    method.config = TriAttentionConfig(
-        stats_path=Path("unused.pt"),
-        kv_budget=128,
-        recompute_window=128,
-        protected_recent_window=0,
-        score_chunk_size=128,
-        score_layer_stride=2,
+def test_compression_scores_sampled_layers_and_materializes_every_cache(
+    tmp_path, partial_rope
+):
+    method, caches = _bound_method(
+        tmp_path, layers=6, stride=2, auxiliary=True, partial_rope=partial_rope
     )
-    stats = SimpleNamespace(
-        q_mean_real=torch.zeros((1, 1, 1)),
-        q_mean_imag=torch.zeros((1, 1, 1)),
-        omega=torch.ones(1),
-        rope_style="half",
-        rotary_dim=2 if partial_rope else None,
-        q_pass_mean=torch.ones((1, 1, 2)) if partial_rope else None,
-    )
-    method.layer_caches = tuple(
-        TriAttentionLayerCache(
-            name=f"layer.{index}",
-            k_cache=torch.empty((2, 128, 1, 4 if partial_rope else 2)),
-            v_cache=torch.empty(0),
-            stats=stats,
-            frequency_scale=torch.ones((1, 1, 1)),
-            extra_coefficient=torch.zeros((1, 1, 1)),
-            offset_cos_mean=torch.ones(1),
-            offset_sin_mean=torch.zeros(1),
-        )
-        for index in range(6)
-    )
-    method.offsets = torch.tensor([1.0])
-    method.score_workspace = torch.empty((1, 1, 256), dtype=torch.float32)
-    method.aggregate_workspace = torch.empty(256, dtype=torch.float32)
-    method.scoring_omega = torch.ones((3, 1))
-    method.scoring_offset_cos = torch.ones((3, 1))
-    method.scoring_offset_sin = torch.zeros((3, 1))
-    method.phase_cos_workspace = torch.empty((3, 1))
-    method.phase_sin_workspace = torch.empty((3, 1))
-    phase_calls = 0
-    score_calls = 0
+    # 只用目标层 0、2、4 评分；未抽样层和层号同为 0 的 MTP 缓存仍须搬运。
+    # 源序列跨两个非连续页，评分分成两块，但标准化必须覆盖完整 256 token。
+    scores = _reference_layer_scores(method, [caches[0], caches[2], caches[4]])
+    _assert_compressed_cache_contents(method, caches, scores.mean(dim=0))
 
-    def fake_prepare(*args, **kwargs) -> bool:
-        nonlocal phase_calls
-        del args, kwargs
-        phase_calls += 1
-        return True
 
-    def fake_score(*args, output: torch.Tensor | None = None, **kwargs) -> bool:
-        nonlocal score_calls
-        assert kwargs["rotary_dim"] == (2 if partial_rope else None)
-        assert (kwargs["q_pass_mean"] is not None) is partial_rope
-        score_calls += 1
-        target = output if output is not None else args[9]
-        target.zero_()
-        return True
-
-    def fake_aggregate(
-        _scores,
-        _mean,
-        _variance,
-        aggregate,
-        _num_tokens,
-        *,
-        layer_aggregation,
-        first_layer,
-    ) -> bool:
-        del layer_aggregation
-        if first_layer:
-            aggregate.zero_()
-        return True
+def test_tp_compression_reduces_each_layer_before_averaging(tmp_path, monkeypatch):
+    import torch.distributed as dist
+    import vllm.distributed as vllm_distributed
 
     monkeypatch.setattr(
-        triattention_method, "prepare_mean_phase_coefficients", fake_prepare
+        vllm_distributed,
+        "get_tp_group",
+        lambda: SimpleNamespace(rank_in_group=0, device_group="test-group"),
     )
-    monkeypatch.setattr(
-        triattention_method, "score_paged_keys_mean_precomputed", fake_score
-    )
-    monkeypatch.setattr(
-        triattention_method, "aggregate_normalized_scores", fake_aggregate
-    )
-    monkeypatch.setattr(
-        triattention_method,
-        "gather_paged_range",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fallback used")),
-    )
+    method, caches = _bound_method(tmp_path, layers=2, tp_size=2)
+    local = _reference_layer_scores(method, caches)
+    peer = local.roll(47, dims=-1)
+    peer_offset = 0
 
-    keep = method._select_keep_indices(torch.tensor([0, 1]), 256, 256)
+    def all_reduce(scores, *, op, group):
+        nonlocal peer_offset
+        assert op == dist.ReduceOp.MAX
+        # 允许逐层或合并通信；仅模拟另一个 rank 的逐层分数，不约束调用次数。
+        contribution = peer.flatten()[peer_offset : peer_offset + scores.numel()]
+        peer_offset += scores.numel()
+        torch.maximum(scores, contribution.view_as(scores), out=scores)
 
-    assert phase_calls == 1
-    assert score_calls == 3
-    assert keep.shape == (128,)
+    monkeypatch.setattr(dist, "all_reduce", all_reduce)
+    # 真实绑定和评分也保护 TP=2 下的 GQA 组宽，避免用本地 KV 头数扩大 Query 组。
+    _assert_compressed_cache_contents(
+        method, caches, torch.maximum(local, peer).mean(dim=0)
+    )

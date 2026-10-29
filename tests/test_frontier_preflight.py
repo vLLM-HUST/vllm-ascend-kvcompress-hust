@@ -58,11 +58,10 @@ def test_frontier_preflight_checks_pins_and_local_inputs(tmp_path, monkeypatch) 
         is False
     )
 
-
-def test_frontier_preflight_detects_missing_model_shard(tmp_path) -> None:
-    model = tmp_path / "model"
-    model.mkdir()
-    (model / "model.safetensors.index.json").write_text(
-        json.dumps({"weight_map": {"a": "shard-1.safetensors"}})
+    info.write_text("Version=9.1.0\n")
+    (model / "shard-2.safetensors").unlink()
+    result = preflight.inspect(**kwargs)
+    assert not result["ready"]
+    assert (
+        next(c for c in result["checks"] if c["name"] == "model shards")["ok"] is False
     )
-    assert preflight.model_shards(model) == (1, 0)
