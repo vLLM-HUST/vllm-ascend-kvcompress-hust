@@ -1,20 +1,15 @@
 # Benchmark protocols
 
-English | [简体中文](README.zh.md) | [Documentation map](../README.md)
+English | [简体中文](README.zh.md) | [Documentation](../README.md)
 
-Choose a protocol for the **specific claim and workload** before measuring.
-A service throughput claim, a model quality claim, and a kernel latency claim
-may need different tests. Multiple protocols may apply to one change.
-Record the protocol revision, model and host identities, workload, configuration,
-measurement window, primary metrics, and limitations with the result. Compare
-baseline and candidate under the chosen protocol's rules; do not combine
-results from different cohorts as if they were one pair.
+The current evaluation uses the dataset specified by the Pujiang Laboratory, as described on the [project-specified dataset page](https://vllm-hust.sage.org.ai/dataset-introductions.html), with fixed clients and respective scoring agreements retained.
 
-| Protocol | Scope |
-| --- | --- |
-| [Frontier SWE and AgentX](frontier-benchmarking.md) | Qwen3.5-35B-A3B BF16, TP=2, Ascend 910B2 service comparisons |
+| Dataset | Evaluation | Preparation in this version |
+| --- | --- | --- |
+| MMLU-Pro | Token-ID completions; local answer extraction | [Client, download, frozen plan and runner](mmlu-pro.md) |
+| HLE-Verified | Gold / Revision; solver and separate structured-output judge | Protocol entry only |
+| SWE-bench-Pro | Agent sandbox and task tests | Protocol entry only |
+| FrontierScience | Olympiad / Research; separate judge and rubric | Protocol entry only |
+| TerminalBench 2.1 | ARM-compatible task sandbox and task grader | Protocol entry only |
 
-Superseded procedures belong in the [benchmark archive](../archive/benchmark/).
-Dated measurements and their exact protocol are linked from
-[results](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.md) and [optimization records](../optimization/README.md).
-Add a new protocol here when a new workload or acceptance requirement needs one.
+[MMLU-Pro procedure](mmlu-pro.md).

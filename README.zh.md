@@ -2,20 +2,12 @@
 
 [English](README.md) | 简体中文
 
-面向与上游对齐的 vLLM-HUST、vLLM-Ascend-HUST 的独立 TriAttention KV-cache
-压缩插件。0.7 版加入论文 V3 位置策略与实验性 Qwen3.5 支持；0.8 版适配同步后
-的宿主，且不修改宿主源码仓库。0.9 版加入供独立压缩方法使用的 method API v1，
-包括逐层物理状态与 Query 观测契约。0.10 版合并 TP 评分同步；
-Qwen3.5 示例采用实测的 4608-token 预算和 2048-token 请求输出门槛。
+面向 vLLM-HUST 与 vLLM-Ascend-HUST 的独立 TriAttention KV-cache 压缩插件，
+在 Ascend NPU 上通过校准评分与 V3 位置策略压缩 KV 缓存。
+插件默认关闭，通过 Extension Manager 或显式配置启用。
 
-> 0.10.0 工程验证：一组匹配的 Qwen3.5 BF16/TP=2 SWE C4／900 秒配对，
-> 相对关闭压缩的基线，每卡输出吞吐提升 **1.33%**，逐请求解码 P90 提升
-> **1.62%**；TTFT P95 变差 **8.65%**。配置上下文为 262,144 token，
-> 实际最长 prompt 为 52,505 token。单组本地配对不能证明可重复性、
-> 语义质量、生产适用性或官网榜单结果。MTP2 仍为默认拒绝启动的实验功能。
-> 精确的宿主与负载见[结果范围](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.zh.md)及
-> [聚合证据](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20261017-v010-swe-pair.json)。
-> 0.9 结果保留在结果索引及[历史过程](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.zh.md)。
+版本变化见[版本记录](docs/development/version-history.zh.md)。
+浦江实验室指定数据集及 MMLU-Pro 评估流程见[测试规程](docs/benchmark/README.zh.md)。
 
 ## 归属与维护
 
@@ -43,7 +35,9 @@ wheel/sdist。仓库中仅供开发使用的统计产物缺少完整模型/数�
 本仓库许可证进行再分发。详见 [NOTICE](NOTICE)、[归属与许可](docs/development/ownership-and-licensing.zh.md)
 和[校准产物说明](docs/development/calibration-artifacts.zh.md)。
 
-## 兼容范围
+## 宿主兼容范围
+
+主源码栈固定在[宿主锁文件](requirements/ascend-host.json)，环境名不随插件版本变化。
 
 | 组件 | 支持版本 | 已验证快照 |
 | --- | --- | --- |
@@ -73,10 +67,9 @@ Ascend 宿主使用由布局决定的跨组 scheduler 对齐、1,152 或 2,048-t
 统一部署；宿主兼容范围由 Extension Manager 清单和启动检查约束。这样安装插件时
 也不会让 pip 重新解析已经部署好的整套宿主环境。
 
-当前 vLLM 0.29 / vLLM-Ascend 0.25 开发版本线不能混入 Triton-Ascend 3.2.2。
-旧 Triton wheel 锁定 NumPy 1.26.4，而当前 vLLM 要求
-`opencv-python-headless>=4.13`，其可用 wheel 要求 NumPy 2；把 OpenCV 降到
-4.9 又会违反 vLLM 的依赖约束。应使用宿主栈配套的 Triton-Ascend 3.6。
+固定使用 HUST Triton-Ascend `3.6.0+gitf5e142a9`，其元数据允许 `numpy>=1.26.4,<2.3`，
+配合 NumPy 2.2.6。公共 wheel 的依赖契约不同。
+在固定 HUST 基座上使用[一键安装脚本](docs/development/environment-installation.zh.md)配置插件环境。
 
 先部署匹配的宿主栈，将 `KVCOMPRESS_PLUGIN_VERSION` 设为与宿主兼容的
 已发布插件版本，再安装且不重新解析硬件相关依赖：
@@ -140,7 +133,7 @@ GDN 自定义算子仍使用旧式 `int[]` 元数据 ABI，需 `--enforce-eager`
 Tensor ABI，且无需 `--enforce-eager` 即完成 FULL_AND_PIECEWISE 图捕获。
 兼容桥仅在精确旧 schema 上生效，不修改任一宿主仓库。
 
-## 运行时与证据
+## 运行时
 
 TriAttention 保留校准评分、V3 的前缀/最近窗口保护和中间分段比例配额。
 Qwen3.5 只评分十个全注意力层；Gated-DeltaNet 状态仍由宿主管理。
@@ -148,19 +141,11 @@ scheduler 与 worker 在步骤边界提交压缩事务，保持语义 RoPE 位�
 物理 KV 长度。详见[方法设计](docs/design/methods.zh.md)和
 [Qwen3.5 适配](docs/design/qwen3.5-35b-a3b-adaptation.zh.md)。
 
-2026-10-17 的 SWE C4／900 秒配对中，每卡输出吞吐提升 1.33%，逐用户解码
-P90 提升 1.62%，TTFT P95 变差 8.65%。0.9 的 SWE 配对中解码 P90
-提升 1.05%，但每卡吞吐下降 2.71%；AgentX 是另一 cohort。详见
-[结果范围](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.zh.md)、
-[完整 0.9 过程](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.zh.md)和
-[测试规程索引](docs/benchmark/README.zh.md)。历史 Qwen2.5
-A2/A3 与公开长上下文结果保留在[归档](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/public-long-context-benchmarks.zh.md)。
-
 ## 冲突矩阵
 
 | 功能 | 实现状态 | 行为 |
 | --- | --- | --- |
-| Prefix cache | 本地 C4 配对协议有效 | 私有目标块保留共享源块哈希；0.10 SWE 所选候选的双指标均提升 |
+| Prefix cache | 本地 C4 配对协议有效 | 私有目标块保留共享源块哈希 |
 | Speculative decoding | 实验性 | 显式 MTP2 完成 SWE 两侧 900 秒窗口且有真实接受率；默认启动保护仍生效 |
 | KV transfer / 分离式 P/D | 冲突 | 启动拒绝 |
 | 量化 KV | 冲突 | 启动拒绝，仅支持稠密 BF16/FP16 |
@@ -177,7 +162,7 @@ A2/A3 与公开长上下文结果保留在[归档](https://github.com/vLLM-HUST/
 
 通用示例采用 8192-token 预算、1024-token 重算窗口、V3 的 128/512-token
 前缀/最近保护、8 个位置分段、8192-token 评分分块、每八层评分一次，并在请求
-输出少于 64 token 时绕过压缩。0.10 Qwen3.5 示例以 stride 2 采样十个
+输出少于 64 token 时绕过压缩。Qwen3.5 示例以 stride 2 采样十个
 全注意力层，采用 4608-token 预算和 2048-token 请求输出门槛。KV
 相关 token 数必须为 block size 128 的正整数倍。若 Qwen3.5 的全注意力页被提升为
 1,152 或 2,048 token，`kv_budget` 还必须能被当前注意力页大小整除；不要求

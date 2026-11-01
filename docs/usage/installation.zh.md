@@ -2,35 +2,24 @@
 
 [English](installation.md) | 简体中文 | [用户指南](README.zh.md)
 
-## 前置条件
+## HUST 基座与插件环境
 
-准备 CANN、ATB、torch-npu、Triton-Ascend、vLLM-HUST 与
-vLLM-Ascend-HUST 相互匹配的 Ascend 宿主栈，并将其作为整体部署。
-本仓库所述的匹配源码版本线为 vLLM-HUST `>=0.29.1.post1.dev0,<0.30`、
-vLLM-Ascend-HUST `>=0.25.1rc2.dev0,<0.26`，配合
-Triton-Ascend 3.6。精确的旧版 Frontier 源码组合另有窄范围例外；
-不能推及任意旧版或新版宿主。详见[兼容性表](../../README.zh.md#兼容范围)和
-[环境说明](../development/environment-installation.zh.md)。
-
-Python 需为 `>=3.10,<3.15`。Qwen3.5-35B-A3B 的 BF16 部署需要两张
-Ascend NPU，以及足以容纳模型和 KV cache 的显存。服务账号必须能读取模型与
-tokenizer。安装前检查宿主：
+使用固定 HUST 源码基座和长期目录名 `kvcompress-host`。
+准备好匹配的持久 Python 3.11 基座及 CANN/ATB 后，一键安装：
 
 ```bash
-python -m pip show vllm vllm-ascend torch torch-npu triton-ascend
-python -m pip check
-npu-smi info
+scripts/kvcompress_install_env.sh
+scripts/kvcompress_install_env.sh --check
 ```
 
-Qwen3.5 的 Gated-DeltaNet 路径还会导入 `fla_npu`。请安装所用
-vLLM-Ascend-HUST 宿主版本固定、与 NPU 架构匹配的 FLA NPU 产物；
-其导入名并不对应 PyPI 上独立的 `fla-npu` 包。在服务环境中运行
-`python -c 'import fla_npu.ops.ascendc'` 检查。
+脚本核对源码提交和版本，补齐插件独立环境，再安装当前插件。
+基座前提、seed 复用、配置覆盖和依赖审计见[环境指南](../development/environment-installation.zh.md)。
+Qwen3.5 BF16 还需要两张匹配的 NPU；
 
 ## 安装 Manager 和插件
 
-从认可的软件源或[源码仓库](https://github.com/vLLM-HUST/extension-manager)
-将 Extension Manager `>=0.3,<0.4` 安装到与宿主**相同的 Python 环境**。
+从 [0.3.0 发布 wheel](https://github.com/vLLM-HUST/extension-manager/releases/tag/v0.3.0)
+将 Extension Manager 安装到与宿主**相同的 Python 环境**。
 将 `KVCOMPRESS_PLUGIN_VERSION` 设为与宿主兼容的已发布版本，然后安装，
 不重新解析硬件栈：
 

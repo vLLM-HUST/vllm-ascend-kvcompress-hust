@@ -7,7 +7,8 @@ English | [简体中文](README.zh.md)
 Use this map to find user instructions, design, benchmark methods,
 optimization records, and dated results. Read the paired English and Chinese
 documents together. The package version is declared in `pyproject.toml`;
-release and measurement status belongs in [results](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.md).
+implementation changes are in [version history](development/version-history.md),
+and measurement scope belongs in [results](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.md).
 Dated measurements retain their original version, model, and host identity
 after archival.
 
@@ -19,7 +20,7 @@ after archival.
 | Benchmark protocols | [Choose a protocol for the workload and claim](benchmark/README.md) |
 | Implementation | [Method API and TriAttention](design/methods.md), [Ascend adaptation](design/ascend-adaptation-vs-triattention-vllm.md), [Qwen3.5 hybrid model](design/qwen3.5-35b-a3b-adaptation.md) |
 | Optimization history | [Dated implementation and tuning records](optimization/README.md) |
-| Development | [Source reading](development/source-reading.md), [environment](development/environment-installation.md), [calibration](development/calibration-artifacts.md), [ownership and licensing](development/ownership-and-licensing.md), [commit conventions](development/git-commit.md), [packaging and release](development/packaging-and-release.md) |
+| Development | [Version history](development/version-history.md), [Source reading](development/source-reading.md), [environment](development/environment-installation.md), [calibration](development/calibration-artifacts.md), [ownership and licensing](development/ownership-and-licensing.md), [commit conventions](development/git-commit.md), [packaging and release](development/packaging-and-release.md) |
 | Results | [Result scope and evidence](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.md), [HTML leaderboard](results/benchmark-leaderboard.html) |
 | Project issues | [Five-dataset applicability, issue #17](issue/dataset-program-issue-17.md) |
 | Reporting | [Weekly](template/weekly-report-template.md) and [monthly](template/monthly-report-template.md) templates |
@@ -37,3 +38,5 @@ contains the full sequence of positive and negative local pairs, including the
 [2026-09-20 validation](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/validation.md), and
 [0.2 results](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/b36edbc7698e3ca188904d0e20495ed2924a8525/archive/mod-targeted-20261023/compress/snapshot/docs/archive/results/results-0.2.md) describe older workloads and
 host stacks. Do not pool measurements from different cohorts.
+
+[MMLU-Pro](benchmark/mmlu-pro.md) ·

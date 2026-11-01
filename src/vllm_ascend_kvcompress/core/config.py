@@ -29,9 +29,9 @@ class PluginConfig:
     例如TriAttention 的预算、保护窗口、评分策略等由 methods/triattention/config.py 验证
     """
 
-    provider_name: str            # 提供者(插件名)
-    method: str                   # 启用的压缩方法名称
-    method_config: dict[str, Any] # 压缩方法的具体配置，由各方法自行解析和验证
+    provider_name: str  # 提供者(插件名)
+    method: str  # 启用的压缩方法名称
+    method_config: dict[str, Any]  # 压缩方法的具体配置，由各方法自行解析和验证
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> PluginConfig:
@@ -55,7 +55,7 @@ class PluginConfig:
 
 
 def extension_enabled(environment: Mapping[str, str] | None = None) -> bool:
-    """仅在直接配置 ENABLE_ENV 对应的环境变量或 Extension Manager 明确启用插件时返回 True。"""
+    """Return whether direct configuration or Extension Manager enables the plugin."""
     env = os.environ if environment is None else environment
     direct = env.get(ENABLE_ENV, "").strip().lower()
     if direct in {"1", "true", "yes", "on"}:
@@ -82,8 +82,8 @@ def load_runtime_selection(
         candidate = Path(direct).expanduser()
         payload = (
             json.loads(candidate.read_text(encoding="utf-8"))
-            if candidate.is_file() # 文件路径且文件存在
-            else json.loads(direct) # JSON字符串
+            if candidate.is_file()  # 文件路径且文件存在
+            else json.loads(direct)  # JSON字符串
         )
         if not isinstance(payload, Mapping):
             raise ValueError(f"{CONFIG_ENV} must resolve to a JSON object")

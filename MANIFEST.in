@@ -2,7 +2,8 @@ prune artifacts
 recursive-include docs *.md *.html *.js
 recursive-include docs *.json
 recursive-include examples *.json
-recursive-include scripts *.py
+recursive-include scripts *.py *.sh
+recursive-include requirements *.txt *.json
 recursive-include tests *.py
 global-exclude __pycache__ *.py[cod]
 prune dev

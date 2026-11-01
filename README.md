@@ -2,26 +2,14 @@
 
 English | [简体中文](README.zh.md)
 
-An independently packaged TriAttention KV-cache compression plugin for the
-upstream-aligned vLLM-HUST and vLLM-Ascend-HUST stacks. The 0.7 release added
-the paper's V3 position policy and experimental Qwen3.5 support. Version 0.8
-adapted to the synchronized hosts without changing their source repositories.
-Version 0.9 introduced method API v1 for separately packaged compression
-methods, including per-layer physical-state and query-observation contracts.
-Version 0.10 batches TP score synchronization and its Qwen3.5 example uses
-the measured 4,608-token budget and 2,048-token requested-output guard.
+An independent TriAttention KV-cache compression plugin for vLLM-HUST and
+vLLM-Ascend-HUST. It uses calibrated scoring and the V3 position policy to
+compress KV caches on Ascend NPUs. The plugin is disabled by default and is
+activated through Extension Manager or explicit configuration.
 
-> Engineering validation for 0.10.0: one matched Qwen3.5 BF16/TP=2 SWE
-> C4/900-second pair improved output throughput per chip **1.33%** and
-> per-request decode P90 **1.62%** versus the compression-off baseline.
-> TTFT P95 worsened **8.65%**; the longest observed prompt was 52,505 tokens
-> despite 262,144 configured context. This single local pair does not establish
-> repeatability, semantic quality, production readiness, or an official
-> leaderboard result. MTP2 remains experimental and rejected by default.
-> See the [result scope](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.md) and
-> [aggregate evidence](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/evidence/kvcompress-qwen35-20261017-v010-swe-pair.json)
-> for the exact host and workload. Earlier 0.9 results remain in the result
-> index and [historical campaign](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.md).
+See [version history](docs/development/version-history.md) for version changes.
+The [benchmark protocols](docs/benchmark/README.md) cover Pujiang Laboratory's
+designated datasets and the MMLU-Pro evaluation workflow.
 
 ## Ownership and maintenance
 
@@ -53,9 +41,12 @@ provenance and must not be redistributed merely under this repository's
 license. See [NOTICE](NOTICE), [ownership and licensing](docs/development/ownership-and-licensing.md),
 and [calibration artifacts](docs/development/calibration-artifacts.md).
 
-## Compatibility
+## Host compatibility
 
-| Component | Supported line | Validated snapshot |
+The primary source stack is fixed in [the host lock](requirements/ascend-host.json).
+The plugin environment name is independent of the plugin release.
+
+| Component | Host line | Pinned snapshot |
 | --- | --- | --- |
 | vLLM-HUST / `vllm` | `>=0.29.1.post1.dev0,<0.30` | `ebfcfba650` (`0.29.1.post1.dev456+gebfcfba65.empty`) |
 | vLLM-Ascend-HUST / `vllm-ascend` | `>=0.25.1rc2.dev0,<0.26` | `7c8ec865a1` (`0.25.1rc2.dev774+hust.20260903.4.g7c8ec865a`) |
@@ -93,11 +84,11 @@ tested runtime lock, while host compatibility is enforced by the Extension
 Manager manifest and startup checks. This also prevents plugin installation
 from asking pip to re-resolve an already provisioned host environment.
 
-For the current vLLM 0.29 / vLLM-Ascend 0.25 development line, do not mix in
-Triton-Ascend 3.2.2. That older wheel pins NumPy 1.26.4, whereas the supported
-vLLM line requires `opencv-python-headless>=4.13`, whose available wheels
-require NumPy 2. Downgrading OpenCV to 4.9 violates the vLLM requirement. Use
-the matched Triton-Ascend 3.6 host stack instead.
+Use HUST Triton-Ascend `3.6.0+gitf5e142a9`, whose metadata permits
+`numpy>=1.26.4,<2.3`, with NumPy 2.2.6. Public Triton-Ascend wheels do not
+carry the same dependency contract. Use the
+[environment installer](docs/development/environment-installation.md) on the
+pinned HUST base rather than independently selecting public host wheels.
 
 After provisioning the matched host stack, choose a compatible published
 plugin version and install it without re-resolving hardware-specific
@@ -167,7 +158,7 @@ metadata ABI. The synchronized host exposes the Tensor ABI and has completed
 FULL_AND_PIECEWISE graph capture without `--enforce-eager`; the opt-in bridge
 is schema-gated and does not modify either host repository.
 
-## Runtime and evidence
+## Runtime
 
 TriAttention retains calibrated scoring, V3 prefix/recent protection and
 proportional middle-segment quotas. It scores only the ten Qwen3.5
@@ -177,21 +168,11 @@ semantic RoPE positions while shortening physical KV length. See the
 [method design](docs/design/methods.md) and
 [Qwen3.5 adaptation](docs/design/qwen3.5-35b-a3b-adaptation.md).
 
-The 2026-10-17 SWE C4/900-second pair improved per-chip output
-throughput 1.33% and per-user decode P90 1.62%, with an 8.65% TTFT P95
-regression. The 0.9 SWE pair improved decode P90 1.05% while per-chip
-throughput fell 2.71%; AgentX is a separate cohort. See
-[result scope](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.md), the
-[full 0.9 campaign](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/frontier-benchmarking-0.9.md),
-and the [benchmark procedure index](docs/benchmark/README.md).
-The historical Qwen2.5 A2/A3 and public long-context results stay in
-[the archive](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/archive/results/public-long-context-benchmarks.md).
-
 ## Conflict matrix
 
 | Feature | Implementation status | Behavior |
 | --- | --- | --- |
-| Prefix cache | Local C4 pairs protocol-valid | Private destination blocks preserve shared source hashes; the selected 0.10 SWE pair improved both target metrics |
+| Prefix cache | Local C4 pairs protocol-valid | Private destination blocks preserve shared source hashes |
 | Speculative decoding | Experimental | Opt-in MTP2 served both SWE 900-second arms with real acceptance; default startup guard remains |
 | KV transfer / disaggregated P/D | Conflict | Rejected |
 | Quantized KV | Conflict | Rejected; dense BF16/FP16 only |
@@ -209,7 +190,7 @@ The historical Qwen2.5 A2/A3 and public long-context results stay in
 The general example uses an 8192-token budget, 1024-token recompute window,
 V3 prefix/recent protection of 128/512 tokens, eight position segments,
 8192-token scoring chunks, and every eighth scoring layer. It bypasses
-compression below 64 requested output tokens. The 0.10 Qwen3.5 example samples
+compression below 64 requested output tokens. The Qwen3.5 example samples
 the ten full-attention layers with stride 2, a 4608-token budget, and a
 2048-token requested-output guard. KV-related token counts must be positive multiples
 of block size 128. For a Qwen3.5 runtime with a promoted 1,152- or 2,048-token attention

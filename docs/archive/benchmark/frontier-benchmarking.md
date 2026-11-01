@@ -1,11 +1,11 @@
 # Frontier benchmark protocol
 
-English | [简体中文](frontier-benchmarking.zh.md)
+English | [简体中文](frontier-benchmarking-0.10.zh.md)
 
 This is the active comparison contract for the Qwen3.5-35B-A3B BF16, TP=2
 Ascend 910B2 cohort. Measured releases and source candidates are indexed in
 [results](https://github.com/vLLM-HUST/vllm-hust-benchmark/blob/aa041953616fa170014a0c7f43fb06bf1c59b846/archive/mod-targeted-20261023/compress-history/snapshot/docs/results/README.md); earlier campaigns are
-[archived](../archive/README.md). Qualify each change with a fresh pair on its
+[archived](../../archive/README.md). Qualify each change with a fresh pair on its
 exact source and environment.
 
 ## Freeze before measuring

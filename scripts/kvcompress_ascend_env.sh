@@ -1,33 +1,38 @@
 #!/usr/bin/env bash
-# Launch a command with the isolated, matched CANN/PyTorch host stack.
+# Launch with the persistent, pinned HUST source stack and plugin overlay.
 set -euo pipefail
-
 if (( $# == 0 )); then
   echo "usage: $0 COMMAND [ARGS...]" >&2
   exit 2
 fi
-
 kv_workspace=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-kv_prefix=${KVCOMPRESS_HOST_ENV:-$kv_workspace/.envs/kvcompress-0.10-py311}
-kv_cann=${KVCOMPRESS_CANN_ENV:-$kv_prefix/Ascend/cann-9.1.0/set_env.sh}
-kv_atb=${KVCOMPRESS_ATB_ENV:-$kv_prefix/Ascend/nnal/atb/set_env.sh}
-kv_triton_source=${KVCOMPRESS_TRITON_SOURCE:-$kv_workspace/triton-ascend-hust/python}
-kv_vendor_env=${KVCOMPRESS_HOST_VENDOR_ENV:-$kv_workspace/vllm-ascend-hust/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/bin/set_env.bash}
-
-if [[ ! -x "$kv_prefix/bin/python" || ! -f "$kv_cann" || ! -f "$kv_atb" ]]; then
-  echo "incomplete isolated Ascend environment: $kv_prefix" >&2
+kv_prefix=${KVCOMPRESS_HOST_ENV:-$kv_workspace/.envs/kvcompress-host}
+if [[ ! -x "$kv_prefix/bin/python" || ! -f "$kv_prefix/kvcompress-host.json" ]]; then
+  echo "Run scripts/kvcompress_install_env.sh first: $kv_prefix" >&2
   exit 1
 fi
-
-# Keep an interactive shell's Python and CANN paths out of this matched
-# environment. Configure the host paths for other layouts.
+mapfile -t kv_paths < <("$kv_prefix/bin/python" -I - "$kv_prefix/kvcompress-host.json" <<'PY'
+import json,sys
+with open(sys.argv[1]) as stream:
+    config=json.load(stream)
+for key in ('cann_env','atb_env','triton_source','vendor_env'):
+    print(config[key])
+PY
+)
+[[ ${#kv_paths[@]} == 4 ]] || { echo 'Invalid host environment config' >&2; exit 1; }
+kv_cann=${KVCOMPRESS_CANN_ENV:-${kv_paths[0]}}
+kv_atb=${KVCOMPRESS_ATB_ENV:-${kv_paths[1]}}
+kv_triton=${KVCOMPRESS_TRITON_SOURCE:-${kv_paths[2]}}
+kv_vendor=${KVCOMPRESS_HOST_VENDOR_ENV:-${kv_paths[3]}}
+if [[ ! -f "$kv_cann" || ! -f "$kv_atb" || ! -d "$kv_triton/triton/backends/ascend" || ! -f "$kv_vendor" ]]; then
+  echo 'Incomplete HUST sources or CANN/ATB/vendor setup; rerun the installer.' >&2
+  exit 1
+fi
 unset PYTHONPATH LD_LIBRARY_PATH LD_PRELOAD CMAKE_PREFIX_PATH
 unset ASCEND_HOME_PATH ASCEND_TOOLKIT_HOME ASCEND_OPP_PATH ASCEND_AICPU_PATH
-unset ATB_HOME_PATH CONDA_PREFIX CONDA_DEFAULT_ENV
+unset ASCEND_CUSTOM_OPP_PATH ATB_HOME_PATH CONDA_PREFIX CONDA_DEFAULT_ENV
 export PATH="$kv_prefix/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin"
-if [[ -d "$kv_triton_source" ]]; then
-  export PYTHONPATH="$kv_triton_source"
-fi
+export PYTHONPATH="$kv_triton"
 export PYTHONNOUSERSITE=1
 export TRITON_HOME="${TRITON_HOME:-$kv_workspace/.cache/kvcompress-triton-home}"
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$kv_workspace/.cache/kvcompress-triton-runtime}"
@@ -36,19 +41,13 @@ export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-$kv_workspace/.cache/
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$kv_workspace/.cache/kvcompress-xdg}"
 mkdir -p "$TRITON_HOME" "$TRITON_CACHE_DIR" "$VLLM_CACHE_ROOT" \
   "$TORCHINDUCTOR_CACHE_DIR" "$XDG_CACHE_HOME"
-
-# Vendor environment scripts read optional unset variables, so disable nounset
-# only while sourcing them.
+# Determine the ABI without loading device backends on a CPU-only workspace.
+kv_torch_abi=$(TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$kv_prefix/bin/python" -c \
+  'import torch; print(int(torch._C._GLIBCXX_USE_CXX11_ABI))')
 set +u
 source "$kv_cann"
-# The matched PyTorch 2.13 CPU wheel reports CXX11 ABI=true. Passing it here
-# avoids the vendor script importing torch merely to discover the ABI.
-source "$kv_atb" --cxx_abi=1
-if [[ -f "$kv_vendor_env" ]]; then
-  # The host's own build installs standard AscendC kernels here. Its vendor
-  # environment must be visible before Python loads the ACL operator resolver.
-  source "$kv_vendor_env"
-fi
+source "$kv_atb" --cxx_abi="$kv_torch_abi"
+source "$kv_vendor"
 set -u
-export LD_LIBRARY_PATH="$kv_prefix/lib:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="$kv_prefix/lib:${LD_LIBRARY_PATH:-}"
 exec "$@"

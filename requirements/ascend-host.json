@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "python": "3.11",
+  "cann": "9.1.0",
+  "atb": "9.1.0",
+  "base": {
+    "vllm": "0.29.1.post1.dev456+gebfcfba65.empty",
+    "vllm-ascend": "0.25.1rc2.dev774+hust.20260903.4.g7c8ec865a",
+    "triton": "3.6.0",
+    "triton-ascend": "3.6.0+gitf5e142a9",
+    "numpy": "2.2.6",
+    "transformers": "5.18.0",
+    "scipy": "1.13.1"
+  },
+  "sources": {
+    "vllm": {
+      "repository": "https://github.com/vLLM-HUST/vllm-hust",
+      "commit": "ebfcfba6507501c3a359a75eb4911ecc442bc2ff"
+    },
+    "vllm-ascend": {
+      "repository": "https://github.com/vLLM-HUST/vllm-ascend-hust",
+      "commit": "7c8ec865a12f7b6a14d53b61e7f61b5e811dd483"
+    },
+    "triton-ascend": {
+      "repository": "https://github.com/vLLM-HUST/triton-ascend-hust",
+      "commit": "f5e142a9963b01844625a4fdcf16bf8c24b3a5de"
+    }
+  },
+  "overlay": {
+    "torch": "2.13.0+cpu",
+    "torch-npu": "2.13.0rc1",
+    "torchvision": "0.28.0+cpu",
+    "numba": "0.63.1",
+    "llvmlite": "0.46.0",
+    "vllm-hust-ext": "0.3.0",
+    "jcs": "0.2.1",
+    "pytest": "8.4.2",
+    "ruff": "0.17.1"
+  },
+  "fla": {
+    "distribution": "flash-linear-attention-npu-a2",
+    "version": "26.9.1+deva4a7958",
+    "filename": "flash_linear_attention_npu_a2-26.9.1+deva4a7958-py3-none-manylinux_2_34_aarch64.whl",
+    "sha256": "7c3d3d07419a9cb1a17ca0d683d4d5de82d69c6523ada96396c9d6d0317e583a"
+  }
+}

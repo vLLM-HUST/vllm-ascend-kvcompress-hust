@@ -355,7 +355,7 @@ def _generate_payload(request: CalibrationRequest) -> dict[str, Any]:
         )
         layer_stats: dict[str, dict[str, torch.Tensor]] = {}
         for layer_idx, accumulator in accumulators.items():
-            # add 同步初始化三个accumulator累计量；这里只检查外部 forward 是否真正产生了样本。
+            # Accumulators initialize together; require samples from the forward pass.
             if accumulator.count <= 0:
                 raise RuntimeError(f"no query values captured for layer {layer_idx}")
             divisor = float(accumulator.count)

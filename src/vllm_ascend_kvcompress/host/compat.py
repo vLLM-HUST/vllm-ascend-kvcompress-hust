@@ -91,6 +91,62 @@ def install_grouped_topk_router_compat() -> bool:
     return True
 
 
+def install_mamba_prefill_end_compat(manager_cls: Any | None = None) -> bool:
+    """Forward the core's prefill boundary through the older Ascend adapter.
+
+    Preserve Ascend's extra reservation for synchronously loaded external KV.
+    Dropping prefill_end would change the core's Mamba admission calculation.
+    """
+    if manager_cls is None:
+        from vllm_ascend.patch.platform.patch_mamba_manager import AscendMambaManager
+
+        manager_cls = AscendMambaManager
+    original = manager_cls.get_num_blocks_to_allocate
+    if "prefill_end" in inspect.signature(original).parameters:
+        return False
+    parent = manager_cls.__mro__[1].get_num_blocks_to_allocate
+    if "prefill_end" not in inspect.signature(parent).parameters:
+        return False
+
+    def allocate(
+        self: Any,
+        request_id: str,
+        num_tokens: int,
+        new_computed_blocks: Any,
+        total_computed_tokens: int,
+        num_local_computed_tokens: int | None = None,
+        num_tokens_main_model: int | None = None,
+        apply_admission_cap: bool = False,
+        prefill_end: int = 0,
+    ) -> int:
+        if num_tokens_main_model is None:
+            if num_local_computed_tokens is None:
+                raise ValueError("Mamba allocation requires main-model token count")
+            num_tokens_main_model = num_local_computed_tokens
+        count = parent(
+            self,
+            request_id,
+            num_tokens,
+            new_computed_blocks,
+            total_computed_tokens,
+            num_local_computed_tokens,
+            num_tokens_main_model,
+            apply_admission_cap=apply_admission_cap,
+            prefill_end=prefill_end,
+        )
+        local_hit_tokens = len(new_computed_blocks) * self.block_size
+        if (
+            total_computed_tokens > local_hit_tokens
+            and num_tokens_main_model > total_computed_tokens
+        ):
+            count += 1
+        return count
+
+    manager_cls.get_num_blocks_to_allocate = allocate
+    logger.warning("Installed Ascend Mamba prefill-boundary compatibility")
+    return True
+
+
 @contextmanager
 def qwen_mtp2_cache_binding_bridge():
     """仅在启动时，将 Qwen3.5 的 MTP 层与目标模型第零层一并绑定。

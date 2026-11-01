@@ -36,6 +36,7 @@ class LayerCalibrationStats:
     q_mean_real/imag 是 E[Q] 的复数坐标，q_abs_mean 是 E[|Q|]，两者不能互换。
     partial RoPE 额外保存未旋转维度均值 q_pass_mean；freq_scale_sq 表示 RoPE 缩放平方。
     """
+
     q_mean_real: torch.Tensor
     q_mean_imag: torch.Tensor
     q_abs_mean: torch.Tensor
@@ -50,6 +51,7 @@ class DeviceLayerCalibrationStats:
     设备表示：[local_kv_heads,queries_per_kv,frequency]，在 to_device 中按 TP 切分。
     omega 是实际 inverse frequency；scaled RoPE 不能只凭 rope_theta 重新推导它。
     """
+
     q_mean_real: torch.Tensor
     q_mean_imag: torch.Tensor
     q_abs_mean: torch.Tensor

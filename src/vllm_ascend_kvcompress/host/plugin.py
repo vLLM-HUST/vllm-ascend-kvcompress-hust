@@ -56,6 +56,9 @@ def register() -> None:
     )
     _prepare_current_triton_runtime()
     _configure_message_queue_defaults()
+    from .compat import install_mamba_prefill_end_compat
+
+    install_mamba_prefill_end_compat()
 
     from vllm.v1.core.kv_cache_manager import KVCacheManager
     from vllm.v1.core.sched.scheduler import Scheduler
