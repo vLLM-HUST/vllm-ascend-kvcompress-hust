@@ -7,9 +7,11 @@ The current evaluation uses the dataset specified by the Pujiang Laboratory, as 
 | Dataset | Evaluation | Preparation in this version |
 | --- | --- | --- |
 | MMLU-Pro | Token-ID completions; local answer extraction | [Client, download, frozen plan and runner](mmlu-pro.md) |
-| HLE-Verified | Gold / Revision; solver and separate structured-output judge | Protocol entry only |
-| SWE-bench-Pro | Agent sandbox and task tests | Protocol entry only |
-| FrontierScience | Olympiad / Research; separate judge and rubric | Protocol entry only |
-| TerminalBench 2.1 | ARM-compatible task sandbox and task grader | Protocol entry only |
+| HLE-Verified | Gold / Revision; solver and separate structured-output judge | [Unified client workflow](pujiang.md) |
+| SWE-bench-Pro | Agent sandbox and task tests | Not implemented; empty adapter |
+| FrontierScience | Olympiad / Research; separate judge and rubric | [Unified client workflow](pujiang.md) |
+| TerminalBench 2.1 | ARM-compatible task sandbox and task grader | Not implemented; empty adapter |
 
 [MMLU-Pro procedure](mmlu-pro.md).
+
+[Unified setup, frozen smoke and B0/B1 comparison](pujiang.md).

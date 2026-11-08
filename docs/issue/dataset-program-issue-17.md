@@ -36,12 +36,12 @@ These user-provided input and output figures are planning estimates without link
 | **FrontierScience** | Problem length 408–6,590 characters | Strongly reasoning-model dependent; reference range **3.3k–29k** | Can be below or far above 9,216 | **Highly model-dependent; dataset alone cannot decide** | High |
 | **Terminal-Bench 2.1** | Initial instruction usually <~1–1.5k tokens | Multi-turn agent; reference **12k–18k output/task** | Fresh input + output ≈ **12.5k–47k/task** | **Most task totals expected to exceed; per-request status unknown** | Medium-high |
 
-The current B1 configuration is [`.benchmarks/config/qwen3.5-35b-a3b-v3-batched-stride2-min512.json`](../../.benchmarks/config/qwen3.5-35b-a3b-v3-batched-stride2-min512.json). `kv_budget + recompute_window` sets the threshold; `min_output_tokens_for_compression` is another gate. If an evaluator freezes a changed task rendering, run the exact tokenized manifest through:
+The current B1 configuration is [`../.benchmarks/config/qwen3.5-35b-a3b-v3-batched-stride2-min512.json`](../../../.benchmarks/config/qwen3.5-35b-a3b-v3-batched-stride2-min512.json). `kv_budget + recompute_window` sets the threshold; `min_output_tokens_for_compression` is another gate. If an evaluator freezes a changed task rendering, run the exact tokenized manifest through:
 
 ```sh
 python scripts/kvcompress_dataset_applicability.py \
   --manifest /path/to/frozen-task-prompts.jsonl \
-  --method-config .benchmarks/config/qwen3.5-35b-a3b-v3-batched-stride2-min512.json \
+  --method-config ../.benchmarks/config/qwen3.5-35b-a3b-v3-batched-stride2-min512.json \
   --output /path/to/applicability-audit.json
 ```
 

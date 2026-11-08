@@ -96,16 +96,12 @@ The `scripts/` tools:
 
 | File | Responsibility |
 | --- | --- |
-| `kvcompress_ascend_env.sh` | Configure the local Ascend environment and launch commands. |
-| `benchmark_inputs.py`, `fetch_benchmark_originals.py` | Resolve external inputs and retrieve pinned, verifiable historical originals. |
-| `kvcompress_prepare_dataset.py`, `kvcompress_benchmark_data.py` | Prepare acceptance inputs and acquire/freeze public long-context requests. |
-| `kvcompress_dataset_applicability.py` | Audit whether frozen tokenized tasks can trigger compression. |
-| `kvcompress_benchmark_run.py`, `kvcompress_benchmark_score.py` | Run requests against an OpenAI-compatible service and score public LongBench-family results. |
-| `kvcompress_long_context_run.py`, `kvcompress_acceptance_compare.py` | Deterministic streaming long-context runs and three-cold-start B0/B1 acceptance comparison. |
-| `kvcompress_m3_quality.py`, `kvcompress_m3_analyze.py` | M3 quality guard and three-lifecycle aggregation. |
-| `kvcompress_frontier_preflight.py` | Read-only readiness check for frozen Frontier conditions. |
-| `kvcompress_frontier_swe_pair.py`, `kvcompress_frontier_agentx_pair.py` | Validate and compare pinned SWE/AgentX pairs. |
-| `kvcompress_leaderboard.py`, `verify_leaderboard_browser.py` | Build/verify the leaderboard, browser behavior, original links and failure presentation. |
+| `scripts/run_benchmark.sh`, `scripts/set_env.sh` | User entry points for evaluation and environment configuration. |
+| `scripts/env/` | Install/check the shared HUST host, launch plugin-off/on arms and manage isolated clients. |
+| `scripts/benchmark/pujiang/` | Five dataset adapters; the first three delegate to external clients, the last two are empty. |
+| `scripts/benchmark/common/` | Frozen random selections, upstream API adapters, paired lifecycles, performance and reports. |
+| `benchmark_inputs.py`, `fetch_benchmark_originals.py` | Retained CI interfaces for external historical originals. |
+| `kvcompress_leaderboard.py`, `verify_leaderboard_browser.py` | Retained CI interfaces for leaderboard generation and browser checks. |
 
 ## Recommended reading order
 

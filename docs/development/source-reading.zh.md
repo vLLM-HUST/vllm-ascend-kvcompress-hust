@@ -90,16 +90,12 @@ Mamba/GDN 的循环状态继续使用语义长度。
 
 | 文件 | 作用 |
 | --- | --- |
-| `kvcompress_ascend_env.sh` | 配置本地 Ascend 环境并启动命令。 |
-| `benchmark_inputs.py`、`fetch_benchmark_originals.py` | 解析外置输入与下载固定版本、可校验的历史原件。 |
-| `kvcompress_prepare_dataset.py`、`kvcompress_benchmark_data.py` | 准备验收输入、获取并冻结公开长上下文请求。 |
-| `kvcompress_dataset_applicability.py` | 判断固定的 tokenized 数据集能否触发压缩。 |
-| `kvcompress_benchmark_run.py`、`kvcompress_benchmark_score.py` | 调用 OpenAI 兼容服务并评分公开 LongBench 系列结果。 |
-| `kvcompress_long_context_run.py`、`kvcompress_acceptance_compare.py` | 确定性的流式长上下文运行与三次冷启动 B0/B1 验收比较。 |
-| `kvcompress_m3_quality.py`、`kvcompress_m3_analyze.py` | M3 质量护栏与三次生命周期聚合。 |
-| `kvcompress_frontier_preflight.py` | Frontier 固定测试条件的只读就绪检查。 |
-| `kvcompress_frontier_swe_pair.py`、`kvcompress_frontier_agentx_pair.py` | SWE / AgentX 固定运行的配对校验与比较。 |
-| `kvcompress_leaderboard.py`、`verify_leaderboard_browser.py` | 构建/校验榜单及浏览器可用性、原件链接与失败展示。 |
+| `scripts/run_benchmark.sh`、`scripts/set_env.sh` | 评测与环境配置的用户入口。 |
+| `scripts/env/` | 共享 HUST 宿主环境的安装校验、插件开关对照及独立评测客户端管理。 |
+| `scripts/benchmark/pujiang/` | 五项指定数据集入口；前三项对接外部客户端，后两项留空。 |
+| `scripts/benchmark/common/` | 固定随机采样、上游接口适配、配对生命周期、性能与结果汇总。 |
+| `benchmark_inputs.py`、`fetch_benchmark_originals.py` | CI 保留：外置历史原件的解析与校验下载。 |
+| `kvcompress_leaderboard.py`、`verify_leaderboard_browser.py` | CI 保留：榜单生成、校验和浏览器检查。 |
 
 ## 推荐阅读顺序
 

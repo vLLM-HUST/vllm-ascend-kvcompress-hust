@@ -40,3 +40,4 @@ contains the full sequence of positive and negative local pairs, including the
 host stacks. Do not pool measurements from different cohorts.
 
 [MMLU-Pro](benchmark/mmlu-pro.md) ·
+[Pujiang evaluation: clients, environments, frozen smoke and B0/B1 pairs](benchmark/pujiang.md)

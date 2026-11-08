@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts/kvcompress_install_env.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts/env/install_b1.py"
 spec = importlib.util.spec_from_file_location("install_env", SCRIPT)
 installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
@@ -44,6 +44,7 @@ def test_mismatched_seed_fails_without_creating_target(monkeypatch, tmp_path):
     atb.touch()
     monkeypatch.setattr(installer.platform, "system", lambda: "Linux")
     monkeypatch.setattr(installer.platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(installer.platform, "libc_ver", lambda: ("glibc", "2.35"))
     monkeypatch.setattr(sys, "version_info", (3, 11))
     monkeypatch.setattr(
         sys,
@@ -64,6 +65,7 @@ def test_mismatched_seed_fails_without_creating_target(monkeypatch, tmp_path):
         name: {"version": version} for name, version in installer.LOCK["base"].items()
     }
     monkeypatch.setattr(installer, "source_paths", lambda _: {})
+    monkeypatch.setattr(installer, "toolchain_identity", lambda *_: {})
 
     def inventory(python):
         packages = dict(base)
@@ -75,3 +77,53 @@ def test_mismatched_seed_fails_without_creating_target(monkeypatch, tmp_path):
     with pytest.raises(ValueError, match="torch: expected"):
         installer.main()
     assert not target.exists()
+
+
+def test_unsupported_libc_fails_before_any_environment_is_created(
+    monkeypatch, tmp_path, capsys
+):
+    target = tmp_path / "host"
+    monkeypatch.setattr(installer.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(installer.platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(installer.platform, "libc_ver", lambda: ("glibc", "2.31"))
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--prefix", str(target)])
+    with pytest.raises(SystemExit):
+        installer.main()
+    assert "requires glibc >= 2.34" in capsys.readouterr().err
+    assert not target.exists()
+
+
+def test_vendor_version_is_read_from_metadata_not_directory_name(tmp_path):
+    cann = tmp_path / "cann-9.1.0"
+    atb = tmp_path / "atb"
+    (cann / "share/info/asc-devkit").mkdir(parents=True)
+    (atb / "latest").mkdir(parents=True)
+    info = cann / "share/info/asc-devkit/version.info"
+    info.write_text("Version=9.1.0\n")
+    (atb / "latest/version.info").write_text("Ascend-cann-atb : 9.1.0\n")
+    identity = installer.toolchain_identity(cann / "set_env.sh", atb / "set_env.sh")
+    assert identity["cann"]["version"] == "9.1.0"
+    info.write_text("Version=9.0.0\n")
+    with pytest.raises(ValueError, match="cann must be"):
+        installer.toolchain_identity(cann / "set_env.sh", atb / "set_env.sh")
+
+
+def test_overlay_cannot_silently_change_python_base(monkeypatch, tmp_path):
+    rows = {
+        name: {"version": version}
+        for name, version in {
+            **installer.LOCK["base"],
+            **installer.LOCK["overlay"],
+            installer.LOCK["fla"]["distribution"]: installer.LOCK["fla"]["version"],
+        }.items()
+    }
+    monkeypatch.setattr(
+        installer,
+        "packages",
+        lambda _: {
+            "packages": rows,
+            "base_python": str(tmp_path / "unexpected/bin/python"),
+        },
+    )
+    with pytest.raises(ValueError, match="different Python base"):
+        installer.check_overlay(tmp_path / "host", tmp_path / "expected/bin/python", {})

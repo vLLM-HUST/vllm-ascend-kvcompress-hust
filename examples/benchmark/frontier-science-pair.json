@@ -1,0 +1,58 @@
+{
+  "host_prefix": "../../../.envs/kvcompress-host",
+  "model_path": "/path/to/Qwen3.5-35B-A3B",
+  "server_env": {
+    "ASCEND_RT_VISIBLE_DEVICES": "0,1"
+  },
+  "arms": {
+    "b0": {
+      "plan": "../../../.benchmarks/pujiang/frontier-science/plan",
+      "base_url": "http://127.0.0.1:18180",
+      "served_model": "qwen35-eval",
+      "server_args": [
+        "--served-model-name",
+        "qwen35-eval",
+        "--port",
+        "18180",
+        "--tensor-parallel-size",
+        "2",
+        "--dtype",
+        "bfloat16",
+        "--block-size",
+        "128",
+        "--max-model-len",
+        "65536",
+        "--max-num-seqs",
+        "16",
+        "--no-enable-prefix-caching",
+        "--no-async-scheduling",
+        "--enforce-eager"
+      ]
+    },
+    "b1": {
+      "plan": "../../../.benchmarks/pujiang/frontier-science/plan",
+      "base_url": "http://127.0.0.1:18180",
+      "served_model": "qwen35-eval",
+      "server_args": [
+        "--served-model-name",
+        "qwen35-eval",
+        "--port",
+        "18180",
+        "--tensor-parallel-size",
+        "2",
+        "--dtype",
+        "bfloat16",
+        "--block-size",
+        "128",
+        "--max-model-len",
+        "65536",
+        "--max-num-seqs",
+        "16",
+        "--no-enable-prefix-caching",
+        "--no-async-scheduling",
+        "--enforce-eager"
+      ],
+      "plugin_config": "../qwen3.5-35b-a3b-triattention.json"
+    }
+  }
+}

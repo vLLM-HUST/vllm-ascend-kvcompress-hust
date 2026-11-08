@@ -8,8 +8,9 @@ Use the pinned HUST source stack and the persistent `kvcompress-host` directory.
 After provisioning the matched durable Python 3.11 base and CANN/ATB, run:
 
 ```bash
-scripts/kvcompress_install_env.sh
-scripts/kvcompress_install_env.sh --check
+export KVCOMPRESS_BASE_PYTHON=/path/to/persistent/hust-base/bin/python
+bash scripts/set_env.sh install b1 --fla-wheel /path/to/the-locked-fla.whl
+scripts/set_env.sh check b1
 ```
 
 The installer checks source commits and package versions, configures the

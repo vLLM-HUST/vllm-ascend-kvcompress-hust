@@ -1,0 +1,17 @@
+{
+  "base_url": "http://127.0.0.1:18181",
+  "model": "fixed-judge",
+  "model_artifact": "/path/to/judge-model",
+  "api_key_env": null,
+  "concurrency": 1,
+  "timeout": 1800,
+  "request": {
+    "temperature": 0,
+    "seed": 17,
+    "max_tokens": 8192,
+    "chat_template_kwargs": {
+      "enable_thinking": false
+    }
+  },
+  "scoring_policy": "strict_json"
+}

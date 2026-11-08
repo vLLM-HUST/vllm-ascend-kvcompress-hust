@@ -37,3 +37,4 @@
 不得与不同 cohort 的结果混合计算。
 
 [MMLU-Pro](benchmark/mmlu-pro.zh.md) ·
+[浦江评测：客户端下载、环境、固定 smoke 与 B0/B1 对比](benchmark/pujiang.zh.md)

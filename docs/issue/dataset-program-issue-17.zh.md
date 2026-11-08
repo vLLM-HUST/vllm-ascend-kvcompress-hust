@@ -36,12 +36,12 @@
 | **FrontierScience** | problem 408–6,590 chars | 强烈取决于 reasoning model：参考值约 **3.3k–29k** | 可低于也可远高于 9,216 | **高度模型相关，不能从数据集本身确定** | 高 |
 | **Terminal-Bench 2.1** | 初始 instruction 通常 <~1–1.5k token | agent 多轮；参考值约 **12k–18k output/task** | fresh input+output 约 **12.5k–47k/task** | **任务累计预计多数超过；单请求未知** | 中高 |
 
-当前 B1 配置为 [`.benchmarks/config/qwen3.5-35b-a3b-v3-batched-stride2-min512.json`](../../.benchmarks/config/qwen3.5-35b-a3b-v3-batched-stride2-min512.json)。压缩门槛由 `kv_budget + recompute_window` 决定，`min_output_tokens_for_compression` 是另一项门禁。评测方若冻结新的任务提示词，应对准确的分词后任务清单重新审计：
+当前 B1 配置为 [`../.benchmarks/config/qwen3.5-35b-a3b-v3-batched-stride2-min512.json`](../../../.benchmarks/config/qwen3.5-35b-a3b-v3-batched-stride2-min512.json)。压缩门槛由 `kv_budget + recompute_window` 决定，`min_output_tokens_for_compression` 是另一项门禁。评测方若冻结新的任务提示词，应对准确的分词后任务清单重新审计：
 
 ```sh
 python scripts/kvcompress_dataset_applicability.py \
   --manifest /path/to/frozen-task-prompts.jsonl \
-  --method-config .benchmarks/config/qwen3.5-35b-a3b-v3-batched-stride2-min512.json \
+  --method-config ../.benchmarks/config/qwen3.5-35b-a3b-v3-batched-stride2-min512.json \
   --output /path/to/applicability-audit.json
 ```
 

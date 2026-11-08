@@ -8,13 +8,14 @@
 准备好匹配的持久 Python 3.11 基座及 CANN/ATB 后，一键安装：
 
 ```bash
-scripts/kvcompress_install_env.sh
-scripts/kvcompress_install_env.sh --check
+export KVCOMPRESS_BASE_PYTHON=/path/to/persistent/hust-base/bin/python
+bash scripts/set_env.sh install b1 --fla-wheel /path/to/the-locked-fla.whl
+scripts/set_env.sh check b1
 ```
 
 脚本核对源码提交和版本，补齐插件独立环境，再安装当前插件。
 基座前提、seed 复用、配置覆盖和依赖审计见[环境指南](../development/environment-installation.zh.md)。
-Qwen3.5 BF16 还需要两张匹配的 NPU；
+Qwen3.5 BF16 还需要两张匹配的 NPU。
 
 ## 安装 Manager 和插件
 

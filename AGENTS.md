@@ -36,6 +36,7 @@
   `vLLM-HUST/vllm-hust-benchmark`; this repository retains implementation,
   protocols, synthetic fixtures and checksum-bound links. Preserve historical
   version, host and model identities rather than relabeling old evidence.
-- Keep personal reports and temporary outputs in ignored `dev/`; downloaded
-  evaluation inputs and plans may use ignored `.benchmarks/`. Local outputs
-  are not published evidence. Never publish secrets or private inputs.
+- Keep personal reports and temporary outputs in ignored `dev/`. Store downloaded
+  evaluation inputs and plans in `../.benchmarks/` relative to this repository,
+  and local run results in its `results/` directory. Local outputs are not
+  published evidence. Never publish secrets or private inputs.
